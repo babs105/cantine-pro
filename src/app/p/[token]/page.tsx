@@ -48,7 +48,7 @@ async function submitVoteAction(
     if (!isApresHeureLimite(heureOuverture)) {
       return {
         success: false,
-        message: `Les votes ouvrent à ${heureOuverture.slice(0, 5).replace(":", "h")}.`,
+        message: `Les commandes ouvrent à ${heureOuverture.slice(0, 5).replace(":", "h")}.`,
       };
     }
 
@@ -56,7 +56,7 @@ async function submitVoteAction(
     if (isApresHeureLimite(heureLimite)) {
       return {
         success: false,
-        message: `Les votes sont clôturés depuis ${heureLimite.slice(0, 5)}.`,
+        message: `Les commandes sont clôturées depuis ${heureLimite.slice(0, 5)}.`,
       };
     }
 

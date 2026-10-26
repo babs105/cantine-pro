@@ -73,7 +73,7 @@ export function RecapRestaurant({
 
   const statut = !cloture
     ? {
-        texte: "Votes en cours (provisoire)",
+        texte: "Commandes en cours (provisoire)",
         classe: "bg-neutral-100 text-neutral-600",
       }
     : cloture.confirme_at

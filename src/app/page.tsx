@@ -29,7 +29,7 @@ export default function HomePage() {
             <div className="flex items-start gap-3">
               <Clock className="w-5 h-5 text-orange-500 shrink-0 mt-0.5" />
               <span>
-                <strong>Vote avant 11h10 :</strong> Chaque collaborateur choisit
+                <strong>Commande avant 11h10 :</strong> Chaque collaborateur choisit
                 son plat du jour en 5 secondes sur son téléphone.
               </span>
             </div>
@@ -82,7 +82,7 @@ export default function HomePage() {
               href="/p/token-demo-moussa"
               className="inline-flex items-center justify-between w-full px-4 py-3 text-xs font-bold text-white bg-orange-600 hover:bg-orange-700 active:scale-98 transition rounded-2xl shadow-sm shadow-orange-600/20"
             >
-              <span>📱 Interface Employé (Vote PWA 2 Clics)</span>
+              <span>📱 Interface Employé (Commande PWA 2 Clics)</span>
               <ArrowRight className="w-4 h-4" />
             </Link>
 

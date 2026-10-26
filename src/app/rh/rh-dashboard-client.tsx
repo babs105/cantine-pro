@@ -275,10 +275,6 @@ export function RhDashboardClient({
       if (!res.success) {
         setActionError(res.message || "Modification impossible.");
         router.refresh();
-      } else if (res.clotureMiseAJour) {
-        setActionInfo(
-          "Récapitulatif traiteur mis à jour : prévenez le traiteur, il doit reconfirmer les nouvelles quantités."
-        );
       }
     });
   };
@@ -297,7 +293,7 @@ export function RhDashboardClient({
 
   // Désactiver un collaborateur (son lien ne fonctionne plus)
   const desactiverEmploye = (emp: Employe) => {
-    if (!window.confirm(`Désactiver ${emp.nom} ? Son lien de vote ne fonctionnera plus.`)) return;
+    if (!window.confirm(`Désactiver ${emp.nom} ? Son lien de commande ne fonctionnera plus.`)) return;
     setEmployes((prev) => prev.filter((e) => e.id !== emp.id));
     startTransition(async () => {
       await desactiverEmployeAction(emp.id);
@@ -321,7 +317,7 @@ export function RhDashboardClient({
 
   // Export CSV Comptable Express (Jour 7)
   const exportComptableCSV = () => {
-    const headers = ["Date", "Entreprise", "Employé", "Téléphone", "Statut Vote", "Plat Choisi", "Montant (FCFA)"];
+    const headers = ["Date", "Entreprise", "Employé", "Téléphone", "Statut Commande", "Plat Choisi", "Montant (FCFA)"];
     const rows = employes.map((emp) => {
       const cmd = commandes.find((c) => c.employe_id === emp.id);
       const statut = cmd ? cmd.statut : "en_attente";
@@ -377,7 +373,7 @@ export function RhDashboardClient({
                 </h1>
               </div>
               <p className="text-xs text-neutral-500 mt-1">
-                Votes de {company.heure_ouverture_vote.slice(0, 5)} à {company.heure_limite_vote.slice(0, 5)}
+                Commandes de {company.heure_ouverture_vote.slice(0, 5)} à {company.heure_limite_vote.slice(0, 5)}
                 {joursEssaiRestants !== null && (
                   <>
                     {" "}•{" "}
@@ -558,7 +554,7 @@ export function RhDashboardClient({
                 {!isDemo && (
                   <div className="flex items-center gap-2 text-[11px] text-neutral-500">
                     <RefreshCw className="w-3.5 h-3.5 animate-spin [animation-duration:3s]" />
-                    2. Votes ouverts de {company.heure_ouverture_vote.slice(0, 5)} à{" "}
+                    2. Commandes ouvertes de {company.heure_ouverture_vote.slice(0, 5)} à{" "}
                     {company.heure_limite_vote.slice(0, 5)} — actualisation toutes les 20 secondes
                   </div>
                 )}
@@ -576,7 +572,7 @@ export function RhDashboardClient({
               >
                 <span className="font-semibold">
                   {restaurantsNonClotures.length > 0
-                    ? `🔒 Votes clôturés à ${company.heure_limite_vote.slice(0, 5)}. Clôturez la journée pour figer les récaps, puis envoyez-les aux restaurants.`
+                    ? `🔒 Commandes clôturées à ${company.heure_limite_vote.slice(0, 5)}. Clôturez la journée pour figer les récaps, puis envoyez-les aux restaurants.`
                     : "✅ Journée clôturée : envoyez chaque récap à son restaurant avec le bouton « Envoyer le récap »."}
                 </span>
                 {restaurantsNonClotures.length > 0 && !isDemo && (
@@ -618,7 +614,7 @@ export function RhDashboardClient({
                 </span>
                 <div className="mt-2 flex items-baseline gap-2">
                   <span className="text-3xl font-black text-amber-500">{countEnAttente}</span>
-                  <span className="text-xs text-neutral-400">non votés</span>
+                  <span className="text-xs text-neutral-400">sans commande</span>
                 </div>
               </div>
 
@@ -720,7 +716,7 @@ export function RhDashboardClient({
                 </h3>
                 {countEnAttente > 0 && (
                   <span className="text-xs bg-amber-50 text-amber-700 border border-amber-200 px-2.5 py-1 rounded-full font-medium">
-                    ⚠️ {countEnAttente} collaborateur(s) n&apos;ont pas encore voté
+                    ⚠️ {countEnAttente} collaborateur(s) n&apos;ont pas encore commandé
                   </span>
                 )}
               </div>
@@ -739,7 +735,7 @@ export function RhDashboardClient({
                   className="text-xs px-3 py-2 rounded-xl border border-neutral-200 bg-white focus:outline-none focus:ring-2 focus:ring-orange-500"
                 >
                   <option value="tous">Tous les statuts</option>
-                  <option value="choisi">A voté</option>
+                  <option value="choisi">A commandé</option>
                   <option value="en_attente">En attente</option>
                   <option value="absent">Absent(e)</option>
                   <option value="ne_mange_pas">Ne mange pas</option>
@@ -752,7 +748,7 @@ export function RhDashboardClient({
                     <tr className="border-b border-neutral-100 text-neutral-400 font-semibold uppercase tracking-wider">
                       <th className="pb-3">Collaborateur</th>
                       <th className="pb-3">Service</th>
-                      <th className="pb-3">Statut Vote</th>
+                      <th className="pb-3">Statut Commande</th>
                       <th className="pb-3">Choix / Plat</th>
                       <th className="pb-3 text-right">Action</th>
                     </tr>
@@ -778,7 +774,7 @@ export function RhDashboardClient({
                           <td className="py-3">
                             {statut === "choisi" && (
                               <span className="inline-flex items-center gap-1 text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full font-semibold">
-                                <Check className="w-3 h-3" /> A voté
+                                <Check className="w-3 h-3" /> A commandé
                               </span>
                             )}
                             {statut === "absent" && (
@@ -798,7 +794,17 @@ export function RhDashboardClient({
                             )}
                           </td>
                           <td className="py-3 font-medium text-neutral-800">
-                            {editingVote === emp.id ? (
+                            {journeeCloturee ? (
+                              <span className="inline-flex items-center gap-1.5" title="Journée clôturée : modification impossible">
+                                <span>{cmd?.plat_titre || "-"}</span>
+                                {cmd?.modifie_par_rh && (
+                                  <span className="text-[10px] bg-blue-50 text-blue-700 px-1.5 py-0.5 rounded-full font-semibold">
+                                    RH
+                                  </span>
+                                )}
+                                <Lock className="w-3 h-3 text-neutral-300" />
+                              </span>
+                            ) : editingVote === emp.id ? (
                               <select
                                 autoFocus
                                 defaultValue={valeurActuelle}
@@ -898,7 +904,7 @@ export function RhDashboardClient({
                 </h2>
                 <p className="text-xs text-neutral-600 mt-0.5">
                   Un seul lien pour tout le monde : postez-le dans le groupe WhatsApp de l&apos;entreprise. Chaque
-                  salarié choisit son nom (ou s&apos;inscrit) puis vote.
+                  salarié choisit son nom (ou s&apos;inscrit) puis commande.
                 </p>
               </div>
               <div className="flex flex-col sm:flex-row gap-2">

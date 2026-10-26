@@ -6,7 +6,7 @@ import { generateToken, isSupabaseConfigured, todayDakar } from "@/lib/config";
 import { ajouterJours, isDateValide, joursOuvres, lundiDeLaSemaine } from "@/lib/dates";
 import { getRhCompanyId } from "@/lib/rh-session";
 import { lignesVersEmployes, parseCsv, parseFichierEmployes, type LigneEmploye } from "@/lib/excel";
-import { cloturerEntreprise, rafraichirRecapCloture } from "@/lib/cloture";
+import { cloturerEntreprise } from "@/lib/cloture";
 import { isApresHeureLimite } from "@/lib/dates";
 
 const CHAMPS_EMPLOYE = "id, nom, telephone, service, token, is_active";
@@ -371,7 +371,7 @@ export async function modifierCommandeRhAction(
   employeId: string,
   statut: "choisi" | "absent" | "ne_mange_pas" | "en_attente",
   platId: string | null
-): Promise<{ success: boolean; message?: string; clotureMiseAJour?: boolean }> {
+): Promise<{ success: boolean; message?: string }> {
   if (!isSupabaseConfigured()) return { success: true };
 
   const companyId = await getRhCompanyId();
@@ -387,6 +387,16 @@ export async function modifierCommandeRhAction(
     .eq("company_id", companyId)
     .maybeSingle();
   if (!emp) return { success: false, message: "Collaborateur introuvable." };
+
+  // Une fois la journée clôturée, les récaps sont figés : plus de modification possible
+  const { count: nbClotures } = await supabase
+    .from("clotures")
+    .select("id", { count: "exact", head: true })
+    .eq("company_id", companyId)
+    .eq("date", today);
+  if (nbClotures) {
+    return { success: false, message: "Journée clôturée : la commande ne peut plus être modifiée." };
+  }
 
   if (statut === "en_attente") {
     const { error } = await (supabase.from("commandes") as any)
@@ -421,9 +431,8 @@ export async function modifierCommandeRhAction(
     if (error) return { success: false, message: error.message };
   }
 
-  const clotureMiseAJour = await rafraichirRecapCloture(supabase, companyId, today);
   revalidatePath("/rh");
-  return { success: true, clotureMiseAJour };
+  return { success: true };
 }
 
 /**
@@ -552,7 +561,7 @@ export async function cloturerJourneeAction(): Promise<{ success: boolean; messa
   if (!isApresHeureLimite(heureLimite)) {
     return {
       success: false,
-      message: `Les votes sont ouverts jusqu'à ${heureLimite.slice(0, 5).replace(":", "h")} : clôture possible après.`,
+      message: `Les commandes sont ouvertes jusqu'à ${heureLimite.slice(0, 5).replace(":", "h")} : clôture possible après.`,
     };
   }
 

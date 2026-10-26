@@ -175,7 +175,7 @@ export function VoteClient({
 
           {pasEncoreOuvert && (
             <div className="mt-3 text-center text-xs font-bold py-2 rounded-xl bg-blue-50 text-blue-800">
-              🕗 Les votes ouvrent à {formattedHeureOuverture} (dans {formatTempsRestant(avantOuverture)})
+              🕗 Les commandes ouvrent à {formattedHeureOuverture} (dans {formatTempsRestant(avantOuverture)})
             </div>
           )}
 
@@ -347,7 +347,7 @@ export function VoteClient({
 
       {/* FOOTER DISCRET PWA */}
       <footer className="mt-8 text-center text-[11px] text-neutral-400">
-        ⚡ Cantine Pro — Vote ultra-rapide mobile
+        ⚡ Cantine Pro — Commande ultra-rapide mobile
       </footer>
     </div>
   );

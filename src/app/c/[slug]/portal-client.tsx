@@ -69,7 +69,7 @@ export function EnterprisePortalClient({
 
           <div className="mt-3 inline-flex items-center gap-1.5 px-3 py-1 bg-orange-50 text-orange-800 rounded-full text-xs font-semibold">
             <Clock className="w-3.5 h-3.5 text-orange-600" />
-            <span>Clôture quotidienne des votes à {company.heure_limite_vote.slice(0, 5)}</span>
+            <span>Clôture quotidienne des commandes à {company.heure_limite_vote.slice(0, 5)}</span>
           </div>
         </div>
 
@@ -124,7 +124,7 @@ export function EnterprisePortalClient({
                     </div>
 
                     <div className="flex items-center gap-1 text-xs font-semibold text-neutral-400 group-hover:text-orange-600 transition">
-                      <span>Voter</span>
+                      <span>Commander</span>
                       <ArrowRight className="w-3.5 h-3.5" />
                     </div>
                   </Link>
@@ -167,7 +167,7 @@ export function EnterprisePortalClient({
             </div>
 
             <p className="text-xs text-neutral-600">
-              Renseignez votre prénom et nom pour accéder immédiatement au vote d&apos;aujourd&apos;hui.
+              Renseignez votre prénom et nom pour accéder immédiatement à la commande d&apos;aujourd&apos;hui.
             </p>
 
             <form onSubmit={handleSelfRegister} className="space-y-3">
@@ -211,7 +211,7 @@ export function EnterprisePortalClient({
                   disabled={isPending || !newNom.trim()}
                   className="px-4 py-2 bg-orange-600 hover:bg-orange-700 active:scale-98 text-white font-bold text-xs rounded-xl shadow-xs"
                 >
-                  {isPending ? "Création..." : "Valider et voter"}
+                  {isPending ? "Création..." : "Valider et commander"}
                 </button>
               </div>
             </form>

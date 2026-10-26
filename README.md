@@ -95,7 +95,7 @@ Pour le pilote, **rien n'est envoyé automatiquement** : le RH déclenche chaque
 1. **Le matin** — le RH publie le menu du jour (chaque plat est rattaché au restaurant qui le prépare),
    puis clique sur **« Envoyer sur WhatsApp »** (Suivi Live, étape 1) : le message avec le menu, le lien
    du portail et l'heure limite est prêt à poster dans le groupe WhatsApp des salariés.
-2. **De 08h00 à 11h10** — les salariés votent sur la PWA. À 11h10 le vote se bloque tout seul.
+2. **De 08h00 à 11h10** — les salariés commandent sur la PWA. À 11h10 la commande se bloque toute seule.
 3. **Après 11h10** — le RH clique sur **« Clôturer la journée »** : un récapitulatif est figé par restaurant.
    Il envoie ensuite chaque récap avec **« Envoyer le récap »** sur la carte du restaurant (WhatsApp) ;
    l'heure d'envoi est notée.
@@ -113,9 +113,9 @@ Variables d'environnement : voir [`.env.local.example`](./.env.local.example).
 
 * **Import Excel (.xlsx) ou CSV** : colonnes `Nom`, `Prénom`, `Téléphone`, `Service` (détection automatique des en-têtes, doublons ignorés, numéros à 9 chiffres complétés en +221).
 * **Menus de la semaine** (lundi → vendredi) avec **« Dupliquer la semaine précédente »**.
-* **Modification manuelle par le RH** d'un vote (y compris après 11h) : si la clôture est déjà faite, le récap traiteur est recalculé et le traiteur doit reconfirmer.
+* **Modification manuelle par le RH** d'une commande (y compris après 11h10) tant que la journée n'est pas clôturée : après « Clôturer la journée », les commandes sont verrouillées.
 * **Alerte 11h30** dans l'Espace RH si le restaurant n'a pas confirmé, avec bouton d'appel.
 * **Compte à rebours** sur la PWA employé, verrouillage automatique à l'heure limite, heure d'enregistrement du choix.
 * **Export Excel paie** (`/rh/export?mois=AAAA-MM&format=xlsx`) : onglets *Paie par service*, *Récap services*, *Facture traiteur*, *Détail jour par jour*.
 
-> Après mise à jour, relancez `supabase/schema.sql` (ajoute `employes.service`, `commandes.modifie_par_rh`, la table `restaurants` et l'heure d'ouverture des votes ; l'ancien traiteur unique devient automatiquement le premier restaurant).
+> Après mise à jour, relancez `supabase/schema.sql` (ajoute `employes.service`, `commandes.modifie_par_rh`, la table `restaurants` et l'heure d'ouverture des commandes ; l'ancien traiteur unique devient automatiquement le premier restaurant).
