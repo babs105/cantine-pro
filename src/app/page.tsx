@@ -3,7 +3,7 @@ import { Utensils, ShieldCheck, Clock, Users, ArrowRight } from "lucide-react";
 import { isSupabaseConfigured } from "@/lib/config";
 
 export default function HomePage() {
-  // Avec une vraie base, chaque restaurant a son propre lien secret : on renvoie vers le cockpit
+  // Avec une vraie base, chaque restaurant a son propre lien secret : on renvoie vers l'Espace RH
   const lienRestaurant = isSupabaseConfigured() ? "/rh" : "/resto/token-demo-traiteur";
 
   return (
@@ -36,7 +36,7 @@ export default function HomePage() {
             <div className="flex items-start gap-3">
               <Users className="w-5 h-5 text-orange-500 shrink-0 mt-0.5" />
               <span>
-                <strong>Cockpit RH automatique :</strong> Fini les listes
+                <strong>Espace RH automatique :</strong> Fini les listes
                 papier et les messages WhatsApp désordonnés.
               </span>
             </div>
@@ -66,7 +66,7 @@ export default function HomePage() {
               href="/rh"
               className="inline-flex items-center justify-between w-full px-4 py-3 text-xs font-bold text-white bg-neutral-900 hover:bg-neutral-800 active:scale-98 transition rounded-2xl shadow-sm"
             >
-              <span>💼 Cockpit RH (Menus, Suivi Live & Clôture 11h10)</span>
+              <span>💼 Espace RH (Menus, Suivi Live & Clôture 11h10)</span>
               <ArrowRight className="w-4 h-4 text-orange-400" />
             </Link>
 
@@ -94,7 +94,7 @@ export default function HomePage() {
                 🍽️ Passerelle Restaurant (Validation 1-Clic)
                 {lienRestaurant === "/rh" && (
                   <span className="block font-medium text-neutral-500">
-                    Liens dans le Cockpit RH → onglet Restaurants
+                    Liens dans l'Espace RH → onglet Restaurants
                   </span>
                 )}
               </span>

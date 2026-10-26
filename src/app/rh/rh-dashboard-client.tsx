@@ -363,7 +363,7 @@ export function RhDashboardClient({
 
   return (
     <div className="min-h-screen bg-neutral-50 pb-16">
-      {/* HEADER COCKPIT RH */}
+      {/* EN-TÊTE ESPACE RH */}
       <header className="bg-white border-b border-neutral-200 sticky top-0 z-30 shadow-sm">
         <div className="max-w-7xl mx-auto px-4">
           <div className="pt-4 pb-3 flex items-start justify-between gap-3">
@@ -373,7 +373,7 @@ export function RhDashboardClient({
                   CP
                 </span>
                 <h1 className="text-lg sm:text-xl font-extrabold text-neutral-900 truncate">
-                  Cockpit RH — <span className="text-orange-600">{company.nom}</span>
+                  Espace RH — <span className="text-orange-600">{company.nom}</span>
                 </h1>
               </div>
               <p className="text-xs text-neutral-500 mt-1">

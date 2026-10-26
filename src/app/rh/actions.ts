@@ -533,7 +533,7 @@ export async function modifierRestaurantAction(
 
 /**
  * Clôture manuelle de la journée par le RH (après l'heure limite) : fige un récapitulatif par restaurant.
- * Rien n'est envoyé automatiquement : le RH envoie ensuite chaque récap via WhatsApp depuis le cockpit.
+ * Rien n'est envoyé automatiquement : le RH envoie ensuite chaque récap via WhatsApp depuis l'Espace RH.
  * Peut être relancée (ex : restaurant ajouté après coup) sans toucher aux récaps déjà envoyés.
  */
 export async function cloturerJourneeAction(): Promise<{ success: boolean; message?: string }> {

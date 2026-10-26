@@ -14,7 +14,7 @@
    * Persistance automatique dans le smartphone (`localStorage`).
    * Votes ouverts de **08h00 à 11h10**, verrouillage automatique.
 
-2. **Cockpit RH Express (`/rh`) :**
+2. **Espace RH (`/rh`) :**
    * **Suivi Live 11h :** Compteurs temps réel (Total repas, En attente, Absents, Taux de participation).
    * **Clôture après 11h10 :** Totaux exacts par plat, un récapitulatif par restaurant envoyé par le RH.
    * **Générateur WhatsApp Traiteur :** Message récapitulatif prêt à envoyer en 1 clic à votre traiteur.
@@ -73,7 +73,7 @@ NEXT_PUBLIC_APP_URL=http://localhost:3000
 
 ## 🔐 Accès RH & Ouverture d'une Entreprise Pilote
 
-Le cockpit `/rh` est protégé par un code d'accès par entreprise (cookie signé, 30 jours).
+L'Espace RH `/rh` est protégé par un code d'accès par entreprise (cookie signé, 30 jours).
 Pour ouvrir une entreprise, dans l'éditeur SQL Supabase :
 
 ```sql
@@ -90,7 +90,7 @@ Base de démo : slug `pilote-thies`, code `pilote-thies-2026` (à changer avant 
 
 ## ⏰ Principe de fonctionnement (mode manuel du pilote)
 
-Pour le pilote, **rien n'est envoyé automatiquement** : le RH déclenche chaque envoi depuis le cockpit.
+Pour le pilote, **rien n'est envoyé automatiquement** : le RH déclenche chaque envoi depuis l'Espace RH.
 
 1. **Le matin** — le RH publie le menu du jour (chaque plat est rattaché au restaurant qui le prépare),
    puis clique sur **« Envoyer sur WhatsApp »** (Suivi Live, étape 1) : le message avec le menu, le lien
@@ -100,7 +100,7 @@ Pour le pilote, **rien n'est envoyé automatiquement** : le RH déclenche chaque
    Il envoie ensuite chaque récap avec **« Envoyer le récap »** sur la carte du restaurant (WhatsApp) ;
    l'heure d'envoi est notée.
 4. **Confirmation** — chaque restaurant confirme d'un clic sur son lien `/resto/<token>` ; à 11h30, le
-   cockpit signale les restaurants qui ont reçu leur récap sans le confirmer.
+   l'Espace RH signale les restaurants qui ont reçu leur récap sans le confirmer.
 
 > Envoi automatique (plus tard) : la route `/api/cron/cloture` clôture et envoie les récaps via
 > l'API WhatsApp Cloud ou un webhook. Pour l'activer, ajoutez dans `vercel.json`
@@ -114,7 +114,7 @@ Variables d'environnement : voir [`.env.local.example`](./.env.local.example).
 * **Import Excel (.xlsx) ou CSV** : colonnes `Nom`, `Prénom`, `Téléphone`, `Service` (détection automatique des en-têtes, doublons ignorés, numéros à 9 chiffres complétés en +221).
 * **Menus de la semaine** (lundi → vendredi) avec **« Dupliquer la semaine précédente »**.
 * **Modification manuelle par le RH** d'un vote (y compris après 11h) : si la clôture est déjà faite, le récap traiteur est recalculé et le traiteur doit reconfirmer.
-* **Alerte 11h30** sur le cockpit si le traiteur n'a pas confirmé, avec bouton d'appel.
+* **Alerte 11h30** dans l'Espace RH si le restaurant n'a pas confirmé, avec bouton d'appel.
 * **Compte à rebours** sur la PWA employé, verrouillage automatique à l'heure limite, heure d'enregistrement du choix.
 * **Export Excel paie** (`/rh/export?mois=AAAA-MM&format=xlsx`) : onglets *Paie par service*, *Récap services*, *Facture traiteur*, *Détail jour par jour*.
 

@@ -15,7 +15,7 @@ export default function RhLoginPage() {
             <Utensils className="w-7 h-7" />
           </div>
           <h1 className="text-xl font-extrabold text-neutral-900">
-            Cockpit RH <span className="text-orange-600">Cantine Pro</span>
+            Espace RH <span className="text-orange-600">Cantine Pro</span>
           </h1>
           <p className="text-xs text-neutral-500 mt-1">
             Connectez-vous avec le code remis lors de l&apos;ouverture de votre essai.

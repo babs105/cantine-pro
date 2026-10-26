@@ -18,7 +18,7 @@ export type ResultatEnvoi =
  *    - avec WHATSAPP_TEMPLATE_NAME : message template (obligatoire hors fenêtre de 24h)
  *    - sinon : message texte libre (le traiteur doit avoir écrit au numéro dans les 24h)
  * 2. Webhook générique (WHATSAPP_WEBHOOK_URL) : Make, Zapier, n8n, CallMeBot...
- * 3. Aucun canal configuré : "manuel", le RH utilise le bouton WhatsApp du cockpit.
+ * 3. Aucun canal configuré : "manuel", le RH utilise le bouton WhatsApp de l'Espace RH.
  */
 export async function envoyerWhatsApp(envoi: EnvoiWhatsApp): Promise<ResultatEnvoi> {
   const to = envoi.to.replace(/\D/g, "");

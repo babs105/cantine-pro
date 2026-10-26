@@ -83,7 +83,7 @@ async function getRestaurantsDuJour(supabase: Supabase, companyId: string, date:
 /**
  * Clôture de 11h10 d'une entreprise : pour chaque restaurant du menu du jour, fige le récapitulatif
  * de ses plats dans `clotures`. Avec `envoyer`, le récap part aussi automatiquement (WhatsApp / webhook) ;
- * sinon le RH l'envoie lui-même depuis le cockpit. Idempotent : un récap déjà envoyé n'est pas modifié.
+ * sinon le RH l'envoie lui-même depuis l'Espace RH. Idempotent : un récap déjà envoyé n'est pas modifié.
  */
 export async function cloturerEntreprise(
   supabase: Supabase,
