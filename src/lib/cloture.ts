@@ -164,28 +164,55 @@ export async function cloturerEntreprise(
 
 /**
  * Après une modification manuelle du RH : recalcule les récapitulatifs des clôtures déjà faites
- * (chaque page restaurant affiche alors les bonnes quantités). Retourne vrai si une clôture existait.
+ * (chaque page restaurant affiche alors les bonnes quantités). Un récap déjà envoyé dont les quantités
+ * changent repasse « à envoyer ». Retourne les noms des restaurants à qui le récap doit être renvoyé.
  */
 export async function rafraichirRecapCloture(
   supabase: Supabase,
   companyId: string,
   date: string
-): Promise<boolean> {
+): Promise<string[]> {
   const { data: clotures } = await supabase
     .from("clotures")
-    .select("id, restaurant_id, recap")
+    .select("id, restaurant_id, recap, envoi_statut, confirme_at, restaurants(nom, token, heure_livraison)")
     .eq("company_id", companyId)
     .eq("date", date);
-  if (!clotures || clotures.length === 0) return false;
+  if (!clotures || clotures.length === 0) return [];
 
+  const { data: company } = await supabase.from("companies").select("nom").eq("id", companyId).single();
   const commandes = await getCommandesDuJour(supabase, companyId, date);
+  const aRenvoyer: string[] = [];
+
   for (const cloture of clotures as any[]) {
+    // Un restaurant confirmé est figé (la modification RH est refusée en amont)
+    if (cloture.confirme_at) continue;
     const recap = buildRecap(commandes.filter((c) => c.restaurant_id === cloture.restaurant_id));
-    // Le restaurant ne doit reconfirmer que si ses propres quantités ont changé
-    const change = JSON.stringify(recap) !== JSON.stringify(cloture.recap);
+    if (JSON.stringify(recap) === JSON.stringify(cloture.recap)) continue;
+
+    const restaurant = cloture.restaurants;
+    const dejaEnvoye = cloture.envoi_statut === "envoye";
+    if (dejaEnvoye) aRenvoyer.push(restaurant?.nom || "Restaurant");
+
     await (supabase.from("clotures") as any)
-      .update({ recap, total_repas: totalRepas(recap), ...(change ? { confirme_at: null, confirme_par: null } : {}) })
+      .update({
+        recap,
+        total_repas: totalRepas(recap),
+        message: buildMessageTraiteur({
+          companyNom: (company as any)?.nom || "",
+          dateStr: formatDateLongue(date),
+          recap,
+          heureLivraison: restaurant?.heure_livraison ?? null,
+          lienConfirmation: restaurant ? lienRestaurant(restaurant) : "",
+        }),
+        ...(dejaEnvoye
+          ? {
+              envoi_statut: "manuel",
+              envoye_at: null,
+              envoi_erreur: "Récap modifié après l'envoi : renvoyez-le au restaurant.",
+            }
+          : {}),
+      })
       .eq("id", cloture.id);
   }
-  return true;
+  return aRenvoyer;
 }

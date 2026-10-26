@@ -275,6 +275,8 @@ export function RhDashboardClient({
       if (!res.success) {
         setActionError(res.message || "Modification impossible.");
         router.refresh();
+      } else if (res.aRenvoyer && res.aRenvoyer.length > 0) {
+        setActionInfo(`Récap modifié : renvoyez-le à ${res.aRenvoyer.join(", ")} avant sa confirmation.`);
       }
     });
   };
@@ -767,6 +769,8 @@ export function RhDashboardClient({
                       const cmd = commandes.find((c) => c.employe_id === emp.id);
                       const statut = cmd ? cmd.statut : "en_attente";
                       const valeurActuelle = statut === "choisi" ? `choisi:${cmd?.plat_id ?? ""}` : statut;
+                      // Figée dès que le restaurant de son plat a confirmé
+                      const commandeFigee = !!cmd?.restaurant_id && restaurantsConfirmes.has(cmd.restaurant_id);
                       return (
                         <tr key={emp.id} className="hover:bg-neutral-50/50 transition">
                           <td className="py-3 font-semibold text-neutral-900">{emp.nom}</td>
@@ -794,8 +798,11 @@ export function RhDashboardClient({
                             )}
                           </td>
                           <td className="py-3 font-medium text-neutral-800">
-                            {journeeCloturee ? (
-                              <span className="inline-flex items-center gap-1.5" title="Journée clôturée : modification impossible">
+                            {commandeFigee ? (
+                              <span
+                                className="inline-flex items-center gap-1.5"
+                                title={`${nomRestaurant(cmd?.restaurant_id) || "Restaurant"} a confirmé : modification impossible`}
+                              >
                                 <span>{cmd?.plat_titre || "-"}</span>
                                 {cmd?.modifie_par_rh && (
                                   <span className="text-[10px] bg-blue-50 text-blue-700 px-1.5 py-0.5 rounded-full font-semibold">
@@ -813,7 +820,11 @@ export function RhDashboardClient({
                                 className="text-xs px-2 py-1 rounded-lg border border-orange-300 bg-white focus:outline-none focus:ring-2 focus:ring-orange-500"
                               >
                                 {plats
-                                  .filter((p) => p.is_available || p.id === cmd?.plat_id)
+                                  .filter(
+                                    (p) =>
+                                      (p.is_available || p.id === cmd?.plat_id) &&
+                                      !(p.restaurant_id && restaurantsConfirmes.has(p.restaurant_id))
+                                  )
                                   .map((p) => (
                                     <option key={p.id} value={`choisi:${p.id}`}>
                                       {p.titre}

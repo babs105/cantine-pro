@@ -113,7 +113,7 @@ Variables d'environnement : voir [`.env.local.example`](./.env.local.example).
 
 * **Import Excel (.xlsx) ou CSV** : colonnes `Nom`, `Prénom`, `Téléphone`, `Service` (détection automatique des en-têtes, doublons ignorés, numéros à 9 chiffres complétés en +221).
 * **Menus de la semaine** (lundi → vendredi) avec **« Dupliquer la semaine précédente »**.
-* **Modification manuelle par le RH** d'une commande (y compris après 11h10) tant que la journée n'est pas clôturée : après « Clôturer la journée », les commandes sont verrouillées.
+* **Modification manuelle par le RH** d'une commande (y compris après 11h10 et après la clôture) tant que le restaurant concerné n'a pas confirmé. Si le récap avait déjà été envoyé, il est recalculé et repasse « à renvoyer ». Une fois le restaurant confirmé, ses commandes sont verrouillées.
 * **Alerte 11h30** dans l'Espace RH si le restaurant n'a pas confirmé, avec bouton d'appel.
 * **Compte à rebours** sur la PWA employé, verrouillage automatique à l'heure limite, heure d'enregistrement du choix.
 * **Export Excel paie** (`/rh/export?mois=AAAA-MM&format=xlsx`) : onglets *Paie par service*, *Récap services*, *Facture traiteur*, *Détail jour par jour*.

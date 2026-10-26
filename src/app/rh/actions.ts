@@ -6,7 +6,7 @@ import { generateToken, isSupabaseConfigured, todayDakar } from "@/lib/config";
 import { ajouterJours, isDateValide, joursOuvres, lundiDeLaSemaine } from "@/lib/dates";
 import { getRhCompanyId } from "@/lib/rh-session";
 import { lignesVersEmployes, parseCsv, parseFichierEmployes, type LigneEmploye } from "@/lib/excel";
-import { cloturerEntreprise } from "@/lib/cloture";
+import { cloturerEntreprise, rafraichirRecapCloture } from "@/lib/cloture";
 import { isApresHeureLimite } from "@/lib/dates";
 
 const CHAMPS_EMPLOYE = "id, nom, telephone, service, token, is_active";
@@ -371,7 +371,7 @@ export async function modifierCommandeRhAction(
   employeId: string,
   statut: "choisi" | "absent" | "ne_mange_pas" | "en_attente",
   platId: string | null
-): Promise<{ success: boolean; message?: string }> {
+): Promise<{ success: boolean; message?: string; aRenvoyer?: string[] }> {
   if (!isSupabaseConfigured()) return { success: true };
 
   const companyId = await getRhCompanyId();
@@ -388,14 +388,34 @@ export async function modifierCommandeRhAction(
     .maybeSingle();
   if (!emp) return { success: false, message: "Collaborateur introuvable." };
 
-  // Une fois la journée clôturée, les récaps sont figés : plus de modification possible
-  const { count: nbClotures } = await supabase
-    .from("clotures")
-    .select("id", { count: "exact", head: true })
+  // Une commande est figée dès que son restaurant a confirmé (lui-même ou par téléphone) :
+  // on refuse si l'ancien plat ou le nouveau plat appartient à un restaurant confirmé
+  const { data: confirmees } = await (supabase.from("clotures") as any)
+    .select("restaurant_id, restaurants(nom)")
     .eq("company_id", companyId)
-    .eq("date", today);
-  if (nbClotures) {
-    return { success: false, message: "Journée clôturée : la commande ne peut plus être modifiée." };
+    .eq("date", today)
+    .not("confirme_at", "is", null);
+  if (confirmees && confirmees.length > 0) {
+    const { data: actuelle } = await supabase
+      .from("commandes")
+      .select("menus_du_jour(restaurant_id)")
+      .eq("employe_id", employeId)
+      .eq("date", today)
+      .maybeSingle();
+    const { data: nouveauPlat } = platId
+      ? await supabase.from("menus_du_jour").select("restaurant_id").eq("id", platId).maybeSingle()
+      : { data: null };
+    const touches = [
+      (actuelle as any)?.menus_du_jour?.restaurant_id,
+      statut === "choisi" ? (nouveauPlat as any)?.restaurant_id : null,
+    ];
+    const bloquante = (confirmees as any[]).find((c) => touches.includes(c.restaurant_id));
+    if (bloquante) {
+      return {
+        success: false,
+        message: `${bloquante.restaurants?.nom || "Le restaurant"} a déjà confirmé sa commande : modification impossible.`,
+      };
+    }
   }
 
   if (statut === "en_attente") {
@@ -431,8 +451,10 @@ export async function modifierCommandeRhAction(
     if (error) return { success: false, message: error.message };
   }
 
+  // Journée déjà clôturée : les récaps des restaurants non confirmés suivent la modification
+  const aRenvoyer = await rafraichirRecapCloture(supabase, companyId, today);
   revalidatePath("/rh");
-  return { success: true };
+  return { success: true, aRenvoyer };
 }
 
 /**
