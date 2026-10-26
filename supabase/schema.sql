@@ -114,6 +114,11 @@ CREATE TABLE IF NOT EXISTS public.clotures (
     CONSTRAINT unique_cloture_company_jour UNIQUE (company_id, date)
 );
 
+-- Base créée avant la v1.1 : l'entreprise de démo existe déjà mais n'a pas de code RH
+UPDATE public.companies
+SET rh_code_hash = encode(digest('pilote-thies-2026', 'sha256'), 'hex')
+WHERE slug = 'pilote-thies' AND rh_code_hash IS NULL;
+
 -- 7. SÉCURITÉ : RLS ACTIVÉE SANS POLITIQUE
 -- Toutes les lectures/écritures passent par le serveur Next.js (clé service_role).
 -- La clé anon publique ne donne donc accès à aucune donnée (tokens employés inclus).

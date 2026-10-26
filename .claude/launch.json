@@ -4,7 +4,7 @@
     {
       "name": "cantine-pro",
       "runtimeExecutable": "npx",
-      "runtimeArgs": ["next", "start", "-p", "3124"],
+      "runtimeArgs": ["next", "dev", "-p", "3124"],
       "port": 3124
     }
   ]
