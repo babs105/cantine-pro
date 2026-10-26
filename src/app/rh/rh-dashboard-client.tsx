@@ -349,93 +349,96 @@ export function RhDashboardClient({
     document.body.removeChild(link);
   };
 
+  const onglets: Array<{
+    id: typeof activeTab;
+    label: string;
+    icone: typeof Clock;
+    compteur?: number;
+  }> = [
+    { id: "live", label: "Suivi Live", icone: Clock },
+    { id: "menus", label: "Menus Semaine", icone: Utensils },
+    { id: "restaurants", label: "Restaurants", icone: Store, compteur: restaurants.filter((r) => r.is_active).length },
+    { id: "employes", label: "Collaborateurs", icone: Users, compteur: totalEmployes },
+  ];
+
   return (
     <div className="min-h-screen bg-neutral-50 pb-16">
       {/* HEADER COCKPIT RH */}
       <header className="bg-white border-b border-neutral-200 sticky top-0 z-30 shadow-sm">
-        <div className="max-w-7xl mx-auto px-4 py-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-          <div>
-            <div className="flex items-center gap-2">
-              <span className="w-8 h-8 rounded-xl bg-orange-600 text-white flex items-center justify-center font-black text-sm shadow-md shadow-orange-600/30">
-                CP
-              </span>
-              <h1 className="text-xl font-extrabold text-neutral-900">
-                Cockpit RH — <span className="text-orange-600">{company.nom}</span>
-              </h1>
+        <div className="max-w-7xl mx-auto px-4">
+          <div className="pt-4 pb-3 flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <div className="flex items-center gap-2">
+                <span className="w-8 h-8 shrink-0 rounded-xl bg-orange-600 text-white flex items-center justify-center font-black text-sm shadow-md shadow-orange-600/30">
+                  CP
+                </span>
+                <h1 className="text-lg sm:text-xl font-extrabold text-neutral-900 truncate">
+                  Cockpit RH — <span className="text-orange-600">{company.nom}</span>
+                </h1>
+              </div>
+              <p className="text-xs text-neutral-500 mt-1">
+                Votes de {company.heure_ouverture_vote.slice(0, 5)} à {company.heure_limite_vote.slice(0, 5)}
+                {joursEssaiRestants !== null && (
+                  <>
+                    {" "}•{" "}
+                    <span className={joursEssaiRestants <= 3 ? "text-red-600 font-semibold" : ""}>
+                      {joursEssaiRestants > 0
+                        ? `Essai gratuit : ${joursEssaiRestants} jour(s) restant(s)`
+                        : "Essai gratuit terminé"}
+                    </span>
+                  </>
+                )}
+              </p>
             </div>
-            <p className="text-xs text-neutral-500 mt-0.5">
-              Votes de {company.heure_ouverture_vote.slice(0, 5)} à {company.heure_limite_vote.slice(0, 5)} • Le RH
-              clôture puis envoie les récaps aux restaurants
-              {joursEssaiRestants !== null && (
-                <>
-                  {" "}•{" "}
-                  <span className={joursEssaiRestants <= 3 ? "text-red-600 font-semibold" : ""}>
-                    {joursEssaiRestants > 0
-                      ? `Essai gratuit : ${joursEssaiRestants} jour(s) restant(s)`
-                      : "Essai gratuit terminé"}
-                  </span>
-                </>
-              )}
-            </p>
-          </div>
 
-          {/* Onglets Navigation */}
-          <nav className="flex flex-wrap items-center gap-1 bg-neutral-100 p-1 rounded-2xl">
-            <button
-              onClick={() => setActiveTab("live")}
-              className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition flex items-center gap-1.5 ${
-                activeTab === "live"
-                  ? "bg-white text-orange-600 shadow-sm"
-                  : "text-neutral-600 hover:text-neutral-900"
-              }`}
-            >
-              <Clock className="w-3.5 h-3.5" />
-              Suivi Live 11h
-            </button>
-            <button
-              onClick={() => setActiveTab("menus")}
-              className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition flex items-center gap-1.5 ${
-                activeTab === "menus"
-                  ? "bg-white text-orange-600 shadow-sm"
-                  : "text-neutral-600 hover:text-neutral-900"
-              }`}
-            >
-              <Utensils className="w-3.5 h-3.5" />
-              Menus Semaine
-            </button>
-            <button
-              onClick={() => setActiveTab("restaurants")}
-              className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition flex items-center gap-1.5 ${
-                activeTab === "restaurants"
-                  ? "bg-white text-orange-600 shadow-sm"
-                  : "text-neutral-600 hover:text-neutral-900"
-              }`}
-            >
-              <Store className="w-3.5 h-3.5" />
-              Restaurants ({restaurants.filter((r) => r.is_active).length})
-            </button>
-            <button
-              onClick={() => setActiveTab("employes")}
-              className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition flex items-center gap-1.5 ${
-                activeTab === "employes"
-                  ? "bg-white text-orange-600 shadow-sm"
-                  : "text-neutral-600 hover:text-neutral-900"
-              }`}
-            >
-              <Users className="w-3.5 h-3.5" />
-              Collaborateurs ({totalEmployes})
-            </button>
             {!isDemo && (
-              <form action={logoutRhAction}>
+              <form action={logoutRhAction} className="shrink-0">
                 <button
                   type="submit"
-                  title="Se déconnecter"
-                  className="px-2.5 py-1.5 rounded-xl text-xs font-bold text-neutral-500 hover:text-neutral-900 transition flex items-center"
+                  className="px-3 py-2 rounded-xl text-xs font-semibold text-neutral-600 hover:text-neutral-900 hover:bg-neutral-100 transition flex items-center gap-1.5"
                 >
-                  <LogOut className="w-3.5 h-3.5" />
+                  <LogOut className="w-4 h-4" />
+                  <span className="hidden sm:inline">Déconnexion</span>
                 </button>
               </form>
             )}
+          </div>
+
+          {/* Onglets Navigation : une seule ligne, défilable sur téléphone */}
+          <nav className="-mb-px flex gap-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+            {onglets.map((onglet) => {
+              const Icone = onglet.icone;
+              const actif = activeTab === onglet.id;
+              return (
+                <button
+                  key={onglet.id}
+                  type="button"
+                  onClick={(e) => {
+                    setActiveTab(onglet.id);
+                    // Sur téléphone, ramène l'onglet choisi entièrement dans la zone visible
+                    e.currentTarget.scrollIntoView({ inline: "nearest", block: "nearest", behavior: "smooth" });
+                  }}
+                  aria-current={actif ? "page" : undefined}
+                  className={`shrink-0 whitespace-nowrap px-3 sm:px-4 py-2.5 border-b-2 text-sm font-bold transition flex items-center gap-1.5 ${
+                    actif
+                      ? "border-orange-600 text-orange-600"
+                      : "border-transparent text-neutral-500 hover:text-neutral-900 hover:border-neutral-300"
+                  }`}
+                >
+                  <Icone className="w-4 h-4" />
+                  {onglet.label}
+                  {onglet.compteur !== undefined && (
+                    <span
+                      className={`text-[11px] px-1.5 py-0.5 rounded-full ${
+                        actif ? "bg-orange-100 text-orange-700" : "bg-neutral-100 text-neutral-500"
+                      }`}
+                    >
+                      {onglet.compteur}
+                    </span>
+                  )}
+                </button>
+              );
+            })}
           </nav>
         </div>
       </header>

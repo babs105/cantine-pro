@@ -1,6 +1,6 @@
 {
   "name": "Cantine Pro",
-  "short_name": "CantinePro",
+  "short_name": "Cantine Pro",
   "description": "Choisissez votre repas d'entreprise en 2 clics",
   "start_url": "/",
   "display": "standalone",
