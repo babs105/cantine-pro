@@ -392,18 +392,32 @@ export function RhDashboardClient({
                   </p>
                 </div>
 
-                <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center gap-2">
+                  {company.traiteur_telephone ? (
+                    <a
+                      href={`https://wa.me/${company.traiteur_telephone.replace(/\D/g, "")}?text=${encodeURIComponent(
+                        getWhatsAppTraiteurText()
+                      )}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 active:scale-98 text-white font-bold text-xs rounded-xl shadow-sm shadow-emerald-600/20 transition flex items-center gap-2"
+                    >
+                      <Send className="w-4 h-4" />
+                      Envoyer au Traiteur (WhatsApp)
+                    </a>
+                  ) : null}
+
                   <button
                     onClick={copyWhatsAppTraiteur}
-                    className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 active:scale-98 text-white font-bold text-xs rounded-xl shadow-sm shadow-emerald-600/20 transition flex items-center gap-2"
+                    className="px-3.5 py-2 bg-neutral-100 hover:bg-neutral-200 active:scale-98 text-neutral-800 font-semibold text-xs rounded-xl transition flex items-center gap-1.5"
                   >
-                    {copyTraiteurSuccess ? <Check className="w-4 h-4" /> : <MessageCircle className="w-4 h-4" />}
-                    {copyTraiteurSuccess ? "Copié !" : "Copier format WhatsApp"}
+                    {copyTraiteurSuccess ? <Check className="w-4 h-4 text-emerald-600" /> : <Copy className="w-4 h-4 text-neutral-500" />}
+                    {copyTraiteurSuccess ? "Copié !" : "Copier le texte"}
                   </button>
 
                   <button
                     onClick={exportComptableCSV}
-                    className="px-4 py-2 bg-neutral-100 hover:bg-neutral-200 active:scale-98 text-neutral-700 font-semibold text-xs rounded-xl transition flex items-center gap-2"
+                    className="px-3.5 py-2 bg-neutral-100 hover:bg-neutral-200 active:scale-98 text-neutral-700 font-semibold text-xs rounded-xl transition flex items-center gap-1.5"
                   >
                     <Download className="w-4 h-4" />
                     Export CSV

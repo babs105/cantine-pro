@@ -1,5 +1,11 @@
 {
   "framework": "nextjs",
+  "crons": [
+    {
+      "path": "/api/cron/cloture",
+      "schedule": "5 11 * * 1-5"
+    }
+  ],
   "headers": [
     {
       "source": "/icon.svg",
