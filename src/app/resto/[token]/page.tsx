@@ -1,4 +1,12 @@
-import { CheckCircle2, Utensils, MapPin, Phone, ShieldCheck } from "lucide-react";
+import { notFound } from "next/navigation";
+import { Utensils, MapPin, ShieldCheck } from "lucide-react";
+import { createClient } from "@/lib/supabase/server";
+import { isSupabaseConfigured, todayDakar } from "@/lib/config";
+import { formatDateLongue, getCommandesDuJour } from "@/lib/cloture";
+import { buildRecap, formatHeure } from "@/lib/recap";
+import { ConfirmButton } from "./confirm-button";
+
+export const dynamic = "force-dynamic";
 
 interface RestoPageProps {
   params: Promise<{ token: string }>;
@@ -6,20 +14,57 @@ interface RestoPageProps {
 
 export default async function TraiteurValidationPage({ params }: RestoPageProps) {
   const { token } = await params;
+  const today = todayDakar();
+  const dateStr = formatDateLongue(today);
 
   // Données de démonstration pour le traiteur
-  const dateStr = new Intl.DateTimeFormat("fr-FR", {
-    weekday: "long",
-    day: "numeric",
-    month: "long",
-    year: "numeric",
-  }).format(new Date());
-
-  const recap = [
-    { plat: "Thiéboudienne Rouge Penda Mbaye", quantite: 18 },
-    { plat: "Yassa Poulet au Feu de Bois", quantite: 12 },
-    { plat: "Soupou Kandia (Sauce Gombo)", quantite: 4 },
+  let traiteurNom = "Chez Fatou Traiteur Thiès";
+  let companyNom = "Pilote Thiès Innovation";
+  let heureLivraison: string | null = "12:30:00";
+  let recap = [
+    { plat_titre: "Thiéboudienne Rouge Penda Mbaye", quantite: 18, prix_unitaire: 1500 },
+    { plat_titre: "Yassa Poulet au Feu de Bois", quantite: 12, prix_unitaire: 1500 },
+    { plat_titre: "Soupou Kandia (Sauce Gombo)", quantite: 4, prix_unitaire: 1700 },
   ];
+  let isCloture = true;
+  let confirmeAt: string | null = null;
+
+  if (isSupabaseConfigured()) {
+    const supabase = await createClient();
+    const { data: rawComp } = await supabase
+      .from("companies")
+      .select("id, nom, traiteur_nom, heure_livraison_souhaitee")
+      .eq("traiteur_token", token)
+      .maybeSingle();
+
+    const comp: any = rawComp;
+    if (!comp) {
+      notFound();
+    }
+
+    traiteurNom = comp.traiteur_nom || "Traiteur partenaire";
+    companyNom = comp.nom;
+    heureLivraison = comp.heure_livraison_souhaitee;
+
+    const { data: rawCloture } = await supabase
+      .from("clotures")
+      .select("recap, confirme_at")
+      .eq("company_id", comp.id)
+      .eq("date", today)
+      .maybeSingle();
+
+    const cloture: any = rawCloture;
+    if (cloture) {
+      // Récapitulatif figé à 11h05 : c'est ce qui a été envoyé au traiteur
+      recap = cloture.recap;
+      confirmeAt = cloture.confirme_at;
+      isCloture = true;
+    } else {
+      // Avant la clôture : aperçu des votes en cours
+      recap = buildRecap(await getCommandesDuJour(supabase, comp.id, today));
+      isCloture = false;
+    }
+  }
 
   const totalPlats = recap.reduce((acc, curr) => acc + curr.quantite, 0);
 
@@ -30,22 +75,18 @@ export default async function TraiteurValidationPage({ params }: RestoPageProps)
         <div className="bg-neutral-800 rounded-3xl p-5 border border-neutral-700 shadow-xl mb-4">
           <div className="flex items-center justify-between text-xs font-semibold text-orange-400 uppercase tracking-wider mb-2">
             <span>Passerelle Traiteur</span>
-            <span>Clôture 11h05</span>
+            <span>{isCloture ? "Clôturé 11h05" : "Votes en cours"}</span>
           </div>
 
           <h1 className="text-xl font-black text-white flex items-center gap-2">
             <Utensils className="w-5 h-5 text-orange-500" />
-            Chez Fatou Traiteur Thiès
+            {traiteurNom}
           </h1>
 
           <div className="mt-2 text-xs text-neutral-400 space-y-1">
             <div className="flex items-center gap-2">
               <MapPin className="w-3.5 h-3.5 text-neutral-400" />
-              <span>Livraison : Pilote Thiès Innovation (Quartier Dixième)</span>
-            </div>
-            <div className="flex items-center gap-2">
-              <Phone className="w-3.5 h-3.5 text-neutral-400" />
-              <span>Contact RH : +221 77 123 45 67</span>
+              <span>Livraison : {companyNom}</span>
             </div>
           </div>
         </div>
@@ -57,18 +98,23 @@ export default async function TraiteurValidationPage({ params }: RestoPageProps)
               Commande du {dateStr}
             </span>
             <span className="bg-orange-500/20 text-orange-400 border border-orange-500/30 text-xs px-2.5 py-0.5 rounded-full font-bold">
-              {totalPlats} repas
+              {totalPlats} repas{isCloture ? "" : " (provisoire)"}
             </span>
           </div>
 
           <div className="space-y-3">
+            {recap.length === 0 && (
+              <div className="text-center py-4 text-xs text-neutral-500">
+                Aucun repas commandé pour le moment.
+              </div>
+            )}
             {recap.map((item, idx) => (
               <div
                 key={idx}
                 className="flex items-center justify-between p-3 rounded-2xl bg-neutral-900/60 border border-neutral-700/50"
               >
                 <span className="text-sm font-medium text-neutral-200">
-                  {item.plat}
+                  {item.plat_titre}
                 </span>
                 <span className="text-base font-black text-orange-400 px-3 py-1 rounded-xl bg-orange-950/60 border border-orange-800/40">
                   {item.quantite}x
@@ -79,7 +125,7 @@ export default async function TraiteurValidationPage({ params }: RestoPageProps)
 
           <div className="mt-4 pt-3 border-t border-neutral-700 flex justify-between items-center text-xs text-neutral-400">
             <span>Heure de livraison convenue :</span>
-            <span className="text-sm font-bold text-white">12h30</span>
+            <span className="text-sm font-bold text-white">{formatHeure(heureLivraison)}</span>
           </div>
         </div>
 
@@ -88,13 +134,12 @@ export default async function TraiteurValidationPage({ params }: RestoPageProps)
           <div className="text-xs text-neutral-300">
             Confirmez la bonne réception de la commande en un clic pour rassurer l&apos;entreprise :
           </div>
-          <button
-            type="button"
-            className="w-full py-3.5 px-4 bg-emerald-600 hover:bg-emerald-500 active:scale-98 text-white font-bold text-sm rounded-2xl shadow-lg shadow-emerald-900/30 transition flex items-center justify-center gap-2"
-          >
-            <CheckCircle2 className="w-5 h-5" />
-            Confirmer la préparation (34 repas)
-          </button>
+          <ConfirmButton
+            token={token}
+            totalRepas={totalPlats}
+            confirmeAt={confirmeAt}
+            isCloture={isCloture}
+          />
         </div>
       </div>
 

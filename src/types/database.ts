@@ -6,6 +6,14 @@ export type Json =
   | { [key: string]: Json | undefined }
   | Json[];
 
+export type EnvoiStatut = "en_attente" | "envoye" | "echec" | "manuel";
+
+export interface RecapLigne {
+  plat_titre: string;
+  quantite: number;
+  prix_unitaire: number;
+}
+
 export interface Database {
   public: {
     Tables: {
@@ -21,6 +29,8 @@ export interface Database {
           traiteur_telephone: string | null;
           trial_ends_at: string;
           is_active: boolean;
+          rh_code_hash: string | null;
+          traiteur_token: string;
           created_at: string;
         };
         Insert: {
@@ -34,6 +44,8 @@ export interface Database {
           traiteur_telephone?: string | null;
           trial_ends_at?: string;
           is_active?: boolean;
+          rh_code_hash?: string | null;
+          traiteur_token?: string;
           created_at?: string;
         };
         Update: {
@@ -47,6 +59,8 @@ export interface Database {
           traiteur_telephone?: string | null;
           trial_ends_at?: string;
           is_active?: boolean;
+          rh_code_hash?: string | null;
+          traiteur_token?: string;
           created_at?: string;
         };
       };
@@ -57,6 +71,7 @@ export interface Database {
           nom: string;
           telephone: string | null;
           token: string;
+          service: string;
           is_active: boolean;
           created_at: string;
         };
@@ -66,6 +81,7 @@ export interface Database {
           nom: string;
           telephone?: string | null;
           token?: string;
+          service?: string;
           is_active?: boolean;
           created_at?: string;
         };
@@ -75,6 +91,7 @@ export interface Database {
           nom?: string;
           telephone?: string | null;
           token?: string;
+          service?: string;
           is_active?: boolean;
           created_at?: string;
         };
@@ -120,6 +137,7 @@ export interface Database {
           date: string;
           statut: "choisi" | "absent" | "ne_mange_pas";
           remarque: string | null;
+          modifie_par_rh: boolean;
           created_at: string;
           updated_at: string;
         };
@@ -131,6 +149,7 @@ export interface Database {
           date?: string;
           statut: "choisi" | "absent" | "ne_mange_pas";
           remarque?: string | null;
+          modifie_par_rh?: boolean;
           created_at?: string;
           updated_at?: string;
         };
@@ -142,8 +161,46 @@ export interface Database {
           date?: string;
           statut?: "choisi" | "absent" | "ne_mange_pas";
           remarque?: string | null;
+          modifie_par_rh?: boolean;
           created_at?: string;
           updated_at?: string;
+        };
+      };
+      clotures: {
+        Row: {
+          id: string;
+          company_id: string;
+          date: string;
+          recap: RecapLigne[];
+          total_repas: number;
+          message: string | null;
+          envoi_statut: EnvoiStatut;
+          envoi_erreur: string | null;
+          envoye_at: string | null;
+          confirme_at: string | null;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          company_id: string;
+          date: string;
+          recap?: RecapLigne[];
+          total_repas?: number;
+          message?: string | null;
+          envoi_statut?: EnvoiStatut;
+          envoi_erreur?: string | null;
+          envoye_at?: string | null;
+          confirme_at?: string | null;
+          created_at?: string;
+        };
+        Update: {
+          recap?: RecapLigne[];
+          total_repas?: number;
+          message?: string | null;
+          envoi_statut?: EnvoiStatut;
+          envoi_erreur?: string | null;
+          envoye_at?: string | null;
+          confirme_at?: string | null;
         };
       };
     };

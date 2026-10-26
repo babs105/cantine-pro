@@ -1,25 +1,23 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
+import { isApresHeureLimite, isSupabaseConfigured, todayDakar } from "@/lib/config";
+import { cloturerEntreprise } from "@/lib/cloture";
+
+export const dynamic = "force-dynamic";
 
 export async function GET(request: Request) {
-  // Optionnel : Sécurisation par token Vercel Cron
+  // Sécurisation par token Vercel Cron (Authorization: Bearer CRON_SECRET)
   const authHeader = request.headers.get("authorization");
-  if (
-    process.env.CRON_SECRET &&
-    authHeader !== `Bearer ${process.env.CRON_SECRET}`
-  ) {
+  if (process.env.CRON_SECRET && authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
     return NextResponse.json({ error: "Non autorisé" }, { status: 401 });
   }
+  if (!process.env.CRON_SECRET && process.env.NODE_ENV === "production") {
+    return NextResponse.json({ error: "CRON_SECRET non configuré" }, { status: 500 });
+  }
 
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const isSupabaseConfigured =
-    supabaseUrl &&
-    supabaseUrl !== "https://votre-projet.supabase.co" &&
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  const today = todayDakar();
 
-  const today = new Date().toISOString().split("T")[0];
-
-  if (!isSupabaseConfigured) {
+  if (!isSupabaseConfigured()) {
     return NextResponse.json({
       status: "simulation",
       message: "Clôture 11h05 simulée avec succès (Supabase non connecté)",
@@ -37,22 +35,40 @@ export async function GET(request: Request) {
 
   try {
     const supabase = await createClient();
-
-    // 1. Récupération des totaux par plat depuis la vue d'agrégation
-    const { data: recap, error: recapError } = await supabase
-      .from("vue_recapitulatif_traiteur")
+    const { data: companies, error } = await supabase
+      .from("companies")
       .select("*")
-      .eq("date", today);
+      .eq("is_active", true);
 
-    if (recapError) {
-      return NextResponse.json({ error: recapError.message }, { status: 500 });
+    if (error) {
+      return NextResponse.json({ error: error.message }, { status: 500 });
+    }
+
+    const resultats = [];
+    for (const company of (companies || []) as any[]) {
+      // Une entreprise avec une heure limite plus tardive sera clôturée au prochain passage
+      if (!isApresHeureLimite(company.heure_limite_vote)) {
+        resultats.push({ company: company.nom, statut: "votes_en_cours" });
+        continue;
+      }
+      try {
+        const cloture = await cloturerEntreprise(supabase, company, today);
+        resultats.push({
+          company: company.nom,
+          total_repas: cloture.total_repas,
+          envoi: cloture.envoi_statut,
+          erreur: cloture.envoi_erreur,
+        });
+      } catch (err: any) {
+        resultats.push({ company: company.nom, statut: "erreur", erreur: err.message });
+      }
     }
 
     return NextResponse.json({
       status: "success",
       cloture_at: new Date().toISOString(),
       date: today,
-      recapitulatifs: recap,
+      resultats,
     });
   } catch (err: any) {
     return NextResponse.json({ error: err.message }, { status: 500 });

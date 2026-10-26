@@ -1,28 +1,19 @@
-import { createServerClient } from "@supabase/ssr";
-import { cookies } from "next/headers";
+import "server-only";
+import { createClient as createSupabaseClient } from "@supabase/supabase-js";
 import { Database } from "@/types/database";
 
+/**
+ * Client Supabase côté serveur avec la clé service_role.
+ * La RLS est activée sans politique : la clé anon publique ne lit rien,
+ * toutes les requêtes passent par le serveur et sont filtrées par token / entreprise.
+ */
 export async function createClient() {
-  const cookieStore = await cookies();
+  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!serviceKey) {
+    throw new Error("SUPABASE_SERVICE_ROLE_KEY manquante dans l'environnement.");
+  }
 
-  return createServerClient<Database>(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-    {
-      cookies: {
-        getAll() {
-          return cookieStore.getAll();
-        },
-        setAll(cookiesToSet: { name: string; value: string; options: any }[]) {
-          try {
-            cookiesToSet.forEach(({ name, value, options }) =>
-              cookieStore.set(name, value, options)
-            );
-          } catch {
-            // Ignoré si appelé depuis un Server Component pur
-          }
-        },
-      },
-    }
-  );
+  return createSupabaseClient<Database>(process.env.NEXT_PUBLIC_SUPABASE_URL!, serviceKey, {
+    auth: { persistSession: false, autoRefreshToken: false },
+  });
 }

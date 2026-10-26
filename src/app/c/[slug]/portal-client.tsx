@@ -3,7 +3,7 @@
 import { useState, useTransition } from "react";
 import Link from "next/link";
 import { Utensils, Search, User, ArrowRight, UserPlus, Clock } from "lucide-react";
-import { addEmployeAction } from "@/app/rh/actions";
+import { inscriptionEmployeAction } from "./actions";
 
 interface EmployeBasic {
   id: string;
@@ -41,17 +41,13 @@ export function EnterprisePortalClient({
     if (!newNom.trim()) return;
 
     startTransition(async () => {
-      const res = await addEmployeAction(company.id, newNom.trim(), newTel.trim() || undefined);
-      if (res.success && res.employe) {
-        setEmployes((prev) => [
-          {
-            id: res.employe.id,
-            nom: res.employe.nom,
-            token: res.employe.token,
-          },
-          ...prev,
-        ]);
-        window.location.href = `/p/${res.employe.token}`;
+      const res = await inscriptionEmployeAction(company.slug, newNom.trim(), newTel.trim() || undefined);
+      const nouvelEmploye = res.employe;
+      if (res.success && nouvelEmploye) {
+        setEmployes((prev) => [nouvelEmploye, ...prev]);
+        window.location.href = `/p/${nouvelEmploye.token}`;
+      } else {
+        window.alert(res.message || "Inscription impossible, contactez votre RH.");
       }
     });
   };

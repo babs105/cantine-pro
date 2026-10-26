@@ -1,34 +1,41 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useEffect, useState, useTransition } from "react";
+import { useRouter } from "next/navigation";
 import {
   Utensils,
   Users,
   Clock,
   Download,
-  Share2,
   Plus,
   Check,
   Copy,
   AlertCircle,
   FileSpreadsheet,
-  ToggleLeft,
-  ToggleRight,
   Send,
   MessageCircle,
+  LogOut,
+  RefreshCw,
+  UserX,
+  Pencil,
+  PhoneCall,
 } from "lucide-react";
-import { formatFCFA } from "@/lib/utils";
+import { buildMessageTraiteur, buildRecap, formatHeure } from "@/lib/recap";
 import {
   addEmployeAction,
-  importEmployesCSVAction,
-  addMenuPlatAction,
-  togglePlatDisponibiliteAction,
+  desactiverEmployeAction,
+  modifierCommandeRhAction,
+  modifierServiceEmployeAction,
 } from "./actions";
+import { logoutRhAction } from "./login/actions";
+import { MenusSemaine, type PlatSemaine } from "./menus-semaine";
+import { ImportEmployesModal } from "./import-employes-modal";
 
 interface Employe {
   id: string;
   nom: string;
   telephone: string | null;
+  service: string;
   token: string;
   is_active: boolean;
 }
@@ -46,9 +53,13 @@ interface CommandeItem {
   employe_nom: string;
   telephone: string | null;
   statut: "choisi" | "absent" | "ne_mange_pas" | "en_attente";
+  plat_id?: string | null;
   plat_titre?: string;
   prix?: number;
+  modifie_par_rh?: boolean;
 }
+
+type StatutVote = CommandeItem["statut"];
 
 interface RhDashboardClientProps {
   company: {
@@ -58,23 +69,48 @@ interface RhDashboardClientProps {
     traiteur_nom: string | null;
     traiteur_telephone: string | null;
     heure_limite_vote: string;
+    heure_livraison_souhaitee: string | null;
+    trial_ends_at: string | null;
   };
   initialEmployes: Employe[];
   initialPlats: Plat[];
+  platsSemaine: PlatSemaine[];
+  semaineLundi: string;
+  todayDate: string;
   initialCommandes: CommandeItem[];
+  alerteTraiteur: boolean;
+  cloture: {
+    envoi_statut: "en_attente" | "envoye" | "echec" | "manuel";
+    envoi_erreur: string | null;
+    envoye_at: string | null;
+    confirme_at: string | null;
+    total_repas: number;
+  } | null;
+  lienTraiteur: string;
   appBaseUrl: string;
+  isDemo: boolean;
 }
+
+const REFRESH_INTERVAL_MS = 20_000;
 
 export function RhDashboardClient({
   company,
   initialEmployes,
   initialPlats,
+  platsSemaine,
+  semaineLundi,
+  todayDate,
   initialCommandes,
+  alerteTraiteur,
+  cloture,
+  lienTraiteur,
   appBaseUrl,
+  isDemo,
 }: RhDashboardClientProps) {
+  const router = useRouter();
   const [activeTab, setActiveTab] = useState<"live" | "menus" | "employes">("live");
   const [employes, setEmployes] = useState<Employe[]>(initialEmployes);
-  const [plats, setPlats] = useState<Plat[]>(initialPlats);
+  const plats = initialPlats; // plats d'aujourd'hui, pour la saisie manuelle des votes
   const [commandes, setCommandes] = useState<CommandeItem[]>(initialCommandes);
   const [copiedToken, setCopiedToken] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
@@ -82,14 +118,32 @@ export function RhDashboardClient({
   // États formulaires
   const [newNom, setNewNom] = useState("");
   const [newTel, setNewTel] = useState("");
-  const [csvText, setCsvText] = useState("");
+  const [newService, setNewService] = useState("");
   const [showCsvModal, setShowCsvModal] = useState(false);
-
-  const [newPlatTitre, setNewPlatTitre] = useState("");
-  const [newPlatPrix, setNewPlatPrix] = useState("1500");
-  const [newPlatDesc, setNewPlatDesc] = useState("");
+  const [editingVote, setEditingVote] = useState<string | null>(null);
+  const [filtreStatut, setFiltreStatut] = useState<StatutVote | "tous">("tous");
+  const [recherche, setRecherche] = useState("");
+  const [actionInfo, setActionInfo] = useState<string | null>(null);
 
   const [copyTraiteurSuccess, setCopyTraiteurSuccess] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
+
+  // Les données serveur (rafraîchies) font foi
+  useEffect(() => setEmployes(initialEmployes), [initialEmployes]);
+  useEffect(() => setCommandes(initialCommandes), [initialCommandes]);
+
+  // Suivi live : rafraîchissement automatique des votes (Jour 6)
+  useEffect(() => {
+    if (isDemo || activeTab !== "live") return;
+    const interval = setInterval(() => {
+      if (document.visibilityState === "visible") router.refresh();
+    }, REFRESH_INTERVAL_MS);
+    return () => clearInterval(interval);
+  }, [isDemo, activeTab, router]);
+
+  const joursEssaiRestants = company.trial_ends_at
+    ? Math.ceil((new Date(company.trial_ends_at).getTime() - Date.now()) / 86_400_000)
+    : null;
 
   // Statistiques calculées en temps réel
   const totalEmployes = employes.length;
@@ -99,12 +153,10 @@ export function RhDashboardClient({
   const countEnAttente = Math.max(0, totalEmployes - (countChoisi + countAbsent + countNeMangePas));
 
   // Décompte par plat
-  const breakdownPlats: Record<string, number> = {};
-  commandes
-    .filter((c) => c.statut === "choisi" && c.plat_titre)
-    .forEach((c) => {
-      breakdownPlats[c.plat_titre!] = (breakdownPlats[c.plat_titre!] || 0) + 1;
-    });
+  const recap = buildRecap(commandes);
+  const breakdownPlats: Record<string, number> = Object.fromEntries(
+    recap.map((l) => [l.plat_titre, l.quantite])
+  );
 
   // Copier le lien d'un collaborateur
   const copyLienEmploye = (token: string) => {
@@ -120,92 +172,72 @@ export function RhDashboardClient({
     if (!newNom.trim()) return;
 
     startTransition(async () => {
-      const res = await addEmployeAction(company.id, newNom.trim(), newTel.trim());
+      const res = await addEmployeAction(newNom.trim(), newTel.trim(), newService.trim());
       if (res.success && res.employe) {
         setEmployes((prev) => [res.employe, ...prev]);
         setNewNom("");
         setNewTel("");
+        setActionError(null);
+      } else {
+        setActionError(res.message || "Impossible d'ajouter le collaborateur.");
       }
     });
   };
 
-  // Import CSV en masse
-  const handleImportCSV = () => {
-    if (!csvText.trim()) return;
-
-    const lines = csvText.split("\n");
-    const parsedRows: Array<{ nom: string; telephone?: string }> = [];
-
-    lines.forEach((line) => {
-      const trimmed = line.trim();
-      if (!trimmed) return;
-      // Séparateurs acceptés : virgule, point-virgule ou tabulation
-      const parts = trimmed.split(/[,;\t]/);
-      if (parts.length >= 1 && parts[0].trim()) {
-        parsedRows.push({
-          nom: parts[0].trim(),
-          telephone: parts[1]?.trim() || undefined,
-        });
-      }
+  // Modification manuelle d'un vote par le RH (employé qui appelle, oubli...)
+  const modifierVote = (emp: Employe, valeur: string) => {
+    const [statut, platId] = valeur.split(":") as [StatutVote, string | undefined];
+    const plat = plats.find((p) => p.id === platId);
+    setEditingVote(null);
+    setCommandes((prev) => {
+      const autres = prev.filter((c) => c.employe_id !== emp.id);
+      if (statut === "en_attente") return autres;
+      return [
+        ...autres,
+        {
+          employe_id: emp.id,
+          employe_nom: emp.nom,
+          telephone: emp.telephone,
+          statut,
+          plat_id: plat?.id ?? null,
+          plat_titre: plat?.titre,
+          prix: plat?.prix_unitaire,
+          modifie_par_rh: true,
+        },
+      ];
     });
-
-    if (parsedRows.length === 0) return;
-
     startTransition(async () => {
-      const res = await importEmployesCSVAction(company.id, parsedRows);
-      if (res.success) {
-        // En mode démo local, générer les entrées
-        const newItems: Employe[] = parsedRows.map((r, i) => ({
-          id: "imported-" + Date.now() + "-" + i,
-          nom: r.nom,
-          telephone: r.telephone || null,
-          token: "token-" + Math.random().toString(36).substring(2, 10),
-          is_active: true,
-        }));
-        setEmployes((prev) => [...newItems, ...prev]);
-        setCsvText("");
-        setShowCsvModal(false);
+      const res = await modifierCommandeRhAction(emp.id, statut, platId ?? null);
+      if (!res.success) {
+        setActionError(res.message || "Modification impossible.");
+        router.refresh();
+      } else if (res.clotureMiseAJour) {
+        setActionInfo(
+          "Récapitulatif traiteur mis à jour : prévenez le traiteur, il doit reconfirmer les nouvelles quantités."
+        );
       }
     });
   };
 
-  // Ajout d'un plat au menu
-  const handleAddPlat = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!newPlatTitre.trim()) return;
-
-    const prix = parseInt(newPlatPrix, 10) || 1500;
-
+  const changerService = (emp: Employe, service: string) => {
+    if (service.trim() === emp.service) return;
+    setEmployes((prev) => prev.map((e) => (e.id === emp.id ? { ...e, service: service.trim() || "Général" } : e)));
     startTransition(async () => {
-      const res = await addMenuPlatAction(
-        company.id,
-        newPlatTitre.trim(),
-        prix,
-        newPlatDesc.trim() || undefined
-      );
-      if (res.success && res.plat) {
-        setPlats((prev) => [...prev, res.plat]);
-        setNewPlatTitre("");
-        setNewPlatDesc("");
-      }
+      await modifierServiceEmployeAction(emp.id, service);
     });
   };
 
-  // Basculer disponibilité d'un plat
-  const togglePlat = (platId: string, currentStatus: boolean) => {
-    setPlats((prev) =>
-      prev.map((p) => (p.id === platId ? { ...p, is_available: !currentStatus } : p))
-    );
-    startTransition(async () => {
-      await togglePlatDisponibiliteAction(platId, !currentStatus);
-    });
-  };
+  const services = Array.from(new Set(employes.map((e) => e.service || "Général"))).sort((a, b) =>
+    a.localeCompare(b, "fr")
+  );
 
-  // Pré-remplissage plat rapide
-  const quickAddPlat = (titre: string, prix: number, desc: string) => {
-    setNewPlatTitre(titre);
-    setNewPlatPrix(prix.toString());
-    setNewPlatDesc(desc);
+  // Désactiver un collaborateur (son lien ne fonctionne plus)
+  const desactiverEmploye = (emp: Employe) => {
+    if (!window.confirm(`Désactiver ${emp.nom} ? Son lien de vote ne fonctionnera plus.`)) return;
+    setEmployes((prev) => prev.filter((e) => e.id !== emp.id));
+    startTransition(async () => {
+      await desactiverEmployeAction(emp.id);
+    });
   };
 
   // Génération du message WhatsApp pour le traiteur
@@ -215,23 +247,20 @@ export function RhDashboardClient({
     year: "numeric",
   }).format(new Date());
 
-  const getWhatsAppTraiteurText = () => {
-    let msg = `🍽️ *COMMANDE CANTINE PRO — ${company.nom.toUpperCase()}*\n`;
-    msg += `📅 Date : ${dateStr} (Clôture 11h05)\n`;
-    msg += `--------------------------------------\n`;
-    if (Object.keys(breakdownPlats).length === 0) {
-      msg += `(Aucun plat sélectionné aujourd'hui)\n`;
-    } else {
-      for (const [titre, qte] of Object.entries(breakdownPlats)) {
-        msg += `• *${qte}x* ${titre}\n`;
-      }
-    }
-    msg += `--------------------------------------\n`;
-    msg += `👉 Total repas : *${countChoisi}*\n`;
-    msg += `⏰ Livraison demandée : 12h30\n`;
-    msg += `🔗 Confirmer la réception : ${appBaseUrl}/resto/token-demo-traiteur`;
-    return msg;
-  };
+  const moisCourant = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Africa/Dakar",
+    year: "numeric",
+    month: "2-digit",
+  }).format(new Date());
+
+  const getWhatsAppTraiteurText = () =>
+    buildMessageTraiteur({
+      companyNom: company.nom,
+      dateStr,
+      recap,
+      heureLivraison: company.heure_livraison_souhaitee,
+      lienConfirmation: lienTraiteur,
+    });
 
   const copyWhatsAppTraiteur = () => {
     const text = getWhatsAppTraiteurText();
@@ -247,7 +276,7 @@ export function RhDashboardClient({
       const cmd = commandes.find((c) => c.employe_id === emp.id);
       const statut = cmd ? cmd.statut : "en_attente";
       const plat = cmd?.plat_titre || "-";
-      const montant = statut === "choisi" ? 1500 : 0;
+      const montant = statut === "choisi" ? cmd?.prix ?? 0 : 0;
       return [
         dateStr,
         `"${company.nom}"`,
@@ -256,10 +285,10 @@ export function RhDashboardClient({
         statut,
         `"${plat}"`,
         montant,
-      ].join(",");
+      ].join(";");
     });
 
-    const csvContent = "\uFEFF" + [headers.join(","), ...rows].join("\n");
+    const csvContent = "\uFEFF" + [headers.join(";"), ...rows].join("\r\n");
     const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
@@ -286,6 +315,16 @@ export function RhDashboardClient({
             </div>
             <p className="text-xs text-neutral-500 mt-0.5">
               Pilote Thiès & Dakar • Clôture quotidienne à {company.heure_limite_vote.slice(0, 5)}
+              {joursEssaiRestants !== null && (
+                <>
+                  {" "}•{" "}
+                  <span className={joursEssaiRestants <= 3 ? "text-red-600 font-semibold" : ""}>
+                    {joursEssaiRestants > 0
+                      ? `Essai gratuit : ${joursEssaiRestants} jour(s) restant(s)`
+                      : "Essai gratuit terminé"}
+                  </span>
+                </>
+              )}
             </p>
           </div>
 
@@ -324,16 +363,108 @@ export function RhDashboardClient({
               <Users className="w-3.5 h-3.5" />
               Collaborateurs ({totalEmployes})
             </button>
+            {!isDemo && (
+              <form action={logoutRhAction}>
+                <button
+                  type="submit"
+                  title="Se déconnecter"
+                  className="px-2.5 py-1.5 rounded-xl text-xs font-bold text-neutral-500 hover:text-neutral-900 transition flex items-center"
+                >
+                  <LogOut className="w-3.5 h-3.5" />
+                </button>
+              </form>
+            )}
           </nav>
         </div>
       </header>
 
       <main className="max-w-5xl mx-auto px-4 py-6">
+        {isDemo && (
+          <div className="mb-4 p-3 bg-amber-50 border border-amber-200 text-amber-900 rounded-2xl text-xs">
+            Mode démo : Supabase n&apos;est pas connecté, les modifications ne sont pas enregistrées.
+          </div>
+        )}
+
+        {actionError && (
+          <div className="mb-4 p-3 bg-red-50 border border-red-200 text-red-700 rounded-2xl text-xs flex items-center justify-between gap-2">
+            <span className="flex items-center gap-2">
+              <AlertCircle className="w-4 h-4 shrink-0" />
+              {actionError}
+            </span>
+            <button onClick={() => setActionError(null)} className="font-bold">
+              ✕
+            </button>
+          </div>
+        )}
+
         {/* ============================================================ */}
         {/* ONGLET 1 : SUIVI LIVE & AGRÉGATION 11H05                      */}
         {/* ============================================================ */}
         {activeTab === "live" && (
           <div className="space-y-6">
+            {/* ALERTE 11H30 : TRAITEUR SANS CONFIRMATION */}
+            {alerteTraiteur && (
+              <div className="p-4 rounded-2xl border border-orange-300 bg-orange-100 text-orange-900 text-xs flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                <span className="font-bold">
+                  ⏰ Il est plus de 11h30 et {company.traiteur_nom || "le traiteur"} n&apos;a pas encore confirmé la
+                  commande. Appelez-le pour vérifier qu&apos;elle a bien été reçue.
+                </span>
+                {company.traiteur_telephone && (
+                  <a
+                    href={`tel:${company.traiteur_telephone}`}
+                    className="shrink-0 px-4 py-2 bg-orange-600 hover:bg-orange-700 text-white font-bold rounded-xl flex items-center gap-1.5"
+                  >
+                    <PhoneCall className="w-4 h-4" />
+                    Appeler {company.traiteur_telephone}
+                  </a>
+                )}
+              </div>
+            )}
+
+            {actionInfo && (
+              <div className="p-3 bg-blue-50 border border-blue-200 text-blue-800 rounded-2xl text-xs flex items-center justify-between gap-2">
+                <span>{actionInfo}</span>
+                <button onClick={() => setActionInfo(null)} className="font-bold">
+                  ✕
+                </button>
+              </div>
+            )}
+
+            {/* ÉTAT DE LA CLÔTURE 11H05 */}
+            {cloture ? (
+              <div
+                className={`p-4 rounded-2xl border text-xs flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 ${
+                  cloture.confirme_at
+                    ? "bg-emerald-50 border-emerald-200 text-emerald-900"
+                    : cloture.envoi_statut === "echec"
+                    ? "bg-red-50 border-red-200 text-red-800"
+                    : "bg-orange-50 border-orange-200 text-orange-900"
+                }`}
+              >
+                <span className="font-semibold">
+                  {cloture.confirme_at
+                    ? `✅ Le traiteur a confirmé la préparation de ${cloture.total_repas} repas.`
+                    : cloture.envoi_statut === "envoye"
+                    ? `📤 Récapitulatif (${cloture.total_repas} repas) envoyé au traiteur, en attente de sa confirmation.`
+                    : cloture.envoi_statut === "echec"
+                    ? `⚠️ L'envoi automatique a échoué : utilisez le bouton WhatsApp ci-dessous.`
+                    : `📋 Votes clôturés (${cloture.total_repas} repas) : envoyez le récapitulatif au traiteur via WhatsApp.`}
+                </span>
+                {cloture.envoi_erreur && (
+                  <span className="text-[11px] opacity-70 truncate max-w-xs" title={cloture.envoi_erreur}>
+                    {cloture.envoi_erreur}
+                  </span>
+                )}
+              </div>
+            ) : (
+              !isDemo && (
+                <div className="flex items-center gap-2 text-[11px] text-neutral-500">
+                  <RefreshCw className="w-3.5 h-3.5 animate-spin [animation-duration:3s]" />
+                  Votes en cours — actualisation automatique toutes les 20 secondes
+                </div>
+              )
+            )}
+
             {/* KPI CARDS TEMPS RÉEL */}
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
               <div className="bg-white rounded-2xl p-4 border border-neutral-200 shadow-sm">
@@ -388,7 +519,8 @@ export function RhDashboardClient({
                     Récapitulatif pour le Traiteur (Clôture 11h05)
                   </h2>
                   <p className="text-xs text-neutral-500 mt-0.5">
-                    Traiteur : {company.traiteur_nom || "Traiteur Partenaire"} • Livraison pour 12h30
+                    Traiteur : {company.traiteur_nom || "Traiteur Partenaire"} • Livraison pour{" "}
+                    {formatHeure(company.heure_livraison_souhaitee)}
                   </p>
                 </div>
 
@@ -415,13 +547,32 @@ export function RhDashboardClient({
                     {copyTraiteurSuccess ? "Copié !" : "Copier le texte"}
                   </button>
 
-                  <button
-                    onClick={exportComptableCSV}
-                    className="px-3.5 py-2 bg-neutral-100 hover:bg-neutral-200 active:scale-98 text-neutral-700 font-semibold text-xs rounded-xl transition flex items-center gap-1.5"
-                  >
-                    <Download className="w-4 h-4" />
-                    Export CSV
-                  </button>
+                  {isDemo ? (
+                    <button
+                      onClick={exportComptableCSV}
+                      className="px-3.5 py-2 bg-neutral-100 hover:bg-neutral-200 active:scale-98 text-neutral-700 font-semibold text-xs rounded-xl transition flex items-center gap-1.5"
+                    >
+                      <Download className="w-4 h-4" />
+                      Export CSV
+                    </button>
+                  ) : (
+                    <>
+                      <a
+                        href="/rh/export"
+                        className="px-3.5 py-2 bg-neutral-100 hover:bg-neutral-200 active:scale-98 text-neutral-700 font-semibold text-xs rounded-xl transition flex items-center gap-1.5"
+                      >
+                        <Download className="w-4 h-4" />
+                        Facture du jour
+                      </a>
+                      <a
+                        href={`/rh/export?mois=${moisCourant}`}
+                        className="px-3.5 py-2 bg-neutral-100 hover:bg-neutral-200 active:scale-98 text-neutral-700 font-semibold text-xs rounded-xl transition flex items-center gap-1.5"
+                      >
+                        <FileSpreadsheet className="w-4 h-4" />
+                        Facture du mois
+                      </a>
+                    </>
+                  )}
                 </div>
               </div>
 
@@ -460,25 +611,56 @@ export function RhDashboardClient({
                 )}
               </div>
 
+              <div className="flex flex-col sm:flex-row gap-2">
+                <input
+                  type="search"
+                  value={recherche}
+                  onChange={(e) => setRecherche(e.target.value)}
+                  placeholder="Rechercher un nom ou un service..."
+                  className="flex-1 text-xs px-3 py-2 rounded-xl border border-neutral-200 focus:outline-none focus:ring-2 focus:ring-orange-500"
+                />
+                <select
+                  value={filtreStatut}
+                  onChange={(e) => setFiltreStatut(e.target.value as StatutVote | "tous")}
+                  className="text-xs px-3 py-2 rounded-xl border border-neutral-200 bg-white focus:outline-none focus:ring-2 focus:ring-orange-500"
+                >
+                  <option value="tous">Tous les statuts</option>
+                  <option value="choisi">A voté</option>
+                  <option value="en_attente">En attente</option>
+                  <option value="absent">Absent(e)</option>
+                  <option value="ne_mange_pas">Ne mange pas</option>
+                </select>
+              </div>
+
               <div className="overflow-x-auto">
                 <table className="w-full text-left text-xs">
                   <thead>
                     <tr className="border-b border-neutral-100 text-neutral-400 font-semibold uppercase tracking-wider">
                       <th className="pb-3">Collaborateur</th>
-                      <th className="pb-3">Téléphone</th>
+                      <th className="pb-3">Service</th>
                       <th className="pb-3">Statut Vote</th>
                       <th className="pb-3">Choix / Plat</th>
                       <th className="pb-3 text-right">Action</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-neutral-100 text-neutral-700">
-                    {employes.map((emp) => {
+                    {employes
+                      .filter((emp) => {
+                        const statut = commandes.find((c) => c.employe_id === emp.id)?.statut || "en_attente";
+                        const q = recherche.trim().toLowerCase();
+                        return (
+                          (filtreStatut === "tous" || statut === filtreStatut) &&
+                          (!q || emp.nom.toLowerCase().includes(q) || (emp.service || "").toLowerCase().includes(q))
+                        );
+                      })
+                      .map((emp) => {
                       const cmd = commandes.find((c) => c.employe_id === emp.id);
                       const statut = cmd ? cmd.statut : "en_attente";
+                      const valeurActuelle = statut === "choisi" ? `choisi:${cmd?.plat_id ?? ""}` : statut;
                       return (
                         <tr key={emp.id} className="hover:bg-neutral-50/50 transition">
                           <td className="py-3 font-semibold text-neutral-900">{emp.nom}</td>
-                          <td className="py-3 text-neutral-500">{emp.telephone || "-"}</td>
+                          <td className="py-3 text-neutral-500">{emp.service || "Général"}</td>
                           <td className="py-3">
                             {statut === "choisi" && (
                               <span className="inline-flex items-center gap-1 text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full font-semibold">
@@ -502,7 +684,41 @@ export function RhDashboardClient({
                             )}
                           </td>
                           <td className="py-3 font-medium text-neutral-800">
-                            {cmd?.plat_titre || "-"}
+                            {editingVote === emp.id ? (
+                              <select
+                                autoFocus
+                                defaultValue={valeurActuelle}
+                                onChange={(e) => modifierVote(emp, e.target.value)}
+                                onBlur={() => setEditingVote(null)}
+                                className="text-xs px-2 py-1 rounded-lg border border-orange-300 bg-white focus:outline-none focus:ring-2 focus:ring-orange-500"
+                              >
+                                {plats
+                                  .filter((p) => p.is_available || p.id === cmd?.plat_id)
+                                  .map((p) => (
+                                    <option key={p.id} value={`choisi:${p.id}`}>
+                                      {p.titre}
+                                    </option>
+                                  ))}
+                                <option value="absent">Absent(e)</option>
+                                <option value="ne_mange_pas">Ne mange pas</option>
+                                <option value="en_attente">En attente (effacer)</option>
+                              </select>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={() => setEditingVote(emp.id)}
+                                title="Modifier manuellement le choix"
+                                className="inline-flex items-center gap-1.5 hover:text-orange-600 transition group"
+                              >
+                                <span>{cmd?.plat_titre || "-"}</span>
+                                {cmd?.modifie_par_rh && (
+                                  <span className="text-[10px] bg-blue-50 text-blue-700 px-1.5 py-0.5 rounded-full font-semibold">
+                                    RH
+                                  </span>
+                                )}
+                                <Pencil className="w-3 h-3 text-neutral-300 group-hover:text-orange-500" />
+                              </button>
+                            )}
                           </td>
                           <td className="py-3 text-right">
                             {emp.telephone ? (
@@ -536,202 +752,16 @@ export function RhDashboardClient({
         )}
 
         {/* ============================================================ */}
-        {/* ONGLET 2 : GESTION DES MENUS DU JOUR (JOUR 5)                */}
+        {/* ONGLET 2 : MENUS DE LA SEMAINE (LUNDI → VENDREDI)              */}
         {/* ============================================================ */}
         {activeTab === "menus" && (
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-            {/* Formulaire Saisie Plat */}
-            <div className="md:col-span-1 bg-white rounded-3xl p-6 border border-neutral-200 shadow-sm space-y-4">
-              <h2 className="text-base font-extrabold text-neutral-900 flex items-center gap-2">
-                <Plus className="w-4 h-4 text-orange-500" />
-                Ajouter un Plat au Menu
-              </h2>
-
-              {/* Raccourcis Sénégal */}
-              <div className="space-y-1.5">
-                <span className="text-[11px] font-bold text-neutral-400 uppercase tracking-wider">
-                  Suggestions rapides Thiès/Dakar :
-                </span>
-                <div className="flex flex-wrap gap-1.5">
-                  <button
-                    type="button"
-                    onClick={() =>
-                      quickAddPlat(
-                        "Thiéboudienne Rouge Penda Mbaye",
-                        1500,
-                        "Riz rouge au poisson mérou, carottes, manioc et beignets niébé"
-                      )
-                    }
-                    className="text-[11px] bg-neutral-100 hover:bg-orange-50 hover:text-orange-700 px-2 py-1 rounded-lg font-medium transition"
-                  >
-                    + Thiéb Rouge
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      quickAddPlat(
-                        "Yassa Poulet au Feu de Bois",
-                        1500,
-                        "Poulet mariné au citron et oignons caramélisés avec riz blanc"
-                      )
-                    }
-                    className="text-[11px] bg-neutral-100 hover:bg-orange-50 hover:text-orange-700 px-2 py-1 rounded-lg font-medium transition"
-                  >
-                    + Yassa Poulet
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      quickAddPlat(
-                        "Mafé Viande de Bœuf",
-                        1500,
-                        "Sauce onctueuse à la pâte d'arachide, bœuf tendre et patate douce"
-                      )
-                    }
-                    className="text-[11px] bg-neutral-100 hover:bg-orange-50 hover:text-orange-700 px-2 py-1 rounded-lg font-medium transition"
-                  >
-                    + Mafé Bœuf
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      quickAddPlat(
-                        "Soupou Kandia (Sauce Gombo)",
-                        1700,
-                        "Sauce gombo à l'huile de palme rouge, poisson séché et fruits de mer"
-                      )
-                    }
-                    className="text-[11px] bg-neutral-100 hover:bg-orange-50 hover:text-orange-700 px-2 py-1 rounded-lg font-medium transition"
-                  >
-                    + Soupou Kandia
-                  </button>
-                </div>
-              </div>
-
-              <form onSubmit={handleAddPlat} className="space-y-3 pt-2">
-                <div>
-                  <label className="block text-xs font-bold text-neutral-700 mb-1">
-                    Nom du plat
-                  </label>
-                  <input
-                    type="text"
-                    required
-                    value={newPlatTitre}
-                    onChange={(e) => setNewPlatTitre(e.target.value)}
-                    placeholder="Ex: C'est bon / Thiéboudienne"
-                    className="w-full text-xs px-3 py-2 rounded-xl border border-neutral-200 focus:outline-none focus:ring-2 focus:ring-orange-500"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-xs font-bold text-neutral-700 mb-1">
-                    Prix (FCFA)
-                  </label>
-                  <input
-                    type="number"
-                    required
-                    value={newPlatPrix}
-                    onChange={(e) => setNewPlatPrix(e.target.value)}
-                    className="w-full text-xs px-3 py-2 rounded-xl border border-neutral-200 focus:outline-none focus:ring-2 focus:ring-orange-500"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-xs font-bold text-neutral-700 mb-1">
-                    Description courte
-                  </label>
-                  <textarea
-                    rows={2}
-                    value={newPlatDesc}
-                    onChange={(e) => setNewPlatDesc(e.target.value)}
-                    placeholder="Ingrédients clés, garniture..."
-                    className="w-full text-xs px-3 py-2 rounded-xl border border-neutral-200 focus:outline-none focus:ring-2 focus:ring-orange-500"
-                  />
-                </div>
-
-                <button
-                  type="submit"
-                  disabled={isPending}
-                  className="w-full py-2.5 bg-orange-600 hover:bg-orange-700 active:scale-98 text-white font-bold text-xs rounded-xl shadow-sm shadow-orange-600/20 transition flex items-center justify-center gap-1.5"
-                >
-                  <Plus className="w-4 h-4" />
-                  Ajouter au Menu d&apos;aujourd&apos;hui
-                </button>
-              </form>
-            </div>
-
-            {/* Liste des Plats Proposés Aujourd'hui */}
-            <div className="md:col-span-2 space-y-4">
-              <div className="bg-white rounded-3xl p-6 border border-neutral-200 shadow-sm space-y-4">
-                <div className="flex items-center justify-between pb-3 border-b border-neutral-100">
-                  <h2 className="text-base font-extrabold text-neutral-900">
-                    Plats Proposés Aujourd&apos;hui ({plats.length})
-                  </h2>
-                  <span className="text-xs text-neutral-500">
-                    Modifiable jusqu&apos;à 11h00
-                  </span>
-                </div>
-
-                {plats.length === 0 ? (
-                  <p className="text-xs text-neutral-400 text-center py-6">
-                    Aucun plat n&apos;est enregistré pour aujourd&apos;hui.
-                  </p>
-                ) : (
-                  <div className="space-y-3">
-                    {plats.map((plat) => (
-                      <div
-                        key={plat.id}
-                        className={`p-4 rounded-2xl border transition flex items-center justify-between gap-4 ${
-                          plat.is_available
-                            ? "bg-white border-neutral-200"
-                            : "bg-neutral-50 border-neutral-200 opacity-60"
-                        }`}
-                      >
-                        <div className="space-y-1">
-                          <div className="flex items-center gap-2">
-                            <h3 className="font-bold text-neutral-900 text-sm">
-                              {plat.titre}
-                            </h3>
-                            <span className="font-extrabold text-orange-600 text-xs">
-                              {formatFCFA(plat.prix_unitaire)}
-                            </span>
-                            {!plat.is_available && (
-                              <span className="text-[10px] bg-red-100 text-red-700 px-2 py-0.5 rounded-full font-bold">
-                                Épuisé / Rupture
-                              </span>
-                            )}
-                          </div>
-                          {plat.description && (
-                            <p className="text-xs text-neutral-500">
-                              {plat.description}
-                            </p>
-                          )}
-                        </div>
-
-                        <button
-                          type="button"
-                          onClick={() => togglePlat(plat.id, plat.is_available)}
-                          className="flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-xl border transition shrink-0 bg-white hover:bg-neutral-100"
-                        >
-                          {plat.is_available ? (
-                            <>
-                              <ToggleRight className="w-5 h-5 text-emerald-600" />
-                              <span className="text-emerald-700">En stock</span>
-                            </>
-                          ) : (
-                            <>
-                              <ToggleLeft className="w-5 h-5 text-neutral-400" />
-                              <span className="text-neutral-500">Désactivé</span>
-                            </>
-                          )}
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            </div>
-          </div>
+          <MenusSemaine
+            platsSemaine={platsSemaine}
+            semaineLundi={semaineLundi}
+            todayDate={todayDate}
+            isDemo={isDemo}
+            onError={setActionError}
+          />
         )}
 
         {/* ============================================================ */}
@@ -756,7 +786,7 @@ export function RhDashboardClient({
                   className="px-4 py-2 bg-orange-600 hover:bg-orange-700 active:scale-98 text-white font-bold text-xs rounded-xl shadow-sm shadow-orange-600/20 transition flex items-center gap-2"
                 >
                   <FileSpreadsheet className="w-4 h-4" />
-                  Importer CSV en masse
+                  Importer Excel / CSV
                 </button>
               </div>
             </div>
@@ -855,6 +885,14 @@ export function RhDashboardClient({
                                 Copier le lien
                               </button>
                             )}
+                            <button
+                              type="button"
+                              title="Désactiver ce collaborateur"
+                              onClick={() => desactiverEmploye(emp)}
+                              className="ml-2 inline-flex items-center p-1.5 text-neutral-400 hover:text-red-600 rounded-lg transition align-middle"
+                            >
+                              <UserX className="w-3.5 h-3.5" />
+                            </button>
                           </td>
                         </tr>
                       );
@@ -867,54 +905,17 @@ export function RhDashboardClient({
         )}
       </main>
 
-      {/* MODAL IMPORT CSV (JOUR 4) */}
+      {/* MODAL IMPORT EXCEL / CSV (JOUR 4) */}
       {showCsvModal && (
-        <div className="fixed inset-0 z-50 bg-neutral-950/50 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-3xl max-w-lg w-full p-6 shadow-2xl border border-neutral-100 space-y-4">
-            <div className="flex items-center justify-between">
-              <h3 className="text-base font-extrabold text-neutral-900 flex items-center gap-2">
-                <FileSpreadsheet className="w-5 h-5 text-orange-500" />
-                Import CSV des Collaborateurs
-              </h3>
-              <button
-                onClick={() => setShowCsvModal(false)}
-                className="text-neutral-400 hover:text-neutral-600 text-sm font-bold"
-              >
-                ✕
-              </button>
-            </div>
-
-            <p className="text-xs text-neutral-600">
-              Collez ci-dessous la liste de vos employés au format <code>Nom, Téléphone</code> (un par ligne) :
-            </p>
-
-            <textarea
-              rows={6}
-              value={csvText}
-              onChange={(e) => setCsvText(e.target.value)}
-              placeholder={`Moussa Ndiaye, +221771112233\nAminata Sow, +221772223344\nCheikh Diop, +221773334455`}
-              className="w-full text-xs font-mono p-3 rounded-2xl border border-neutral-200 focus:outline-none focus:ring-2 focus:ring-orange-500"
-            />
-
-            <div className="flex items-center justify-end gap-2 pt-2">
-              <button
-                type="button"
-                onClick={() => setShowCsvModal(false)}
-                className="px-4 py-2 text-xs font-semibold text-neutral-600 hover:bg-neutral-100 rounded-xl"
-              >
-                Annuler
-              </button>
-              <button
-                type="button"
-                disabled={isPending || !csvText.trim()}
-                onClick={handleImportCSV}
-                className="px-5 py-2 bg-orange-600 hover:bg-orange-700 active:scale-98 disabled:opacity-50 text-white font-bold text-xs rounded-xl shadow-sm shadow-orange-600/20 transition"
-              >
-                Importer et générer les liens
-              </button>
-            </div>
-          </div>
-        </div>
+        <ImportEmployesModal
+          onClose={() => setShowCsvModal(false)}
+          onImported={(nouveaux, message) => {
+            setEmployes((prev) => [...nouveaux, ...prev]);
+            setShowCsvModal(false);
+            setActionError(null);
+            setActionInfo(message);
+          }}
+        />
       )}
     </div>
   );

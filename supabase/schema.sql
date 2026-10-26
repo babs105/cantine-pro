@@ -1,6 +1,6 @@
 -- ==============================================================================
 -- CANTINE PRO — SCHÉMA SUPABASE (Sprint Fast-Track 10 Jours)
--- Version: 1.0 (Pilote Thiès)
+-- Version: 1.1 (Pilote Thiès) — auth RH, passerelle traiteur, clôtures
 -- ==============================================================================
 
 -- Extension pour la génération automatique de tokens aléatoires sécurisés si besoin
@@ -82,7 +82,49 @@ JOIN public.menus_du_jour m ON cmd.plat_id = m.id
 WHERE cmd.statut = 'choisi'
 GROUP BY c.id, c.nom, cmd.date, m.id, m.titre;
 
--- 6. JEU DE DONNÉES DE TEST / DÉMARRAGE (ENTREPRISES PILOTES THIÈS)
+-- 6. ACCÈS RH, PASSERELLE TRAITEUR & CLÔTURES 11H05 (v1.1)
+-- Ré-exécutable sur une base existante : les colonnes sont ajoutées si absentes.
+ALTER TABLE public.companies
+    ADD COLUMN IF NOT EXISTS rh_code_hash TEXT, -- sha256 hex du code d'accès RH
+    ADD COLUMN IF NOT EXISTS traiteur_token TEXT UNIQUE DEFAULT encode(gen_random_bytes(12), 'hex'); -- Lien: /resto/[token]
+
+UPDATE public.companies
+SET traiteur_token = encode(gen_random_bytes(12), 'hex')
+WHERE traiteur_token IS NULL;
+
+ALTER TABLE public.employes
+    ADD COLUMN IF NOT EXISTS service TEXT NOT NULL DEFAULT 'Général'; -- Ventilation paie par service
+
+ALTER TABLE public.commandes
+    ADD COLUMN IF NOT EXISTS modifie_par_rh BOOLEAN NOT NULL DEFAULT false; -- Saisie manuelle du RH
+
+CREATE TABLE IF NOT EXISTS public.clotures (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    company_id UUID NOT NULL REFERENCES public.companies(id) ON DELETE CASCADE,
+    date DATE NOT NULL,
+    recap JSONB NOT NULL DEFAULT '[]'::jsonb, -- [{ plat_titre, quantite, prix_unitaire }]
+    total_repas INTEGER NOT NULL DEFAULT 0,
+    message TEXT,
+    envoi_statut TEXT NOT NULL DEFAULT 'en_attente'
+        CHECK (envoi_statut IN ('en_attente', 'envoye', 'echec', 'manuel')),
+    envoi_erreur TEXT,
+    envoye_at TIMESTAMPTZ,
+    confirme_at TIMESTAMPTZ, -- Clic "Confirmer" du traiteur
+    created_at TIMESTAMPTZ DEFAULT timezone('utc'::text, now()) NOT NULL,
+    CONSTRAINT unique_cloture_company_jour UNIQUE (company_id, date)
+);
+
+-- 7. SÉCURITÉ : RLS ACTIVÉE SANS POLITIQUE
+-- Toutes les lectures/écritures passent par le serveur Next.js (clé service_role).
+-- La clé anon publique ne donne donc accès à aucune donnée (tokens employés inclus).
+ALTER TABLE public.companies ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.employes ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.menus_du_jour ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.commandes ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.clotures ENABLE ROW LEVEL SECURITY;
+ALTER VIEW public.vue_recapitulatif_traiteur SET (security_invoker = true);
+
+-- 8. JEU DE DONNÉES DE TEST / DÉMARRAGE (ENTREPRISES PILOTES THIÈS)
 DO $$
 DECLARE
     v_comp_id UUID;
@@ -93,8 +135,9 @@ DECLARE
 BEGIN
     -- Insertion d'une entreprise pilote test si aucune n'existe
     IF NOT EXISTS (SELECT 1 FROM public.companies WHERE slug = 'pilote-thies') THEN
-        INSERT INTO public.companies (nom, slug, heure_limite_vote, traiteur_nom, traiteur_telephone)
-        VALUES ('Pilote Thiès Innovation', 'pilote-thies', '11:00:00', 'Chez Fatou Traiteur Thiès', '+221770000000')
+        -- Code RH de démo : pilote-thies-2026 (à changer avant le go-live)
+        INSERT INTO public.companies (nom, slug, heure_limite_vote, traiteur_nom, traiteur_telephone, rh_code_hash)
+        VALUES ('Pilote Thiès Innovation', 'pilote-thies', '11:00:00', 'Chez Fatou Traiteur Thiès', '+221770000000', encode(digest('pilote-thies-2026', 'sha256'), 'hex'))
         RETURNING id INTO v_comp_id;
 
         -- Employés de démonstration

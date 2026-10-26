@@ -68,3 +68,27 @@ NEXT_PUBLIC_SUPABASE_ANON_KEY=votre-cle-anon
 SUPABASE_SERVICE_ROLE_KEY=votre-cle-service-role
 NEXT_PUBLIC_APP_URL=http://localhost:3000
 ```
+
+---
+
+## 🔐 Accès RH & Ouverture d'une Entreprise Pilote
+
+Le cockpit `/rh` est protégé par un code d'accès par entreprise (cookie signé, 30 jours).
+Pour ouvrir une entreprise, dans l'éditeur SQL Supabase :
+
+```sql
+INSERT INTO public.companies (nom, slug, traiteur_nom, traiteur_telephone, rh_code_hash)
+VALUES ('Nom Entreprise', 'nom-entreprise', 'Traiteur X', '+221770000000',
+        encode(digest('CODE-SECRET-RH', 'sha256'), 'hex'))
+RETURNING slug, traiteur_token;
+```
+
+Le RH se connecte sur `/rh/login` avec le slug + le code. Le traiteur reçoit le lien `/resto/<traiteur_token>`.
+Base de démo : slug `pilote-thies`, code `pilote-thies-2026` (à changer avant le go-live).
+
+## ⏰ Clôture 11h05
+
+Le cron Vercel (`vercel.json`, 11h05 GMT = heure de Dakar, lundi–vendredi) appelle `/api/cron/cloture` :
+il fige le récapitulatif du jour dans `clotures`, l'envoie au traiteur (WhatsApp Cloud API, webhook, ou
+bouton manuel dans le cockpit) et le traiteur confirme d'un clic sur `/resto/<token>`.
+Variables d'environnement : voir [`.env.local.example`](./.env.local.example).

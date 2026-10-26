@@ -1,6 +1,9 @@
 import { createClient } from "@/lib/supabase/server";
 import { notFound } from "next/navigation";
 import { EnterprisePortalClient } from "./portal-client";
+import { isSupabaseConfigured } from "@/lib/config";
+
+export const dynamic = "force-dynamic";
 
 interface PageProps {
   params: Promise<{ slug: string }>;
@@ -8,12 +11,6 @@ interface PageProps {
 
 export default async function CompanyPortalPage({ params }: PageProps) {
   const { slug } = await params;
-
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const isSupabaseConfigured =
-    supabaseUrl &&
-    supabaseUrl !== "https://votre-projet.supabase.co" &&
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
   // Données par défaut pour démonstration / pilote immédiat
   let company = {
@@ -31,37 +28,32 @@ export default async function CompanyPortalPage({ params }: PageProps) {
     { id: "demo-emp-5", nom: "Ousmane Kane", token: "token-demo-ousmane" },
   ];
 
-  if (isSupabaseConfigured) {
-    try {
-      const supabase = await createClient();
+  if (isSupabaseConfigured()) {
+    const supabase = await createClient();
 
-      const { data: rawComp, error: compError } = await supabase
-        .from("companies")
-        .select("id, nom, slug, heure_limite_vote")
-        .eq("slug", slug)
-        .single();
+    const { data: rawComp } = await supabase
+      .from("companies")
+      .select("id, nom, slug, heure_limite_vote")
+      .eq("slug", slug)
+      .eq("is_active", true)
+      .maybeSingle();
 
-      const comp: any = rawComp;
+    const comp: any = rawComp;
 
-      if (compError || !comp) {
-        notFound();
-      }
-
-      company = comp;
-
-      const { data: emps } = await supabase
-        .from("employes")
-        .select("id, nom, token")
-        .eq("company_id", comp.id)
-        .eq("is_active", true)
-        .order("nom");
-
-      if (emps && emps.length > 0) {
-        employes = emps;
-      }
-    } catch {
-      // Fallback vers démo
+    if (!comp) {
+      notFound();
     }
+
+    company = comp;
+
+    const { data: emps } = await supabase
+      .from("employes")
+      .select("id, nom, token")
+      .eq("company_id", comp.id)
+      .eq("is_active", true)
+      .order("nom");
+
+    employes = emps || [];
   }
 
   return <EnterprisePortalClient company={company} employes={employes} />;

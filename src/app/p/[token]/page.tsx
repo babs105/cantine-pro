@@ -2,6 +2,9 @@ import { createClient } from "@/lib/supabase/server";
 import { VoteClient } from "./vote-client";
 import { notFound } from "next/navigation";
 import { revalidatePath } from "next/cache";
+import { isApresHeureLimite, isSupabaseConfigured, TIMEZONE, todayDakar } from "@/lib/config";
+
+export const dynamic = "force-dynamic";
 
 interface PageProps {
   params: Promise<{ token: string }>;
@@ -15,13 +18,8 @@ async function submitVoteAction(
 ): Promise<{ success: boolean; message?: string }> {
   "use server";
 
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const isSupabaseConfigured =
-    supabaseUrl &&
-    supabaseUrl !== "https://votre-projet.supabase.co" &&
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
-  if (!isSupabaseConfigured) {
+  if (!isSupabaseConfigured()) {
     // Mode Démo / Mock local si Supabase non encore connecté
     return { success: true };
   }
@@ -47,21 +45,32 @@ async function submitVoteAction(
     const heureLimite = companyData?.heure_limite_vote || "11:00:00";
 
     // 2. Vérification heure de clôture (fuseau Thiès/Dakar GMT)
-    const now = new Date();
-    const [hLim, mLim] = heureLimite.split(":").map(Number);
-    const limiteDate = new Date();
-    limiteDate.setHours(hLim, mLim, 0, 0);
-
-    if (now > limiteDate) {
+    if (isApresHeureLimite(heureLimite)) {
       return {
         success: false,
         message: `Les votes sont clôturés depuis ${heureLimite.slice(0, 5)}.`,
       };
     }
 
-    const todayDate = now.toISOString().split("T")[0];
+    const todayDate = todayDakar();
 
-    // 3. Upsert du vote (choix unique par date)
+    // 3. Le plat doit appartenir au menu du jour de l'entreprise et être disponible
+    if (statut === "choisi") {
+      const { data: plat } = await supabase
+        .from("menus_du_jour")
+        .select("id")
+        .eq("id", platId ?? "")
+        .eq("company_id", employe.company_id)
+        .eq("date", todayDate)
+        .eq("is_available", true)
+        .maybeSingle();
+
+      if (!plat) {
+        return { success: false, message: "Ce plat n'est plus disponible, choisissez-en un autre." };
+      }
+    }
+
+    // 4. Upsert du vote (choix unique par date)
     const { error: upsertError } = await (supabase.from("commandes") as any).upsert(
       {
         company_id: employe.company_id,
@@ -91,11 +100,6 @@ async function submitVoteAction(
 export default async function EmployeVotePage({ params }: PageProps) {
   const { token } = await params;
 
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const isSupabaseConfigured =
-    supabaseUrl &&
-    supabaseUrl !== "https://votre-projet.supabase.co" &&
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
   let employeNom = "Moussa Ndiaye";
   let companyNom = "Pilote Thiès Innovation";
@@ -125,7 +129,7 @@ export default async function EmployeVotePage({ params }: PageProps) {
   ];
   let commandeExistante = null;
 
-  if (isSupabaseConfigured) {
+  if (isSupabaseConfigured()) {
     const supabase = await createClient();
 
     // 1. Récupérer l'employé
@@ -147,7 +151,7 @@ export default async function EmployeVotePage({ params }: PageProps) {
     companyNom = comp?.nom || "Entreprise Pilote";
     heureLimite = comp?.heure_limite_vote || "11:00:00";
 
-    const todayDate = new Date().toISOString().split("T")[0];
+    const todayDate = todayDakar();
 
     // 2. Plats du jour disponibles
     const { data: plats } = await supabase
@@ -157,9 +161,8 @@ export default async function EmployeVotePage({ params }: PageProps) {
       .eq("date", todayDate)
       .eq("is_available", true);
 
-    if (plats && plats.length > 0) {
-      platsDisponibles = plats;
-    }
+    // Pas de repli sur les plats de démo : sans menu publié, l'employé voit "menu pas encore publié"
+    platsDisponibles = plats || [];
 
     // 3. Commande existante pour aujourd'hui
     const { data: rawCmd } = await supabase
@@ -184,16 +187,14 @@ export default async function EmployeVotePage({ params }: PageProps) {
 
   // Vérification si l'heure limite est dépassée
   const now = new Date();
-  const [hLim, mLim] = heureLimite.split(":").map(Number);
-  const limiteDate = new Date();
-  limiteDate.setHours(hLim, mLim, 0, 0);
-  const isVerrouille = now > limiteDate;
+  const isVerrouille = isApresHeureLimite(heureLimite, now);
 
   // Formatage date locale ex: "Lundi 26 Octobre"
   const dateAujourdhuiStr = new Intl.DateTimeFormat("fr-FR", {
     weekday: "long",
     day: "numeric",
     month: "long",
+    timeZone: TIMEZONE,
   }).format(now);
 
   return (
