@@ -67,6 +67,14 @@ export default function HomePage() {
             </Link>
 
             <Link
+              href="/c/pilote-thies"
+              className="inline-flex items-center justify-between w-full px-4 py-3 text-xs font-bold text-neutral-800 bg-white hover:bg-neutral-100 active:scale-98 transition rounded-2xl border border-neutral-200 shadow-xs"
+            >
+              <span>🏢 Portail Entreprise (Lien Global WhatsApp)</span>
+              <ArrowRight className="w-4 h-4 text-orange-500" />
+            </Link>
+
+            <Link
               href="/p/token-demo-moussa"
               className="inline-flex items-center justify-between w-full px-4 py-3 text-xs font-bold text-white bg-orange-600 hover:bg-orange-700 active:scale-98 transition rounded-2xl shadow-sm shadow-orange-600/20"
             >
