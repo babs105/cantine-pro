@@ -353,7 +353,7 @@ export function RhDashboardClient({
     <div className="min-h-screen bg-neutral-50 pb-16">
       {/* HEADER COCKPIT RH */}
       <header className="bg-white border-b border-neutral-200 sticky top-0 z-30 shadow-sm">
-        <div className="max-w-5xl mx-auto px-4 py-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+        <div className="max-w-7xl mx-auto px-4 py-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
           <div>
             <div className="flex items-center gap-2">
               <span className="w-8 h-8 rounded-xl bg-orange-600 text-white flex items-center justify-center font-black text-sm shadow-md shadow-orange-600/30">
@@ -440,7 +440,7 @@ export function RhDashboardClient({
         </div>
       </header>
 
-      <main className="max-w-5xl mx-auto px-4 py-6">
+      <main className="max-w-7xl mx-auto px-4 py-6">
         {isDemo && (
           <div className="mb-4 p-3 bg-amber-50 border border-amber-200 text-amber-900 rounded-2xl text-xs">
             Mode démo : Supabase n&apos;est pas connecté, les modifications ne sont pas enregistrées.
