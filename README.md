@@ -12,18 +12,18 @@
    * Moins de 106 Ko de First Load JS pour une fluidité absolue même sur réseau mobile 3G/4G Orange ou Free Sénégal.
    * Choix d'un plat en 1 clic ou options *"Absent(e)"* / *"Ne mange pas"*.
    * Persistance automatique dans le smartphone (`localStorage`).
-   * Verrouillage automatique dès **11h00 précises**.
+   * Votes ouverts de **08h00 à 11h10**, verrouillage automatique.
 
 2. **Cockpit RH Express (`/rh`) :**
    * **Suivi Live 11h :** Compteurs temps réel (Total repas, En attente, Absents, Taux de participation).
-   * **Agrégation automatique 11h05 :** Totaux exacts par plat préparé pour le traiteur.
+   * **Clôture automatique 11h10 :** Totaux exacts par plat, un récapitulatif par restaurant.
    * **Générateur WhatsApp Traiteur :** Message récapitulatif prêt à envoyer en 1 clic à votre traiteur.
    * **Gestionnaire de Menus :** Ajout de plats avec raccourcis sénégalais (Thiéboudienne, Yassa, Mafé, Soupou Kandia).
    * **Gestion des Collaborateurs :** Import en masse CSV (`Nom, Téléphone`), bouton direct de partage WhatsApp.
    * **Export Comptable :** Téléchargement CSV pour la facturation et le suivi de consommation.
 
 3. **Passerelle Traiteur (`/resto/[token]`) :**
-   * Écran ultra-épuré pour que le traiteur confirme d'un clic la commande reçue à 11h05.
+   * Écran ultra-épuré pour que chaque restaurant confirme d'un clic la commande reçue à 11h10.
 
 ---
 
@@ -77,20 +77,27 @@ Le cockpit `/rh` est protégé par un code d'accès par entreprise (cookie sign�
 Pour ouvrir une entreprise, dans l'éditeur SQL Supabase :
 
 ```sql
-INSERT INTO public.companies (nom, slug, traiteur_nom, traiteur_telephone, rh_code_hash)
-VALUES ('Nom Entreprise', 'nom-entreprise', 'Traiteur X', '+221770000000',
+INSERT INTO public.companies (nom, slug, heure_ouverture_vote, heure_limite_vote, rh_code_hash)
+VALUES ('Nom Entreprise', 'nom-entreprise', '08:00', '11:10',
         encode(digest('CODE-SECRET-RH', 'sha256'), 'hex'))
-RETURNING slug, traiteur_token;
+RETURNING id;
 ```
 
-Le RH se connecte sur `/rh/login` avec le slug + le code. Le traiteur reçoit le lien `/resto/<traiteur_token>`.
+Le RH se connecte sur `/rh/login` avec le slug + le code, puis ajoute ses restaurants partenaires
+dans l'onglet **Restaurants** (nom, WhatsApp, heure de livraison). Chaque restaurant a son propre lien
+de confirmation `/resto/<token>`.
 Base de démo : slug `pilote-thies`, code `pilote-thies-2026` (à changer avant le go-live).
 
-## ⏰ Clôture 11h05
+## ⏰ Principe de fonctionnement
 
-Le cron Vercel (`vercel.json`, 11h05 GMT = heure de Dakar, lundi–vendredi) appelle `/api/cron/cloture` :
-il fige le récapitulatif du jour dans `clotures`, l'envoie au traiteur (WhatsApp Cloud API, webhook, ou
-bouton manuel dans le cockpit) et le traiteur confirme d'un clic sur `/resto/<token>`.
+1. Le RH publie le menu du jour : chaque plat est rattaché au restaurant qui le prépare.
+2. Les salariés choisissent leur plat sur la PWA entre **08h00 et 11h10** (heures réglables par entreprise).
+3. À **11h10** (cron Vercel, `vercel.json`, lundi–vendredi, heure de Dakar = GMT), `/api/cron/cloture`
+   fige un récapitulatif **par restaurant** dans `clotures` et l'envoie à chaque restaurant
+   (WhatsApp Cloud API, webhook, ou bouton WhatsApp manuel dans le cockpit).
+4. Chaque restaurant confirme d'un clic sur son lien `/resto/<token>` ; à 11h30, le cockpit signale
+   les restaurants qui n'ont pas confirmé.
+
 Variables d'environnement : voir [`.env.local.example`](./.env.local.example).
 
 ## 📋 Fonctions V2 Pilote
@@ -102,4 +109,4 @@ Variables d'environnement : voir [`.env.local.example`](./.env.local.example).
 * **Compte à rebours** sur la PWA employé, verrouillage automatique à l'heure limite, heure d'enregistrement du choix.
 * **Export Excel paie** (`/rh/export?mois=AAAA-MM&format=xlsx`) : onglets *Paie par service*, *Récap services*, *Facture traiteur*, *Détail jour par jour*.
 
-> Après mise à jour, relancez `supabase/schema.sql` (ajoute `employes.service` et `commandes.modifie_par_rh`).
+> Après mise à jour, relancez `supabase/schema.sql` (ajoute `employes.service`, `commandes.modifie_par_rh`, la table `restaurants` et l'heure d'ouverture des votes ; l'ancien traiteur unique devient automatiquement le premier restaurant).

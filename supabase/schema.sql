@@ -1,6 +1,6 @@
 -- ==============================================================================
 -- CANTINE PRO — SCHÉMA SUPABASE (Sprint Fast-Track 10 Jours)
--- Version: 1.1 (Pilote Thiès) — auth RH, passerelle traiteur, clôtures
+-- Version: 1.2 (Pilote Thiès) — auth RH, restaurants partenaires, clôtures
 -- ==============================================================================
 
 -- Extension pour la génération automatique de tokens aléatoires sécurisés si besoin
@@ -12,7 +12,7 @@ CREATE TABLE IF NOT EXISTS public.companies (
     nom TEXT NOT NULL,
     slug TEXT UNIQUE NOT NULL,
     code_acces TEXT UNIQUE DEFAULT encode(gen_random_bytes(4), 'hex'), -- Lien global optionnel
-    heure_limite_vote TIME NOT NULL DEFAULT '11:00:00',
+    heure_limite_vote TIME NOT NULL DEFAULT '11:10:00', -- Fin des votes = envoi aux restaurants
     heure_livraison_souhaitee TIME DEFAULT '12:30:00',
     traiteur_nom TEXT,
     traiteur_telephone TEXT, -- Format E.164 ex: +221770000000
@@ -119,7 +119,71 @@ UPDATE public.companies
 SET rh_code_hash = encode(digest('pilote-thies-2026', 'sha256'), 'hex')
 WHERE slug = 'pilote-thies' AND rh_code_hash IS NULL;
 
--- 7. SÉCURITÉ : RLS ACTIVÉE SANS POLITIQUE
+-- 7. RESTAURANTS PARTENAIRES (v1.2) : plusieurs restaurants par entreprise
+-- Chaque plat du menu appartient à un restaurant ; à la clôture, chaque restaurant
+-- reçoit le récapitulatif de ses propres plats et le confirme via /resto/[token].
+ALTER TABLE public.companies
+    ADD COLUMN IF NOT EXISTS heure_ouverture_vote TIME NOT NULL DEFAULT '08:00:00';
+
+-- Les votes ferment à 11h10, heure de l'envoi aux restaurants (ancien défaut : 11h00)
+ALTER TABLE public.companies ALTER COLUMN heure_limite_vote SET DEFAULT '11:10:00';
+UPDATE public.companies SET heure_limite_vote = '11:10:00' WHERE heure_limite_vote = '11:00:00';
+
+CREATE TABLE IF NOT EXISTS public.restaurants (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    company_id UUID NOT NULL REFERENCES public.companies(id) ON DELETE CASCADE,
+    nom TEXT NOT NULL,
+    telephone_whatsapp TEXT, -- Format E.164 ex: +221770000000
+    heure_livraison TIME DEFAULT '12:30:00',
+    token TEXT UNIQUE NOT NULL DEFAULT encode(gen_random_bytes(12), 'hex'), -- Lien: /resto/[token]
+    is_active BOOLEAN NOT NULL DEFAULT true,
+    created_at TIMESTAMPTZ DEFAULT timezone('utc'::text, now()) NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_restaurants_company ON public.restaurants(company_id);
+
+ALTER TABLE public.menus_du_jour
+    ADD COLUMN IF NOT EXISTS restaurant_id UUID REFERENCES public.restaurants(id) ON DELETE SET NULL;
+
+ALTER TABLE public.clotures
+    ADD COLUMN IF NOT EXISTS restaurant_id UUID REFERENCES public.restaurants(id) ON DELETE CASCADE;
+
+-- Migration : l'ancien traiteur unique devient le premier restaurant de l'entreprise.
+-- Son token est repris : les liens /resto/... déjà envoyés continuent de fonctionner.
+INSERT INTO public.restaurants (company_id, nom, telephone_whatsapp, heure_livraison, token)
+SELECT c.id,
+       COALESCE(c.traiteur_nom, 'Restaurant partenaire'),
+       c.traiteur_telephone,
+       COALESCE(c.heure_livraison_souhaitee, '12:30:00'),
+       COALESCE(c.traiteur_token, encode(gen_random_bytes(12), 'hex'))
+FROM public.companies c
+WHERE NOT EXISTS (SELECT 1 FROM public.restaurants r WHERE r.company_id = c.id);
+
+UPDATE public.menus_du_jour m
+SET restaurant_id = (
+    SELECT r.id FROM public.restaurants r WHERE r.company_id = m.company_id ORDER BY r.created_at LIMIT 1
+)
+WHERE m.restaurant_id IS NULL;
+
+UPDATE public.clotures cl
+SET restaurant_id = (
+    SELECT r.id FROM public.restaurants r WHERE r.company_id = cl.company_id ORDER BY r.created_at LIMIT 1
+)
+WHERE cl.restaurant_id IS NULL;
+
+-- Une clôture par restaurant et par jour (au lieu d'une par entreprise)
+ALTER TABLE public.clotures DROP CONSTRAINT IF EXISTS unique_cloture_company_jour;
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'unique_cloture_restaurant_jour') THEN
+        ALTER TABLE public.clotures
+            ADD CONSTRAINT unique_cloture_restaurant_jour UNIQUE (restaurant_id, date);
+    END IF;
+END $$;
+
+CREATE INDEX IF NOT EXISTS idx_clotures_company_date ON public.clotures(company_id, date);
+
+-- 8. SÉCURITÉ : RLS ACTIVÉE SANS POLITIQUE
 -- Toutes les lectures/écritures passent par le serveur Next.js (clé service_role).
 -- La clé anon publique ne donne donc accès à aucune donnée (tokens employés inclus).
 ALTER TABLE public.companies ENABLE ROW LEVEL SECURITY;
@@ -127,23 +191,31 @@ ALTER TABLE public.employes ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.menus_du_jour ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.commandes ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.clotures ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.restaurants ENABLE ROW LEVEL SECURITY;
 ALTER VIEW public.vue_recapitulatif_traiteur SET (security_invoker = true);
 
--- 8. JEU DE DONNÉES DE TEST / DÉMARRAGE (ENTREPRISES PILOTES THIÈS)
+-- 9. JEU DE DONNÉES DE TEST / DÉMARRAGE (ENTREPRISES PILOTES THIÈS)
 DO $$
 DECLARE
     v_comp_id UUID;
-    v_emp1_id UUID;
-    v_emp2_id UUID;
-    v_plat1_id UUID;
-    v_plat2_id UUID;
+    v_resto1_id UUID;
+    v_resto2_id UUID;
 BEGIN
     -- Insertion d'une entreprise pilote test si aucune n'existe
     IF NOT EXISTS (SELECT 1 FROM public.companies WHERE slug = 'pilote-thies') THEN
         -- Code RH de démo : pilote-thies-2026 (à changer avant le go-live)
-        INSERT INTO public.companies (nom, slug, heure_limite_vote, traiteur_nom, traiteur_telephone, rh_code_hash)
-        VALUES ('Pilote Thiès Innovation', 'pilote-thies', '11:00:00', 'Chez Fatou Traiteur Thiès', '+221770000000', encode(digest('pilote-thies-2026', 'sha256'), 'hex'))
+        INSERT INTO public.companies (nom, slug, heure_ouverture_vote, heure_limite_vote, rh_code_hash)
+        VALUES ('Pilote Thiès Innovation', 'pilote-thies', '08:00:00', '11:10:00', encode(digest('pilote-thies-2026', 'sha256'), 'hex'))
         RETURNING id INTO v_comp_id;
+
+        -- Restaurants partenaires
+        INSERT INTO public.restaurants (company_id, nom, telephone_whatsapp, heure_livraison)
+        VALUES (v_comp_id, 'Chez Fatou Traiteur Thiès', '+221770000000', '12:30:00')
+        RETURNING id INTO v_resto1_id;
+
+        INSERT INTO public.restaurants (company_id, nom, telephone_whatsapp, heure_livraison)
+        VALUES (v_comp_id, 'Restaurant Le Teranga', '+221770000001', '12:45:00')
+        RETURNING id INTO v_resto2_id;
 
         -- Employés de démonstration
         INSERT INTO public.employes (company_id, nom, telephone, token)
@@ -153,10 +225,10 @@ BEGIN
             (v_comp_id, 'Cheikh Diop', '+221773334455', 'token-demo-cheikh');
 
         -- Plats du jour du Sénégal
-        INSERT INTO public.menus_du_jour (company_id, date, titre, description, prix_unitaire)
+        INSERT INTO public.menus_du_jour (company_id, restaurant_id, date, titre, description, prix_unitaire)
         VALUES
-            (v_comp_id, CURRENT_DATE, 'Thiéboudienne Rouge Penda Mbaye', 'Riz au poisson avec légumes locaux et beignets de niébé', 1500),
-            (v_comp_id, CURRENT_DATE, 'Yassa Poulet au Feu de Bois', 'Poulet mariné au citron et oignons caramélisés avec riz blanc', 1500),
-            (v_comp_id, CURRENT_DATE, 'Soupou Kandia (Sauce Gombo)', 'Riz blanc avec sauce gombo, poisson fumé et fruits de mer', 1700);
+            (v_comp_id, v_resto1_id, CURRENT_DATE, 'Thiéboudienne Rouge Penda Mbaye', 'Riz au poisson avec légumes locaux et beignets de niébé', 1500),
+            (v_comp_id, v_resto1_id, CURRENT_DATE, 'Yassa Poulet au Feu de Bois', 'Poulet mariné au citron et oignons caramélisés avec riz blanc', 1500),
+            (v_comp_id, v_resto2_id, CURRENT_DATE, 'Soupou Kandia (Sauce Gombo)', 'Riz blanc avec sauce gombo, poisson fumé et fruits de mer', 1700);
     END IF;
 END $$;

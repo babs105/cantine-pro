@@ -22,6 +22,7 @@ interface Ligne {
   service: string;
   statut: string;
   plat: string;
+  restaurant: string;
   montant: number;
 }
 
@@ -44,14 +45,14 @@ function styleTotal(row: ExcelJS.Row) {
 function construireCsv(lignes: Ligne[]): string {
   const repas = lignes.filter((l) => l.statut === "choisi");
   return [
-    ["Date", "Service", "Employé", "Téléphone", "Statut", "Plat", "Montant (FCFA)"].join(";"),
+    ["Date", "Service", "Employé", "Téléphone", "Statut", "Plat", "Restaurant", "Montant (FCFA)"].join(";"),
     ...lignes.map((l) =>
-      [l.date, l.service, l.nom, l.telephone, STATUTS[l.statut] || l.statut, l.plat || "-", l.montant]
+      [l.date, l.service, l.nom, l.telephone, STATUTS[l.statut] || l.statut, l.plat || "-", l.restaurant || "-", l.montant]
         .map(cellule)
         .join(";")
     ),
     "",
-    ["TOTAL", "", "", "", `${repas.length} repas`, "", repas.reduce((a, l) => a + l.montant, 0)].join(";"),
+    ["TOTAL", "", "", "", `${repas.length} repas`, "", "", repas.reduce((a, l) => a + l.montant, 0)].join(";"),
   ].join("\r\n");
 }
 
@@ -121,26 +122,43 @@ async function construireXlsx(lignes: Ligne[], companyNom: string, libelle: stri
   for (const s of recapServices) recap.addRow([s.service, s.employes, s.repas, s.montant]);
   styleTotal(recap.addRow(["TOTAL", parEmploye.size, totalRepas, totalMontant]));
 
-  // 3. Réconciliation traiteur : quantités × prix par plat
-  const plats = wb.addWorksheet("Facture traiteur");
+  // 3. Réconciliation restaurants : quantités × prix par plat, un sous-total par restaurant
+  const plats = wb.addWorksheet("Facture restaurants");
   plats.columns = [
+    { key: "restaurant", width: 28 },
     { key: "plat", width: 36 },
     { key: "prix", width: 16, style: { numFmt: FORMAT_FCFA } },
     { key: "quantite", width: 12 },
     { key: "total", width: 16, style: { numFmt: FORMAT_FCFA } },
   ];
-  styleEntete(plats.addRow(["Plat", "Prix unitaire", "Quantité", "Total"]));
-  const parPlat = new Map<string, { plat: string; prix: number; quantite: number }>();
-  for (const l of repas) {
-    const cle = `${l.plat}|${l.montant}`;
-    const p = parPlat.get(cle) || { plat: l.plat, prix: l.montant, quantite: 0 };
-    p.quantite += 1;
-    parPlat.set(cle, p);
+  styleEntete(plats.addRow(["Restaurant", "Plat", "Prix unitaire", "Quantité", "Total"]));
+  const restaurants = Array.from(new Set(repas.map((l) => l.restaurant || "Sans restaurant"))).sort((a, b) =>
+    a.localeCompare(b, "fr")
+  );
+  for (const restaurant of restaurants) {
+    const parPlat = new Map<string, { plat: string; prix: number; quantite: number }>();
+    for (const l of repas.filter((x) => (x.restaurant || "Sans restaurant") === restaurant)) {
+      const cle = `${l.plat}|${l.montant}`;
+      const p = parPlat.get(cle) || { plat: l.plat, prix: l.montant, quantite: 0 };
+      p.quantite += 1;
+      parPlat.set(cle, p);
+    }
+    const lignesResto = Array.from(parPlat.values()).sort((a, b) => b.quantite - a.quantite);
+    for (const p of lignesResto) {
+      plats.addRow([restaurant, p.plat, p.prix, p.quantite, p.prix * p.quantite]);
+    }
+    styleTotal(
+      plats.addRow([
+        `Dû à ${restaurant}`,
+        "",
+        "",
+        lignesResto.reduce((a, p) => a + p.quantite, 0),
+        lignesResto.reduce((a, p) => a + p.prix * p.quantite, 0),
+      ])
+    );
+    plats.addRow([]);
   }
-  for (const p of Array.from(parPlat.values()).sort((a, b) => b.quantite - a.quantite)) {
-    plats.addRow([p.plat, p.prix, p.quantite, p.prix * p.quantite]);
-  }
-  styleTotal(plats.addRow(["TOTAL DÛ AU TRAITEUR", "", totalRepas, totalMontant]));
+  styleEntete(plats.addRow(["TOTAL TOUS RESTAURANTS", "", "", totalRepas, totalMontant]));
 
   // 4. Détail jour par jour (justificatif)
   const detail = wb.addWorksheet("Détail jour par jour", { views: [{ state: "frozen", ySplit: 1 }] });
@@ -150,13 +168,22 @@ async function construireXlsx(lignes: Ligne[], companyNom: string, libelle: stri
     { key: "nom", width: 28 },
     { key: "statut", width: 14 },
     { key: "plat", width: 34 },
+    { key: "restaurant", width: 26 },
     { key: "montant", width: 14, style: { numFmt: FORMAT_FCFA } },
   ];
-  styleEntete(detail.addRow(["Date", "Service", "Employé", "Statut", "Plat", "Montant"]));
+  styleEntete(detail.addRow(["Date", "Service", "Employé", "Statut", "Plat", "Restaurant", "Montant"]));
   for (const l of lignes) {
-    detail.addRow([l.date, l.service, l.nom, STATUTS[l.statut] || l.statut, l.plat || "-", l.montant]);
+    detail.addRow([
+      l.date,
+      l.service,
+      l.nom,
+      STATUTS[l.statut] || l.statut,
+      l.plat || "-",
+      l.restaurant || "-",
+      l.montant,
+    ]);
   }
-  detail.autoFilter = { from: "A1", to: "F1" };
+  detail.autoFilter = { from: "A1", to: "G1" };
 
   return Buffer.from(await wb.xlsx.writeBuffer());
 }
@@ -165,7 +192,7 @@ async function construireXlsx(lignes: Ligne[], companyNom: string, libelle: stri
  * Export comptable
  * - /rh/export?date=2026-10-26            : facture du jour (CSV, séparateur ";" pour Excel FR)
  * - /rh/export?mois=2026-10               : facture du mois (CSV)
- * - /rh/export?mois=2026-10&format=xlsx   : classeur Excel paie par service + facture traiteur
+ * - /rh/export?mois=2026-10&format=xlsx   : classeur Excel paie par service + facture par restaurant
  */
 export async function GET(request: Request) {
   if (!isSupabaseConfigured()) {
@@ -201,7 +228,7 @@ export async function GET(request: Request) {
     supabase.from("companies").select("nom, slug").eq("id", companyId).single(),
     supabase
       .from("commandes")
-      .select("date, statut, employes(nom, telephone, service), menus_du_jour(titre, prix_unitaire)")
+      .select("date, statut, employes(nom, telephone, service), menus_du_jour(titre, prix_unitaire, restaurants(nom))")
       .eq("company_id", companyId)
       .gte("date", debut)
       .lte("date", fin)
@@ -221,6 +248,7 @@ export async function GET(request: Request) {
       service: (c.employes?.service as string) || "Général",
       statut: c.statut as string,
       plat: (c.menus_du_jour?.titre as string) || "",
+      restaurant: (c.menus_du_jour?.restaurants?.nom as string) || "",
       montant: c.statut === "choisi" ? c.menus_du_jour?.prix_unitaire ?? 0 : 0,
     }))
     .sort((a, b) => a.date.localeCompare(b.date) || a.nom.localeCompare(b.nom, "fr"));

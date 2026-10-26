@@ -26,9 +26,12 @@ function normaliserHeure(heure: string): string {
   return heure.length === 5 ? `${heure}:00` : heure.slice(0, 8);
 }
 
-/** Vrai si l'heure donnée (ex: "11:00:00") est dépassée à Dakar */
+/**
+ * Vrai si l'heure donnée (ex: "11:10:00") est atteinte ou dépassée à Dakar.
+ * Comparaison inclusive : le cron de 11h10 clôture même s'il se déclenche à 11:10:00 pile.
+ */
 export function isApresHeureLimite(heureLimite: string, now: Date = new Date()): boolean {
-  return nowDakarTime(now) > normaliserHeure(heureLimite);
+  return nowDakarTime(now) >= normaliserHeure(heureLimite);
 }
 
 /** Secondes restantes avant l'heure limite à Dakar (0 si dépassée) */

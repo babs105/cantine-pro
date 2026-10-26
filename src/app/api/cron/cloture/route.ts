@@ -20,7 +20,7 @@ export async function GET(request: Request) {
   if (!isSupabaseConfigured()) {
     return NextResponse.json({
       status: "simulation",
-      message: "Clôture 11h05 simulée avec succès (Supabase non connecté)",
+      message: "Clôture 11h10 simulée avec succès (Supabase non connecté)",
       date: today,
       sample_summary: {
         company: "Pilote Thiès Innovation",
@@ -52,12 +52,15 @@ export async function GET(request: Request) {
         continue;
       }
       try {
-        const cloture = await cloturerEntreprise(supabase, company, today);
+        const clotures = await cloturerEntreprise(supabase, company, today);
         resultats.push({
           company: company.nom,
-          total_repas: cloture.total_repas,
-          envoi: cloture.envoi_statut,
-          erreur: cloture.envoi_erreur,
+          restaurants: clotures.map((c) => ({
+            restaurant: c.restaurant_nom,
+            total_repas: c.total_repas,
+            envoi: c.envoi_statut,
+            erreur: c.envoi_erreur,
+          })),
         });
       } catch (err: any) {
         resultats.push({ company: company.nom, statut: "erreur", erreur: err.message });

@@ -30,7 +30,7 @@ async function submitVoteAction(
     // 1. Trouver l'employé et l'entreprise via le token
     const { data: rawEmploye, error: empError } = await supabase
       .from("employes")
-      .select("id, company_id, companies(heure_limite_vote)")
+      .select("id, company_id, companies(heure_ouverture_vote, heure_limite_vote)")
       .eq("token", token)
       .eq("is_active", true)
       .single();
@@ -42,7 +42,15 @@ async function submitVoteAction(
     }
 
     const companyData: any = employe.companies;
-    const heureLimite = companyData?.heure_limite_vote || "11:00:00";
+    const heureLimite = companyData?.heure_limite_vote || "11:10:00";
+    const heureOuverture = companyData?.heure_ouverture_vote || "08:00:00";
+
+    if (!isApresHeureLimite(heureOuverture)) {
+      return {
+        success: false,
+        message: `Les votes ouvrent à ${heureOuverture.slice(0, 5).replace(":", "h")}.`,
+      };
+    }
 
     // 2. Vérification heure de clôture (fuseau Thiès/Dakar GMT)
     if (isApresHeureLimite(heureLimite)) {
@@ -106,10 +114,12 @@ export default async function EmployeVotePage({ params }: PageProps) {
 
   let employeNom = "Moussa Ndiaye";
   let companyNom = "Pilote Thiès Innovation";
-  let heureLimite = "11:00:00";
+  let heureLimite = "11:10:00";
+  let heureOuverture = "08:00:00";
   let platsDisponibles = [
     {
       id: "demo-plat-1",
+      restaurant_nom: "Chez Fatou Traiteur Thiès",
       titre: "Thiéboudienne Rouge Penda Mbaye",
       description: "Riz rouge au mérou, légumes locaux et beignets de niébé",
       prix_unitaire: 1500,
@@ -117,6 +127,7 @@ export default async function EmployeVotePage({ params }: PageProps) {
     },
     {
       id: "demo-plat-2",
+      restaurant_nom: "Chez Fatou Traiteur Thiès",
       titre: "Yassa Poulet au Feu de Bois",
       description: "Poulet mariné au citron vert et oignons caramélisés avec riz blanc",
       prix_unitaire: 1500,
@@ -124,6 +135,7 @@ export default async function EmployeVotePage({ params }: PageProps) {
     },
     {
       id: "demo-plat-3",
+      restaurant_nom: "Restaurant Le Teranga",
       titre: "Soupou Kandia (Sauce Gombo)",
       description: "Riz blanc parfumé avec sauce gombo fraîche et poisson fumé",
       prix_unitaire: 1700,
@@ -138,7 +150,7 @@ export default async function EmployeVotePage({ params }: PageProps) {
     // 1. Récupérer l'employé
     const { data: rawEmp, error: empError } = await supabase
       .from("employes")
-      .select("id, nom, company_id, companies(nom, heure_limite_vote)")
+      .select("id, nom, company_id, companies(nom, heure_ouverture_vote, heure_limite_vote)")
       .eq("token", token)
       .eq("is_active", true)
       .single();
@@ -152,20 +164,30 @@ export default async function EmployeVotePage({ params }: PageProps) {
     employeNom = employe.nom;
     const comp: any = employe.companies;
     companyNom = comp?.nom || "Entreprise Pilote";
-    heureLimite = comp?.heure_limite_vote || "11:00:00";
+    heureLimite = comp?.heure_limite_vote || "11:10:00";
+    heureOuverture = comp?.heure_ouverture_vote || "08:00:00";
 
     const todayDate = todayDakar();
 
     // 2. Plats du jour disponibles
     const { data: plats } = await supabase
       .from("menus_du_jour")
-      .select("id, titre, description, prix_unitaire, is_available")
+      .select("id, titre, description, prix_unitaire, is_available, created_at, restaurants(nom, is_active)")
       .eq("company_id", employe.company_id)
       .eq("date", todayDate)
       .eq("is_available", true);
 
     // Pas de repli sur les plats de démo : sans menu publié, l'employé voit "menu pas encore publié"
-    platsDisponibles = plats || [];
+    platsDisponibles = ((plats || []) as any[])
+      .filter((p) => p.restaurants?.is_active !== false)
+      .map((p) => ({
+        id: p.id,
+        titre: p.titre,
+        description: p.description,
+        prix_unitaire: p.prix_unitaire,
+        is_available: p.is_available,
+        restaurant_nom: p.restaurants?.nom || "Restaurant",
+      }));
 
     // 3. Commande existante pour aujourd'hui
     const { data: rawCmd } = await supabase
@@ -193,6 +215,7 @@ export default async function EmployeVotePage({ params }: PageProps) {
   const now = new Date();
   const isVerrouille = isApresHeureLimite(heureLimite, now);
   const secondesRestantes = secondesAvantHeure(heureLimite, now);
+  const secondesAvantOuverture = secondesAvantHeure(heureOuverture, now);
 
   // Formatage date locale ex: "Lundi 26 Octobre"
   const dateAujourdhuiStr = new Intl.DateTimeFormat("fr-FR", {
@@ -208,6 +231,8 @@ export default async function EmployeVotePage({ params }: PageProps) {
       employeNom={employeNom}
       companyNom={companyNom}
       heureLimite={heureLimite}
+      heureOuverture={heureOuverture}
+      secondesAvantOuverture={secondesAvantOuverture}
       dateAujourdhuiStr={dateAujourdhuiStr}
       isVerrouille={isVerrouille}
       secondesRestantes={secondesRestantes}

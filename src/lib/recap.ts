@@ -46,7 +46,7 @@ export function buildMessageTraiteur(params: {
 }): string {
   const { companyNom, dateStr, recap, heureLivraison, lienConfirmation } = params;
   let msg = `🍽️ *COMMANDE CANTINE PRO — ${companyNom.toUpperCase()}*\n`;
-  msg += `📅 Date : ${dateStr} (Clôture 11h05)\n`;
+  msg += `📅 Date : ${dateStr} (commande clôturée)\n`;
   msg += `--------------------------------------\n`;
   if (recap.length === 0) {
     msg += `(Aucun plat sélectionné aujourd'hui)\n`;

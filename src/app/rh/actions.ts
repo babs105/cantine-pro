@@ -9,6 +9,8 @@ import { lignesVersEmployes, parseCsv, parseFichierEmployes, type LigneEmploye }
 import { rafraichirRecapCloture } from "@/lib/cloture";
 
 const CHAMPS_EMPLOYE = "id, nom, telephone, service, token, is_active";
+const CHAMPS_PLAT = "id, date, titre, description, prix_unitaire, is_available, restaurant_id";
+const CHAMPS_RESTAURANT = "id, nom, telephone_whatsapp, heure_livraison, token, is_active";
 const SERVICE_DEFAUT = "Général";
 
 const SESSION_EXPIREE = "Session RH expirée, reconnectez-vous.";
@@ -202,7 +204,8 @@ export async function addMenuPlatAction(
   titre: string,
   prixUnitaire: number,
   description?: string,
-  date?: string
+  date?: string,
+  restaurantId?: string
 ): Promise<{ success: boolean; message?: string; plat?: any }> {
   const today = todayDakar();
   const targetDate = isDateValide(date) ? date : today;
@@ -220,6 +223,7 @@ export async function addMenuPlatAction(
         prix_unitaire: prixUnitaire,
         is_available: true,
         date: targetDate,
+        restaurant_id: restaurantId || null,
       },
     };
   }
@@ -229,16 +233,28 @@ export async function addMenuPlatAction(
 
   try {
     const supabase = await createClient();
+    const { data: resto } = await supabase
+      .from("restaurants")
+      .select("id")
+      .eq("id", restaurantId ?? "")
+      .eq("company_id", companyId)
+      .eq("is_active", true)
+      .maybeSingle();
+    if (!resto) {
+      return { success: false, message: "Choisissez le restaurant qui prépare ce plat." };
+    }
+
     const { data, error } = await (supabase.from("menus_du_jour") as any)
       .insert({
         company_id: companyId,
+        restaurant_id: restaurantId,
         titre,
         description: description || null,
         prix_unitaire: prixUnitaire,
         is_available: true,
         date: targetDate,
       })
-      .select("id, date, titre, description, prix_unitaire, is_available")
+      .select(CHAMPS_PLAT)
       .single();
 
     if (error) {
@@ -277,7 +293,7 @@ export async function dupliquerSemaineAction(lundiCible: string): Promise<{
   const supabase = await createClient();
   const { data: platsExistants } = await supabase
     .from("menus_du_jour")
-    .select("date, titre, description, prix_unitaire")
+    .select("date, titre, description, prix_unitaire, restaurant_id")
     .eq("company_id", companyId)
     .gte("date", joursSource[0])
     .lte("date", joursCibles[4]);
@@ -295,6 +311,7 @@ export async function dupliquerSemaineAction(lundiCible: string): Promise<{
       titre: p.titre,
       description: p.description,
       prix_unitaire: p.prix_unitaire,
+      restaurant_id: p.restaurant_id,
       is_available: true,
     }));
 
@@ -309,7 +326,7 @@ export async function dupliquerSemaineAction(lundiCible: string): Promise<{
 
   const { data, error } = await (supabase.from("menus_du_jour") as any)
     .insert(aInserer)
-    .select("id, date, titre, description, prix_unitaire, is_available");
+    .select(CHAMPS_PLAT);
 
   if (error) return { success: false, message: error.message };
 
@@ -434,4 +451,81 @@ export async function togglePlatDisponibiliteAction(
   } catch {
     return { success: false };
   }
+}
+
+/**
+ * Ajout d'un restaurant partenaire (il reçoit le récapitulatif de ses plats à la clôture)
+ */
+export async function addRestaurantAction(
+  nom: string,
+  telephone?: string,
+  heureLivraison?: string
+): Promise<{ success: boolean; message?: string; restaurant?: any }> {
+  const nomPropre = nom.trim().slice(0, 80);
+  if (nomPropre.length < 2) return { success: false, message: "Renseignez le nom du restaurant." };
+  const heure = /^\d{2}:\d{2}/.test(heureLivraison || "") ? heureLivraison!.slice(0, 5) : "12:30";
+
+  if (!isSupabaseConfigured()) {
+    return {
+      success: true,
+      restaurant: {
+        id: "resto-mock-" + Date.now(),
+        nom: nomPropre,
+        telephone_whatsapp: normaliserTelephone(telephone),
+        heure_livraison: `${heure}:00`,
+        token: "token-demo-resto",
+        is_active: true,
+      },
+    };
+  }
+
+  const companyId = await getRhCompanyId();
+  if (!companyId) return { success: false, message: SESSION_EXPIREE };
+
+  const supabase = await createClient();
+  const { data, error } = await (supabase.from("restaurants") as any)
+    .insert({
+      company_id: companyId,
+      nom: nomPropre,
+      telephone_whatsapp: normaliserTelephone(telephone),
+      heure_livraison: heure,
+      token: generateToken(12),
+    })
+    .select(CHAMPS_RESTAURANT)
+    .single();
+
+  if (error) return { success: false, message: error.message };
+
+  revalidatePath("/rh");
+  return { success: true, restaurant: data };
+}
+
+/**
+ * Modification d'un restaurant (téléphone WhatsApp, heure de livraison, activation)
+ */
+export async function modifierRestaurantAction(
+  restaurantId: string,
+  champs: { nom?: string; telephone?: string; heureLivraison?: string; isActive?: boolean }
+): Promise<{ success: boolean; message?: string }> {
+  if (!isSupabaseConfigured()) return { success: true };
+
+  const companyId = await getRhCompanyId();
+  if (!companyId) return { success: false, message: SESSION_EXPIREE };
+
+  const update: Record<string, unknown> = {};
+  if (champs.nom !== undefined && champs.nom.trim().length >= 2) update.nom = champs.nom.trim().slice(0, 80);
+  if (champs.telephone !== undefined) update.telephone_whatsapp = normaliserTelephone(champs.telephone);
+  if (champs.heureLivraison && /^\d{2}:\d{2}/.test(champs.heureLivraison)) {
+    update.heure_livraison = champs.heureLivraison.slice(0, 5);
+  }
+  if (champs.isActive !== undefined) update.is_active = champs.isActive;
+
+  const supabase = await createClient();
+  const { error } = await (supabase.from("restaurants") as any)
+    .update(update)
+    .eq("id", restaurantId)
+    .eq("company_id", companyId);
+
+  revalidatePath("/rh");
+  return { success: !error, message: error?.message };
 }

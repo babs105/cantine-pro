@@ -19,8 +19,9 @@ import {
   UserX,
   Pencil,
   PhoneCall,
+  Store,
 } from "lucide-react";
-import { buildMessageTraiteur, buildRecap, formatHeure } from "@/lib/recap";
+import { buildRecap } from "@/lib/recap";
 import {
   addEmployeAction,
   desactiverEmployeAction,
@@ -30,6 +31,8 @@ import {
 import { logoutRhAction } from "./login/actions";
 import { MenusSemaine, type PlatSemaine } from "./menus-semaine";
 import { ImportEmployesModal } from "./import-employes-modal";
+import { RecapRestaurant, type ClotureInfo, type RestaurantInfo } from "./recap-restaurant";
+import { RestaurantsPanel } from "./restaurants-panel";
 
 interface Employe {
   id: string;
@@ -46,6 +49,7 @@ interface Plat {
   description: string | null;
   prix_unitaire: number;
   is_available: boolean;
+  restaurant_id?: string | null;
 }
 
 interface CommandeItem {
@@ -56,6 +60,7 @@ interface CommandeItem {
   plat_id?: string | null;
   plat_titre?: string;
   prix?: number;
+  restaurant_id?: string | null;
   modifie_par_rh?: boolean;
 }
 
@@ -66,10 +71,8 @@ interface RhDashboardClientProps {
     id: string;
     nom: string;
     slug: string;
-    traiteur_nom: string | null;
-    traiteur_telephone: string | null;
+    heure_ouverture_vote: string;
     heure_limite_vote: string;
-    heure_livraison_souhaitee: string | null;
     trial_ends_at: string | null;
   };
   initialEmployes: Employe[];
@@ -78,15 +81,9 @@ interface RhDashboardClientProps {
   semaineLundi: string;
   todayDate: string;
   initialCommandes: CommandeItem[];
-  alerteTraiteur: boolean;
-  cloture: {
-    envoi_statut: "en_attente" | "envoye" | "echec" | "manuel";
-    envoi_erreur: string | null;
-    envoye_at: string | null;
-    confirme_at: string | null;
-    total_repas: number;
-  } | null;
-  lienTraiteur: string;
+  restaurants: RestaurantInfo[];
+  clotures: ClotureInfo[];
+  restaurantsEnRetard: string[];
   appBaseUrl: string;
   isDemo: boolean;
 }
@@ -101,14 +98,14 @@ export function RhDashboardClient({
   semaineLundi,
   todayDate,
   initialCommandes,
-  alerteTraiteur,
-  cloture,
-  lienTraiteur,
+  restaurants,
+  clotures,
+  restaurantsEnRetard,
   appBaseUrl,
   isDemo,
 }: RhDashboardClientProps) {
   const router = useRouter();
-  const [activeTab, setActiveTab] = useState<"live" | "menus" | "employes">("live");
+  const [activeTab, setActiveTab] = useState<"live" | "menus" | "restaurants" | "employes">("live");
   const [employes, setEmployes] = useState<Employe[]>(initialEmployes);
   const plats = initialPlats; // plats d'aujourd'hui, pour la saisie manuelle des votes
   const [commandes, setCommandes] = useState<CommandeItem[]>(initialCommandes);
@@ -125,7 +122,6 @@ export function RhDashboardClient({
   const [recherche, setRecherche] = useState("");
   const [actionInfo, setActionInfo] = useState<string | null>(null);
 
-  const [copyTraiteurSuccess, setCopyTraiteurSuccess] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
 
   // Les données serveur (rafraîchies) font foi
@@ -152,11 +148,14 @@ export function RhDashboardClient({
   const countNeMangePas = commandes.filter((c) => c.statut === "ne_mange_pas").length;
   const countEnAttente = Math.max(0, totalEmployes - (countChoisi + countAbsent + countNeMangePas));
 
-  // Décompte par plat
-  const recap = buildRecap(commandes);
-  const breakdownPlats: Record<string, number> = Object.fromEntries(
-    recap.map((l) => [l.plat_titre, l.quantite])
+  // Restaurants qui proposent au moins un plat aujourd'hui (ou ont déjà reçu une commande)
+  const restaurantsDuJour = restaurants.filter(
+    (r) =>
+      plats.some((p) => p.restaurant_id === r.id) ||
+      commandes.some((c) => c.restaurant_id === r.id) ||
+      clotures.some((c) => c.restaurant_id === r.id)
   );
+  const nomRestaurant = (id?: string | null) => restaurants.find((r) => r.id === id)?.nom;
 
   // Copier le lien d'un collaborateur
   const copyLienEmploye = (token: string) => {
@@ -203,6 +202,7 @@ export function RhDashboardClient({
           plat_id: plat?.id ?? null,
           plat_titre: plat?.titre,
           prix: plat?.prix_unitaire,
+          restaurant_id: plat?.restaurant_id ?? null,
           modifie_par_rh: true,
         },
       ];
@@ -256,22 +256,6 @@ export function RhDashboardClient({
 
   const [moisExport, setMoisExport] = useState(moisCourant);
 
-  const getWhatsAppTraiteurText = () =>
-    buildMessageTraiteur({
-      companyNom: company.nom,
-      dateStr,
-      recap,
-      heureLivraison: company.heure_livraison_souhaitee,
-      lienConfirmation: lienTraiteur,
-    });
-
-  const copyWhatsAppTraiteur = () => {
-    const text = getWhatsAppTraiteurText();
-    navigator.clipboard.writeText(text);
-    setCopyTraiteurSuccess(true);
-    setTimeout(() => setCopyTraiteurSuccess(false), 2500);
-  };
-
   // Export CSV Comptable Express (Jour 7)
   const exportComptableCSV = () => {
     const headers = ["Date", "Entreprise", "Employé", "Téléphone", "Statut Vote", "Plat Choisi", "Montant (FCFA)"];
@@ -317,7 +301,8 @@ export function RhDashboardClient({
               </h1>
             </div>
             <p className="text-xs text-neutral-500 mt-0.5">
-              Pilote Thiès & Dakar • Clôture quotidienne à {company.heure_limite_vote.slice(0, 5)}
+              Votes de {company.heure_ouverture_vote.slice(0, 5)} à {company.heure_limite_vote.slice(0, 5)} • Commandes
+              envoyées aux restaurants après la clôture
               {joursEssaiRestants !== null && (
                 <>
                   {" "}•{" "}
@@ -332,7 +317,7 @@ export function RhDashboardClient({
           </div>
 
           {/* Onglets Navigation */}
-          <nav className="flex items-center gap-1.5 bg-neutral-100 p-1 rounded-2xl">
+          <nav className="flex flex-wrap items-center gap-1 bg-neutral-100 p-1 rounded-2xl">
             <button
               onClick={() => setActiveTab("live")}
               className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition flex items-center gap-1.5 ${
@@ -354,6 +339,17 @@ export function RhDashboardClient({
             >
               <Utensils className="w-3.5 h-3.5" />
               Menus Semaine
+            </button>
+            <button
+              onClick={() => setActiveTab("restaurants")}
+              className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition flex items-center gap-1.5 ${
+                activeTab === "restaurants"
+                  ? "bg-white text-orange-600 shadow-sm"
+                  : "text-neutral-600 hover:text-neutral-900"
+              }`}
+            >
+              <Store className="w-3.5 h-3.5" />
+              Restaurants ({restaurants.filter((r) => r.is_active).length})
             </button>
             <button
               onClick={() => setActiveTab("employes")}
@@ -414,58 +410,42 @@ export function RhDashboardClient({
 
         {activeTab === "live" && (
           <div className="space-y-6">
-            {/* ALERTE 11H30 : TRAITEUR SANS CONFIRMATION */}
-            {alerteTraiteur && (
-              <div className="p-4 rounded-2xl border border-orange-300 bg-orange-100 text-orange-900 text-xs flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-                <span className="font-bold">
-                  ⏰ Il est plus de 11h30 et {company.traiteur_nom || "le traiteur"} n&apos;a pas encore confirmé la
-                  commande. Appelez-le pour vérifier qu&apos;elle a bien été reçue.
-                </span>
-                {company.traiteur_telephone && (
-                  <a
-                    href={`tel:${company.traiteur_telephone}`}
-                    className="shrink-0 px-4 py-2 bg-orange-600 hover:bg-orange-700 text-white font-bold rounded-xl flex items-center gap-1.5"
-                  >
-                    <PhoneCall className="w-4 h-4" />
-                    Appeler {company.traiteur_telephone}
-                  </a>
-                )}
+            {/* ALERTE 11H30 : RESTAURANT SANS CONFIRMATION */}
+            {restaurantsEnRetard.length > 0 && (
+              <div className="p-4 rounded-2xl border border-orange-300 bg-orange-100 text-orange-900 text-xs space-y-3">
+                <p className="font-bold">
+                  ⏰ Il est plus de 11h30 et {restaurantsEnRetard.length > 1 ? "ces restaurants n'ont" : "ce restaurant n'a"}{" "}
+                  pas encore confirmé la commande. Appelez pour vérifier qu&apos;elle a bien été reçue.
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  {restaurants
+                    .filter((r) => restaurantsEnRetard.includes(r.id))
+                    .map((r) =>
+                      r.telephone_whatsapp ? (
+                        <a
+                          key={r.id}
+                          href={`tel:${r.telephone_whatsapp}`}
+                          className="px-4 py-2 bg-orange-600 hover:bg-orange-700 text-white font-bold rounded-xl flex items-center gap-1.5"
+                        >
+                          <PhoneCall className="w-4 h-4" />
+                          {r.nom}
+                        </a>
+                      ) : (
+                        <span key={r.id} className="px-3 py-2 bg-white rounded-xl font-bold">
+                          {r.nom} (pas de numéro)
+                        </span>
+                      )
+                    )}
+                </div>
               </div>
             )}
 
-            {/* ÉTAT DE LA CLÔTURE 11H05 */}
-            {cloture ? (
-              <div
-                className={`p-4 rounded-2xl border text-xs flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 ${
-                  cloture.confirme_at
-                    ? "bg-emerald-50 border-emerald-200 text-emerald-900"
-                    : cloture.envoi_statut === "echec"
-                    ? "bg-red-50 border-red-200 text-red-800"
-                    : "bg-orange-50 border-orange-200 text-orange-900"
-                }`}
-              >
-                <span className="font-semibold">
-                  {cloture.confirme_at
-                    ? `✅ Le traiteur a confirmé la préparation de ${cloture.total_repas} repas.`
-                    : cloture.envoi_statut === "envoye"
-                    ? `📤 Récapitulatif (${cloture.total_repas} repas) envoyé au traiteur, en attente de sa confirmation.`
-                    : cloture.envoi_statut === "echec"
-                    ? `⚠️ L'envoi automatique a échoué : utilisez le bouton WhatsApp ci-dessous.`
-                    : `📋 Votes clôturés (${cloture.total_repas} repas) : envoyez le récapitulatif au traiteur via WhatsApp.`}
-                </span>
-                {cloture.envoi_erreur && (
-                  <span className="text-[11px] opacity-70 truncate max-w-xs" title={cloture.envoi_erreur}>
-                    {cloture.envoi_erreur}
-                  </span>
-                )}
+            {clotures.length === 0 && !isDemo && (
+              <div className="flex items-center gap-2 text-[11px] text-neutral-500">
+                <RefreshCw className="w-3.5 h-3.5 animate-spin [animation-duration:3s]" />
+                Votes ouverts de {company.heure_ouverture_vote.slice(0, 5)} à {company.heure_limite_vote.slice(0, 5)} —
+                envoi aux restaurants juste après la clôture — actualisation toutes les 20 secondes
               </div>
-            ) : (
-              !isDemo && (
-                <div className="flex items-center gap-2 text-[11px] text-neutral-500">
-                  <RefreshCw className="w-3.5 h-3.5 animate-spin [animation-duration:3s]" />
-                  Votes en cours — actualisation automatique toutes les 20 secondes
-                </div>
-              )
             )}
 
             {/* KPI CARDS TEMPS RÉEL */}
@@ -513,43 +493,14 @@ export function RhDashboardClient({
               </div>
             </div>
 
-            {/* DÉCOMPTE EXACT POUR LE TRAITEUR (AGRÉGATION 11H05) */}
-            <div className="bg-white rounded-3xl p-6 border border-neutral-200 shadow-sm space-y-4">
-              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 pb-4 border-b border-neutral-100">
-                <div>
-                  <h2 className="text-lg font-extrabold text-neutral-900 flex items-center gap-2">
-                    <Utensils className="w-5 h-5 text-orange-500" />
-                    Récapitulatif pour le Traiteur (Clôture 11h05)
-                  </h2>
-                  <p className="text-xs text-neutral-500 mt-0.5">
-                    Traiteur : {company.traiteur_nom || "Traiteur Partenaire"} • Livraison pour{" "}
-                    {formatHeure(company.heure_livraison_souhaitee)}
-                  </p>
-                </div>
-
+            {/* RÉCAPITULATIFS PAR RESTAURANT (ENVOYÉS À 11H10) */}
+            <div className="space-y-3">
+              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                <h2 className="text-lg font-extrabold text-neutral-900 flex items-center gap-2">
+                  <Utensils className="w-5 h-5 text-orange-500" />
+                  Commandes par restaurant
+                </h2>
                 <div className="flex flex-wrap items-center gap-2">
-                  {company.traiteur_telephone ? (
-                    <a
-                      href={`https://wa.me/${company.traiteur_telephone.replace(/\D/g, "")}?text=${encodeURIComponent(
-                        getWhatsAppTraiteurText()
-                      )}`}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 active:scale-98 text-white font-bold text-xs rounded-xl shadow-sm shadow-emerald-600/20 transition flex items-center gap-2"
-                    >
-                      <Send className="w-4 h-4" />
-                      Envoyer au Traiteur (WhatsApp)
-                    </a>
-                  ) : null}
-
-                  <button
-                    onClick={copyWhatsAppTraiteur}
-                    className="px-3.5 py-2 bg-neutral-100 hover:bg-neutral-200 active:scale-98 text-neutral-800 font-semibold text-xs rounded-xl transition flex items-center gap-1.5"
-                  >
-                    {copyTraiteurSuccess ? <Check className="w-4 h-4 text-emerald-600" /> : <Copy className="w-4 h-4 text-neutral-500" />}
-                    {copyTraiteurSuccess ? "Copié !" : "Copier le texte"}
-                  </button>
-
                   {isDemo ? (
                     <button
                       onClick={exportComptableCSV}
@@ -589,26 +540,23 @@ export function RhDashboardClient({
                 </div>
               </div>
 
-              {/* Liste des plats agrégés */}
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                {Object.keys(breakdownPlats).length === 0 ? (
-                  <div className="col-span-3 text-center py-6 text-neutral-400 text-xs">
-                    Aucun repas commandé pour l&apos;instant aujourd&apos;hui.
-                  </div>
-                ) : (
-                  Object.entries(breakdownPlats).map(([platTitre, qte]) => (
-                    <div
-                      key={platTitre}
-                      className="bg-orange-50/50 border border-orange-100 rounded-2xl p-4 flex items-center justify-between"
-                    >
-                      <span className="text-sm font-bold text-neutral-800">{platTitre}</span>
-                      <span className="text-xl font-black text-orange-600 bg-white px-3 py-1 rounded-xl shadow-xs border border-orange-200">
-                        {qte}x
-                      </span>
-                    </div>
-                  ))
-                )}
-              </div>
+              {restaurantsDuJour.length === 0 ? (
+                <div className="bg-white rounded-3xl p-6 border border-neutral-200 text-center text-xs text-neutral-500">
+                  Aucun menu publié aujourd&apos;hui. Ajoutez les plats des restaurants dans l&apos;onglet « Menus
+                  Semaine ».
+                </div>
+              ) : (
+                restaurantsDuJour.map((r) => (
+                  <RecapRestaurant
+                    key={r.id}
+                    restaurant={r}
+                    recap={buildRecap(commandes.filter((c) => c.restaurant_id === r.id))}
+                    cloture={clotures.find((c) => c.restaurant_id === r.id) || null}
+                    companyNom={company.nom}
+                    dateStr={dateStr}
+                  />
+                ))
+              )}
             </div>
 
             {/* TABLEAU DÉTAILLÉ DES COLLABORATEURS DU JOUR */}
@@ -710,6 +658,7 @@ export function RhDashboardClient({
                                   .map((p) => (
                                     <option key={p.id} value={`choisi:${p.id}`}>
                                       {p.titre}
+                                      {nomRestaurant(p.restaurant_id) ? ` — ${nomRestaurant(p.restaurant_id)}` : ""}
                                     </option>
                                   ))}
                                 <option value="absent">Absent(e)</option>
@@ -737,7 +686,7 @@ export function RhDashboardClient({
                             {emp.telephone ? (
                               <a
                                 href={`https://wa.me/${emp.telephone.replace(/\D/g, "")}?text=${encodeURIComponent(
-                                  `Bonjour ${emp.nom}, voici ton lien pour choisir ton repas Cantine Pro avant 11h : ${appBaseUrl}/p/${emp.token}`
+                                  `Bonjour ${emp.nom}, voici ton lien pour choisir ton repas Cantine Pro avant 11h10 : ${appBaseUrl}/p/${emp.token}`
                                 )}`}
                                 target="_blank"
                                 rel="noreferrer"
@@ -772,9 +721,14 @@ export function RhDashboardClient({
             platsSemaine={platsSemaine}
             semaineLundi={semaineLundi}
             todayDate={todayDate}
+            restaurants={restaurants.filter((r) => r.is_active)}
             isDemo={isDemo}
             onError={setActionError}
           />
+        )}
+
+        {activeTab === "restaurants" && (
+          <RestaurantsPanel restaurants={restaurants} appBaseUrl={appBaseUrl} onError={setActionError} />
         )}
 
         {/* ============================================================ */}

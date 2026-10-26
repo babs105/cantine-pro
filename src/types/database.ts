@@ -23,7 +23,8 @@ export interface Database {
           nom: string;
           slug: string;
           code_acces: string;
-          heure_limite_vote: string; // e.g. "11:00:00"
+          heure_limite_vote: string; // e.g. "11:10:00"
+          heure_ouverture_vote: string; // e.g. "08:00:00"
           heure_livraison_souhaitee: string | null;
           traiteur_nom: string | null;
           traiteur_telephone: string | null;
@@ -39,6 +40,7 @@ export interface Database {
           slug: string;
           code_acces?: string;
           heure_limite_vote?: string;
+          heure_ouverture_vote?: string;
           heure_livraison_souhaitee?: string | null;
           traiteur_nom?: string | null;
           traiteur_telephone?: string | null;
@@ -54,6 +56,7 @@ export interface Database {
           slug?: string;
           code_acces?: string;
           heure_limite_vote?: string;
+          heure_ouverture_vote?: string;
           heure_livraison_souhaitee?: string | null;
           traiteur_nom?: string | null;
           traiteur_telephone?: string | null;
@@ -105,6 +108,7 @@ export interface Database {
           description: string | null;
           prix_unitaire: number;
           is_available: boolean;
+          restaurant_id: string | null;
           created_at: string;
         };
         Insert: {
@@ -115,6 +119,7 @@ export interface Database {
           description?: string | null;
           prix_unitaire?: number;
           is_available?: boolean;
+          restaurant_id?: string | null;
           created_at?: string;
         };
         Update: {
@@ -125,6 +130,7 @@ export interface Database {
           description?: string | null;
           prix_unitaire?: number;
           is_available?: boolean;
+          restaurant_id?: string | null;
           created_at?: string;
         };
       };
@@ -166,10 +172,39 @@ export interface Database {
           updated_at?: string;
         };
       };
+      restaurants: {
+        Row: {
+          id: string;
+          company_id: string;
+          nom: string;
+          telephone_whatsapp: string | null;
+          heure_livraison: string | null;
+          token: string;
+          is_active: boolean;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          company_id: string;
+          nom: string;
+          telephone_whatsapp?: string | null;
+          heure_livraison?: string | null;
+          token?: string;
+          is_active?: boolean;
+          created_at?: string;
+        };
+        Update: {
+          nom?: string;
+          telephone_whatsapp?: string | null;
+          heure_livraison?: string | null;
+          is_active?: boolean;
+        };
+      };
       clotures: {
         Row: {
           id: string;
           company_id: string;
+          restaurant_id: string | null;
           date: string;
           recap: RecapLigne[];
           total_repas: number;
@@ -183,6 +218,7 @@ export interface Database {
         Insert: {
           id?: string;
           company_id: string;
+          restaurant_id?: string | null;
           date: string;
           recap?: RecapLigne[];
           total_repas?: number;

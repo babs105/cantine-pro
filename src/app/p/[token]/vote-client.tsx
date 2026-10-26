@@ -10,6 +10,7 @@ interface Plat {
   description: string | null;
   prix_unitaire: number;
   is_available: boolean;
+  restaurant_nom?: string;
 }
 
 interface CommandeVote {
@@ -24,7 +25,9 @@ interface VoteClientProps {
   token: string;
   employeNom: string;
   companyNom: string;
-  heureLimite: string; // "11:00:00"
+  heureLimite: string; // "11:10:00"
+  heureOuverture: string; // "08:00:00"
+  secondesAvantOuverture: number;
   dateAujourdhuiStr: string; // "26 Octobre 2026"
   isVerrouille: boolean;
   secondesRestantes: number; // calculé côté serveur (heure de Dakar), indépendant de l'horloge du téléphone
@@ -57,6 +60,8 @@ export function VoteClient({
   employeNom,
   companyNom,
   heureLimite,
+  heureOuverture,
+  secondesAvantOuverture,
   dateAujourdhuiStr,
   isVerrouille: verrouilleInitial,
   secondesRestantes,
@@ -69,12 +74,17 @@ export function VoteClient({
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isModifying, setIsModifying] = useState<boolean>(false);
 
-  // Compte à rebours avant la clôture ; l'interface se verrouille d'elle-même à l'heure limite
+  // Comptes à rebours (ouverture puis clôture) ; l'interface s'ouvre et se verrouille d'elle-même
   const [restant, setRestant] = useState<number>(secondesRestantes);
+  const [avantOuverture, setAvantOuverture] = useState<number>(secondesAvantOuverture);
   useEffect(() => {
     if (verrouilleInitial) return;
-    const fin = Date.now() + secondesRestantes * 1000;
-    const tick = () => setRestant(Math.max(0, Math.round((fin - Date.now()) / 1000)));
+    const debut = Date.now();
+    const tick = () => {
+      const ecoule = (Date.now() - debut) / 1000;
+      setRestant(Math.max(0, Math.round(secondesRestantes - ecoule)));
+      setAvantOuverture(Math.max(0, Math.round(secondesAvantOuverture - ecoule)));
+    };
     const interval = setInterval(tick, 15_000);
     const onVisible = () => document.visibilityState === "visible" && tick();
     document.addEventListener("visibilitychange", onVisible);
@@ -82,8 +92,20 @@ export function VoteClient({
       clearInterval(interval);
       document.removeEventListener("visibilitychange", onVisible);
     };
-  }, [verrouilleInitial, secondesRestantes]);
+  }, [verrouilleInitial, secondesRestantes, secondesAvantOuverture]);
   const isVerrouille = verrouilleInitial || restant <= 0;
+  const pasEncoreOuvert = !isVerrouille && avantOuverture > 0;
+  const voteImpossible = isVerrouille || pasEncoreOuvert;
+  const formattedHeureOuverture = heureOuverture.slice(0, 5).replace(":", "h");
+
+  // Plats regroupés par restaurant, dans l'ordre du menu
+  const parRestaurant = platsDisponibles.reduce<Array<{ restaurant: string; plats: Plat[] }>>((groupes, plat) => {
+    const nom = plat.restaurant_nom || "Menu du jour";
+    const groupe = groupes.find((g) => g.restaurant === nom);
+    if (groupe) groupe.plats.push(plat);
+    else groupes.push({ restaurant: nom, plats: [plat] });
+    return groupes;
+  }, []);
 
   // Sauvegarde automatique du token dans le smartphone (PWA - Jour 3)
   useEffect(() => {
@@ -119,7 +141,7 @@ export function VoteClient({
     });
   };
 
-  const formattedHeureLimite = heureLimite.slice(0, 5); // "11:00"
+  const formattedHeureLimite = heureLimite.slice(0, 5); // "11:10"
 
   return (
     <div className="min-h-screen bg-neutral-50 px-4 py-6 max-w-md mx-auto flex flex-col justify-between">
@@ -151,7 +173,13 @@ export function VoteClient({
             </span>
           </div>
 
-          {!isVerrouille && (
+          {pasEncoreOuvert && (
+            <div className="mt-3 text-center text-xs font-bold py-2 rounded-xl bg-blue-50 text-blue-800">
+              🕗 Les votes ouvrent à {formattedHeureOuverture} (dans {formatTempsRestant(avantOuverture)})
+            </div>
+          )}
+
+          {!voteImpossible && (
             <div
               className={`mt-3 text-center text-xs font-bold py-2 rounded-xl ${
                 restant <= 15 * 60 ? "bg-red-50 text-red-700 animate-pulse" : "bg-orange-50 text-orange-800"
@@ -175,7 +203,7 @@ export function VoteClient({
           <div className="mb-4 p-4 bg-amber-50 border border-amber-200 rounded-2xl text-xs text-amber-900 flex items-center gap-2">
             <Clock className="w-4 h-4 text-amber-600 shrink-0" />
             <span>
-              Les commandes sont clôturées pour aujourd&apos;hui ({formattedHeureLimite}). La commande est en cours de préparation chez le traiteur.
+              Les commandes sont clôturées pour aujourd&apos;hui ({formattedHeureLimite}). La commande est en cours de préparation au restaurant.
             </span>
           </div>
         )}
@@ -205,8 +233,8 @@ export function VoteClient({
               </p>
             </div>
 
-            {/* Modification possible uniquement avant 11h00 */}
-            {!isVerrouille && (
+            {/* Modification possible uniquement avant l'heure limite (11h10) */}
+            {!voteImpossible && (
               <button
                 type="button"
                 onClick={() => setIsModifying(true)}
@@ -243,40 +271,49 @@ export function VoteClient({
                 </p>
               </div>
             ) : (
-              <div className="space-y-3">
-                {platsDisponibles.map((plat) => (
-                  <div
-                    key={plat.id}
-                    className={`bg-white rounded-2xl p-4 shadow-sm border transition-all flex flex-col justify-between ${
-                      commande?.plat_id === plat.id
-                        ? "border-emerald-400 ring-2 ring-emerald-100"
-                        : "border-neutral-100 hover:border-orange-300"
-                    }`}
-                  >
-                    <div>
-                      <div className="flex justify-between items-start gap-2">
-                        <h3 className="font-bold text-neutral-900 text-sm">
-                          {plat.titre}
-                        </h3>
-                        <span className="font-extrabold text-orange-600 text-sm whitespace-nowrap">
-                          {formatFCFA(plat.prix_unitaire)}
-                        </span>
-                      </div>
-                      {plat.description && (
-                        <p className="text-xs text-neutral-500 mt-1 line-clamp-2">
-                          {plat.description}
-                        </p>
-                      )}
-                    </div>
+              <div className="space-y-5">
+                {parRestaurant.map((groupe) => (
+                  <div key={groupe.restaurant} className="space-y-3">
+                    {parRestaurant.length > 1 && (
+                      <h3 className="text-[11px] font-bold uppercase tracking-wider text-neutral-400 px-1">
+                        🍲 {groupe.restaurant}
+                      </h3>
+                    )}
+                    {groupe.plats.map((plat) => (
+                      <div
+                        key={plat.id}
+                        className={`bg-white rounded-2xl p-4 shadow-sm border transition-all flex flex-col justify-between ${
+                          commande?.plat_id === plat.id
+                            ? "border-emerald-400 ring-2 ring-emerald-100"
+                            : "border-neutral-100 hover:border-orange-300"
+                        }`}
+                      >
+                        <div>
+                          <div className="flex justify-between items-start gap-2">
+                            <h3 className="font-bold text-neutral-900 text-sm">
+                              {plat.titre}
+                            </h3>
+                            <span className="font-extrabold text-orange-600 text-sm whitespace-nowrap">
+                              {formatFCFA(plat.prix_unitaire)}
+                            </span>
+                          </div>
+                          {plat.description && (
+                            <p className="text-xs text-neutral-500 mt-1 line-clamp-2">
+                              {plat.description}
+                            </p>
+                          )}
+                        </div>
 
-                    <button
-                      type="button"
-                      disabled={isVerrouille || isPending}
-                      onClick={() => handleVote("choisi", plat.id, plat.titre)}
-                      className="mt-3.5 w-full py-2.5 px-4 bg-orange-600 hover:bg-orange-700 active:scale-98 disabled:opacity-50 text-white font-semibold text-xs rounded-xl shadow-sm shadow-orange-600/20 transition flex items-center justify-center gap-2"
-                    >
-                      {isPending ? "Validation..." : commande?.plat_id === plat.id ? "✓ Votre choix actuel" : "Commander ce plat"}
-                    </button>
+                        <button
+                          type="button"
+                          disabled={voteImpossible || isPending}
+                          onClick={() => handleVote("choisi", plat.id, plat.titre)}
+                          className="mt-3.5 w-full py-2.5 px-4 bg-orange-600 hover:bg-orange-700 active:scale-98 disabled:opacity-50 text-white font-semibold text-xs rounded-xl shadow-sm shadow-orange-600/20 transition flex items-center justify-center gap-2"
+                        >
+                          {isPending ? "Validation..." : commande?.plat_id === plat.id ? "✓ Votre choix actuel" : "Commander ce plat"}
+                        </button>
+                      </div>
+                    ))}
                   </div>
                 ))}
               </div>
@@ -286,7 +323,7 @@ export function VoteClient({
             <div className="pt-2 grid grid-cols-2 gap-2">
               <button
                 type="button"
-                disabled={isVerrouille || isPending}
+                disabled={voteImpossible || isPending}
                 onClick={() => handleVote("absent", null)}
                 className="py-2.5 px-3 bg-white border border-neutral-200 hover:bg-neutral-50 active:scale-98 disabled:opacity-50 text-neutral-700 font-medium text-xs rounded-xl transition flex items-center justify-center gap-1.5"
               >
@@ -296,7 +333,7 @@ export function VoteClient({
 
               <button
                 type="button"
-                disabled={isVerrouille || isPending}
+                disabled={voteImpossible || isPending}
                 onClick={() => handleVote("ne_mange_pas", null)}
                 className="py-2.5 px-3 bg-white border border-neutral-200 hover:bg-neutral-50 active:scale-98 disabled:opacity-50 text-neutral-700 font-medium text-xs rounded-xl transition flex items-center justify-center gap-1.5"
               >

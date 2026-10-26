@@ -3,7 +3,7 @@
   "crons": [
     {
       "path": "/api/cron/cloture",
-      "schedule": "5 11 * * 1-5"
+      "schedule": "10 11 * * 1-5"
     }
   ],
   "headers": [

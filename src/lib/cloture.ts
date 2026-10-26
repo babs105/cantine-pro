@@ -7,6 +7,7 @@ import type { Database, RecapLigne } from "@/types/database";
 
 type Supabase = Awaited<ReturnType<typeof createClient>>;
 type Company = Database["public"]["Tables"]["companies"]["Row"];
+type Restaurant = Database["public"]["Tables"]["restaurants"]["Row"];
 type Cloture = Database["public"]["Tables"]["clotures"]["Row"];
 
 export interface CommandeDuJour {
@@ -17,6 +18,7 @@ export interface CommandeDuJour {
   plat_id?: string | null;
   plat_titre?: string;
   prix?: number;
+  restaurant_id?: string | null;
   modifie_par_rh?: boolean;
   updated_at?: string;
 }
@@ -29,7 +31,7 @@ export async function getCommandesDuJour(
   const { data } = await supabase
     .from("commandes")
     .select(
-      "employe_id, statut, plat_id, modifie_par_rh, updated_at, employes(nom, telephone), menus_du_jour(titre, prix_unitaire)"
+      "employe_id, statut, plat_id, modifie_par_rh, updated_at, employes(nom, telephone), menus_du_jour(titre, prix_unitaire, restaurant_id)"
     )
     .eq("company_id", companyId)
     .eq("date", date);
@@ -42,33 +44,10 @@ export async function getCommandesDuJour(
     plat_id: c.plat_id,
     plat_titre: c.menus_du_jour?.titre,
     prix: c.menus_du_jour?.prix_unitaire,
+    restaurant_id: c.menus_du_jour?.restaurant_id ?? null,
     modifie_par_rh: c.modifie_par_rh,
     updated_at: c.updated_at,
   }));
-}
-
-/**
- * Après une modification manuelle du RH : recalcule le récapitulatif d'une clôture déjà faite
- * (la page traiteur affiche alors les bonnes quantités). Retourne vrai si une clôture existait.
- */
-export async function rafraichirRecapCloture(
-  supabase: Supabase,
-  companyId: string,
-  date: string
-): Promise<boolean> {
-  const { data: cloture } = await supabase
-    .from("clotures")
-    .select("id")
-    .eq("company_id", companyId)
-    .eq("date", date)
-    .maybeSingle();
-  if (!cloture) return false;
-
-  const recap = buildRecap(await getCommandesDuJour(supabase, companyId, date));
-  await (supabase.from("clotures") as any)
-    .update({ recap, total_repas: totalRepas(recap), confirme_at: null })
-    .eq("id", (cloture as any).id);
-  return true;
 }
 
 export function formatDateLongue(date: string): string {
@@ -81,66 +60,129 @@ export function formatDateLongue(date: string): string {
   }).format(new Date(`${date}T12:00:00Z`));
 }
 
-export function lienTraiteur(company: Pick<Company, "traiteur_token">): string {
-  return `${getAppBaseUrl()}/resto/${company.traiteur_token}`;
+export function lienRestaurant(restaurant: Pick<Restaurant, "token">): string {
+  return `${getAppBaseUrl()}/resto/${restaurant.token}`;
+}
+
+/** Restaurants qui proposent au moins un plat au menu du jour : ce sont eux qui reçoivent un récapitulatif */
+async function getRestaurantsDuJour(supabase: Supabase, companyId: string, date: string): Promise<Restaurant[]> {
+  const { data: plats } = await supabase
+    .from("menus_du_jour")
+    .select("restaurant_id")
+    .eq("company_id", companyId)
+    .eq("date", date)
+    .not("restaurant_id", "is", null);
+
+  const ids = Array.from(new Set((plats || []).map((p: any) => p.restaurant_id as string)));
+  if (ids.length === 0) return [];
+
+  const { data } = await supabase.from("restaurants").select("*").in("id", ids).order("nom");
+  return (data || []) as Restaurant[];
 }
 
 /**
- * Clôture 11h05 d'une entreprise : fige le récapitulatif du jour dans `clotures`
- * et l'envoie au traiteur. Idempotent : un récap déjà envoyé n'est pas renvoyé.
+ * Clôture de 11h10 d'une entreprise : pour chaque restaurant du menu du jour, fige le récapitulatif
+ * de ses plats dans `clotures` et le lui envoie. Idempotent : un récap déjà envoyé n'est pas renvoyé.
  */
 export async function cloturerEntreprise(
   supabase: Supabase,
   company: Company,
   date: string
-): Promise<Cloture> {
-  const { data: existante } = await supabase
+): Promise<Array<Cloture & { restaurant_nom: string }>> {
+  const restaurants = await getRestaurantsDuJour(supabase, company.id, date);
+  const commandes = await getCommandesDuJour(supabase, company.id, date);
+
+  const { data: existantes } = await supabase
     .from("clotures")
     .select("*")
     .eq("company_id", company.id)
-    .eq("date", date)
-    .maybeSingle();
+    .eq("date", date);
 
-  if (existante && (existante as Cloture).envoi_statut === "envoye") {
-    return existante as Cloture;
+  const resultats: Array<Cloture & { restaurant_nom: string }> = [];
+
+  for (const restaurant of restaurants) {
+    const existante = ((existantes || []) as Cloture[]).find((c) => c.restaurant_id === restaurant.id);
+    if (existante && existante.envoi_statut === "envoye") {
+      resultats.push({ ...existante, restaurant_nom: restaurant.nom });
+      continue;
+    }
+
+    const recap: RecapLigne[] = buildRecap(commandes.filter((c) => c.restaurant_id === restaurant.id));
+    const lien = lienRestaurant(restaurant);
+    const message = buildMessageTraiteur({
+      companyNom: company.nom,
+      dateStr: formatDateLongue(date),
+      recap,
+      heureLivraison: restaurant.heure_livraison,
+      lienConfirmation: lien,
+    });
+
+    const resultat =
+      restaurant.is_active && restaurant.telephone_whatsapp
+        ? await envoyerWhatsApp({
+            to: restaurant.telephone_whatsapp,
+            message,
+            templateParams: [company.nom, recapUneLigne(recap), lien],
+            meta: {
+              company: company.nom,
+              restaurant: restaurant.nom,
+              date,
+              total_repas: totalRepas(recap),
+              recap,
+              lien,
+            },
+          })
+        : ({ statut: "manuel" } as const);
+
+    const { data, error } = await (supabase.from("clotures") as any)
+      .upsert(
+        {
+          company_id: company.id,
+          restaurant_id: restaurant.id,
+          date,
+          recap,
+          total_repas: totalRepas(recap),
+          message,
+          envoi_statut: resultat.statut,
+          envoi_erreur: resultat.statut === "echec" ? resultat.erreur : null,
+          envoye_at: resultat.statut === "envoye" ? new Date().toISOString() : null,
+        },
+        { onConflict: "restaurant_id,date" }
+      )
+      .select()
+      .single();
+
+    if (error) throw new Error(`${restaurant.nom} : ${error.message}`);
+    resultats.push({ ...(data as Cloture), restaurant_nom: restaurant.nom });
   }
 
-  const recap: RecapLigne[] = buildRecap(await getCommandesDuJour(supabase, company.id, date));
-  const lien = lienTraiteur(company);
-  const message = buildMessageTraiteur({
-    companyNom: company.nom,
-    dateStr: formatDateLongue(date),
-    recap,
-    heureLivraison: company.heure_livraison_souhaitee,
-    lienConfirmation: lien,
-  });
+  return resultats;
+}
 
-  const resultat = company.traiteur_telephone
-    ? await envoyerWhatsApp({
-        to: company.traiteur_telephone,
-        message,
-        templateParams: [company.nom, recapUneLigne(recap), lien],
-        meta: { company: company.nom, date, total_repas: totalRepas(recap), recap, lien },
-      })
-    : ({ statut: "manuel" } as const);
+/**
+ * Après une modification manuelle du RH : recalcule les récapitulatifs des clôtures déjà faites
+ * (chaque page restaurant affiche alors les bonnes quantités). Retourne vrai si une clôture existait.
+ */
+export async function rafraichirRecapCloture(
+  supabase: Supabase,
+  companyId: string,
+  date: string
+): Promise<boolean> {
+  const { data: clotures } = await supabase
+    .from("clotures")
+    .select("id, restaurant_id, recap")
+    .eq("company_id", companyId)
+    .eq("date", date);
+  if (!clotures || clotures.length === 0) return false;
 
-  const { data, error } = await (supabase.from("clotures") as any)
-    .upsert(
-      {
-        company_id: company.id,
-        date,
-        recap,
-        total_repas: totalRepas(recap),
-        message,
-        envoi_statut: resultat.statut,
-        envoi_erreur: resultat.statut === "echec" ? resultat.erreur : null,
-        envoye_at: resultat.statut === "envoye" ? new Date().toISOString() : null,
-      },
-      { onConflict: "company_id,date" }
-    )
-    .select()
-    .single();
-
-  if (error) throw new Error(error.message);
-  return data as Cloture;
+  const commandes = await getCommandesDuJour(supabase, companyId, date);
+  for (const cloture of clotures as any[]) {
+    const recap = buildRecap(commandes.filter((c) => c.restaurant_id === cloture.restaurant_id));
+    // Le restaurant ne doit reconfirmer que si ses propres quantités ont changé
+    const change = JSON.stringify(recap) !== JSON.stringify(cloture.recap);
+    await (supabase.from("clotures") as any)
+      .update({ recap, total_repas: totalRepas(recap), ...(change ? { confirme_at: null } : {}) })
+      .eq("id", cloture.id);
+  }
+  return true;
 }
