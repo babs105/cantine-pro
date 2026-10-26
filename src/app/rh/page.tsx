@@ -224,7 +224,7 @@ export default async function RhDashboardPage({ searchParams }: PageProps) {
     getCommandesDuJour(supabase, comp.id, todayDate),
     supabase
       .from("clotures")
-      .select("restaurant_id, envoi_statut, envoi_erreur, envoye_at, confirme_at, total_repas")
+      .select("restaurant_id, envoi_statut, envoi_erreur, envoye_at, confirme_at, confirme_par, total_repas")
       .eq("company_id", comp.id)
       .eq("date", todayDate),
     supabase

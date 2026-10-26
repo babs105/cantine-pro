@@ -588,3 +588,33 @@ export async function marquerRecapEnvoyeAction(restaurantId: string): Promise<{ 
   revalidatePath("/rh");
   return { success: !error };
 }
+
+/**
+ * Le restaurant a validé la commande par téléphone : le RH confirme à sa place.
+ * La confirmation est tracée « par le RH » (distincte d'un clic du restaurant sur son lien).
+ */
+export async function confirmerParTelephoneAction(
+  restaurantId: string
+): Promise<{ success: boolean; message?: string }> {
+  if (!isSupabaseConfigured()) return { success: true };
+
+  const companyId = await getRhCompanyId();
+  if (!companyId) return { success: false, message: SESSION_EXPIREE };
+
+  const supabase = await createClient();
+  const { data, error } = await (supabase.from("clotures") as any)
+    .update({ confirme_at: new Date().toISOString(), confirme_par: "rh" })
+    .eq("company_id", companyId)
+    .eq("restaurant_id", restaurantId)
+    .eq("date", todayDakar())
+    .is("confirme_at", null)
+    .select("id");
+
+  if (error) return { success: false, message: error.message };
+  if (!data || data.length === 0) {
+    return { success: false, message: "Rien à confirmer : la journée n'est pas clôturée ou c'est déjà confirmé." };
+  }
+
+  revalidatePath("/rh");
+  return { success: true };
+}

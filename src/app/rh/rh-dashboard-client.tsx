@@ -156,6 +156,14 @@ export function RhDashboardClient({
   const countNeMangePas = commandes.filter((c) => c.statut === "ne_mange_pas").length;
   const countEnAttente = Math.max(0, totalEmployes - (countChoisi + countAbsent + countNeMangePas));
 
+  // Après la clôture, seuls les repas des restaurants qui ont confirmé (eux-mêmes ou par téléphone) comptent
+  const journeeCloturee = clotures.length > 0;
+  const restaurantsConfirmes = new Set(clotures.filter((c) => c.confirme_at).map((c) => c.restaurant_id));
+  const repasConfirmes = commandes.filter(
+    (c) => c.statut === "choisi" && c.restaurant_id && restaurantsConfirmes.has(c.restaurant_id)
+  ).length;
+  const repasNonConfirmes = countChoisi - repasConfirmes;
+
   // Restaurants qui proposent au moins un plat aujourd'hui (ou ont déjà reçu une commande)
   const restaurantsDuJour = restaurants.filter(
     (r) =>
@@ -586,12 +594,19 @@ export function RhDashboardClient({
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
               <div className="bg-white rounded-2xl p-4 border border-neutral-200 shadow-sm">
                 <span className="text-xs font-bold text-neutral-500 uppercase tracking-wider">
-                  Total Repas
+                  {journeeCloturee ? "Repas confirmés" : "Total Repas"}
                 </span>
                 <div className="mt-2 flex items-baseline gap-2">
-                  <span className="text-3xl font-black text-orange-600">{countChoisi}</span>
-                  <span className="text-xs text-neutral-400">à préparer</span>
+                  <span className="text-3xl font-black text-orange-600">
+                    {journeeCloturee ? repasConfirmes : countChoisi}
+                  </span>
+                  <span className="text-xs text-neutral-400">{journeeCloturee ? "facturés" : "provisoire"}</span>
                 </div>
+                {journeeCloturee && repasNonConfirmes > 0 && (
+                  <p className="mt-1 text-[11px] font-semibold text-amber-700">
+                    + {repasNonConfirmes} non confirmé(s), non comptés
+                  </p>
+                )}
               </div>
 
               <div className="bg-white rounded-2xl p-4 border border-neutral-200 shadow-sm">

@@ -1,10 +1,10 @@
 "use client";
 
 import { useState, useTransition } from "react";
-import { Check, Copy, ExternalLink, Send, Utensils } from "lucide-react";
+import { Check, Copy, ExternalLink, PhoneCall, Send, Utensils } from "lucide-react";
 import { buildMessageTraiteur, formatHeure, totalRepas } from "@/lib/recap";
 import type { RecapLigne } from "@/types/database";
-import { marquerRecapEnvoyeAction } from "./actions";
+import { confirmerParTelephoneAction, marquerRecapEnvoyeAction } from "./actions";
 
 export interface RestaurantInfo {
   id: string;
@@ -22,6 +22,7 @@ export interface ClotureInfo {
   envoi_erreur: string | null;
   envoye_at: string | null;
   confirme_at: string | null;
+  confirme_par?: "restaurant" | "rh" | null;
   total_repas: number;
 }
 
@@ -53,7 +54,7 @@ export function RecapRestaurant({
   peutEnvoyer,
 }: RecapRestaurantProps) {
   const [copie, setCopie] = useState(false);
-  const [, startTransition] = useTransition();
+  const [isPending, startTransition] = useTransition();
   const total = totalRepas(recap);
 
   const message = buildMessageTraiteur({
@@ -77,7 +78,10 @@ export function RecapRestaurant({
       }
     : cloture.confirme_at
       ? {
-          texte: `✅ Confirmé par le restaurant à ${heure(cloture.confirme_at)}`,
+          texte:
+            cloture.confirme_par === "rh"
+              ? `✅ Confirmé par téléphone (RH) à ${heure(cloture.confirme_at)}`
+              : `✅ Confirmé par le restaurant à ${heure(cloture.confirme_at)}`,
           classe: "bg-emerald-50 text-emerald-700",
         }
       : cloture.envoi_statut === "envoye"
@@ -94,6 +98,19 @@ export function RecapRestaurant({
               texte: "📋 Récap prêt : envoyez-le au restaurant via WhatsApp",
               classe: "bg-amber-100 text-amber-900",
             };
+
+  // Le restaurant a validé au téléphone : le RH confirme à sa place (sinon on ne confirme pas)
+  const confirmerParTelephone = () => {
+    const ok = window.confirm(
+      `${restaurant.nom} vous a-t-il confirmé par téléphone la commande de ${total} repas ?\n\n` +
+        "Ne confirmez que si le restaurant a validé de vive voix."
+    );
+    if (!ok) return;
+    startTransition(async () => {
+      const res = await confirmerParTelephoneAction(restaurant.id);
+      if (!res.success) window.alert(res.message || "Confirmation impossible.");
+    });
+  };
 
   // Le RH ouvre WhatsApp : on note l'heure d'envoi (le message lui-même part depuis son téléphone)
   const noterEnvoi = () => {
@@ -124,6 +141,11 @@ export function RecapRestaurant({
           >
             {statut.texte}
           </span>
+          {cloture && !cloture.confirme_at && total > 0 && (
+            <p className="text-[11px] font-semibold text-amber-700">
+              Non comptabilisé (facture, paie) tant que la commande n&apos;est pas confirmée.
+            </p>
+          )}
           {cloture?.envoi_erreur && (
             <p className="text-[11px] text-red-600 truncate max-w-md" title={cloture.envoi_erreur}>
               {cloture.envoi_erreur}
@@ -148,6 +170,18 @@ export function RecapRestaurant({
               <Send className="w-4 h-4" />
               {cloture?.envoi_statut === "envoye" ? "Renvoyer" : "Envoyer le récap"}
             </a>
+          )}
+          {cloture && !cloture.confirme_at && (
+            <button
+              type="button"
+              disabled={isPending}
+              onClick={confirmerParTelephone}
+              title="À utiliser seulement si le restaurant a validé la commande au téléphone"
+              className="px-3 py-2 bg-white hover:bg-emerald-50 border border-emerald-300 text-emerald-800 font-semibold text-xs rounded-xl transition flex items-center gap-1.5 disabled:opacity-50"
+            >
+              <PhoneCall className="w-4 h-4" />
+              Confirmé par téléphone
+            </button>
           )}
           <a
             href={`/resto/${restaurant.token}`}

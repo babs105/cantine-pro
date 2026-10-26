@@ -28,6 +28,7 @@ export default async function TraiteurValidationPage({ params }: RestoPageProps)
   ];
   let isCloture = true;
   let confirmeAt: string | null = null;
+  let confirmeParRh = false;
 
   if (isSupabaseConfigured()) {
     const supabase = await createClient();
@@ -48,7 +49,7 @@ export default async function TraiteurValidationPage({ params }: RestoPageProps)
 
     const { data: rawCloture } = await supabase
       .from("clotures")
-      .select("recap, confirme_at")
+      .select("recap, confirme_at, confirme_par")
       .eq("restaurant_id", resto.id)
       .eq("date", today)
       .maybeSingle();
@@ -58,6 +59,7 @@ export default async function TraiteurValidationPage({ params }: RestoPageProps)
       // Récapitulatif figé à la clôture : c'est ce qui a été envoyé au restaurant
       recap = cloture.recap;
       confirmeAt = cloture.confirme_at;
+      confirmeParRh = cloture.confirme_par === "rh";
       isCloture = true;
     } else {
       // Avant la clôture : aperçu des votes en cours, limité aux plats de ce restaurant
@@ -139,6 +141,7 @@ export default async function TraiteurValidationPage({ params }: RestoPageProps)
             token={token}
             totalRepas={totalPlats}
             confirmeAt={confirmeAt}
+            confirmeParRh={confirmeParRh}
             isCloture={isCloture}
           />
         </div>

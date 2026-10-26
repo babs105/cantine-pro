@@ -10,6 +10,7 @@ const STATUTS: Record<string, string> = {
   choisi: "Repas",
   absent: "Absent(e)",
   ne_mange_pas: "Ne mange pas",
+  non_confirme: "Non confirmé (non facturé)",
 };
 
 const FORMAT_FCFA = '#,##0" FCFA"';
@@ -224,16 +225,29 @@ export async function GET(request: Request) {
   }
 
   const supabase = await createClient();
-  const [{ data: comp }, { data: cmds, error }] = await Promise.all([
+  const [{ data: comp }, { data: cmds, error }, { data: confirmees }] = await Promise.all([
     supabase.from("companies").select("nom, slug").eq("id", companyId).single(),
     supabase
       .from("commandes")
-      .select("date, statut, employes(nom, telephone, service), menus_du_jour(titre, prix_unitaire, restaurants(nom))")
+      .select(
+        "date, statut, employes(nom, telephone, service), menus_du_jour(titre, prix_unitaire, restaurant_id, restaurants(nom))"
+      )
       .eq("company_id", companyId)
       .gte("date", debut)
       .lte("date", fin)
       .order("date"),
+    // Commandes confirmées par le restaurant (ou par le RH après accord au téléphone)
+    supabase
+      .from("clotures")
+      .select("restaurant_id, date")
+      .eq("company_id", companyId)
+      .gte("date", debut)
+      .lte("date", fin)
+      .not("confirme_at", "is", null),
   ]);
+
+  // Règle : un repas n'est facturé que si la commande de son restaurant a été confirmée ce jour-là
+  const joursConfirmes = new Set(((confirmees as any[]) || []).map((c) => `${c.restaurant_id}|${c.date}`));
 
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
@@ -241,16 +255,20 @@ export async function GET(request: Request) {
 
   const company: any = comp;
   const lignes: Ligne[] = (cmds || [])
-    .map((c: any) => ({
-      date: c.date as string,
-      nom: (c.employes?.nom as string) || "",
-      telephone: (c.employes?.telephone as string) || "",
-      service: (c.employes?.service as string) || "Général",
-      statut: c.statut as string,
-      plat: (c.menus_du_jour?.titre as string) || "",
-      restaurant: (c.menus_du_jour?.restaurants?.nom as string) || "",
-      montant: c.statut === "choisi" ? c.menus_du_jour?.prix_unitaire ?? 0 : 0,
-    }))
+    .map((c: any) => {
+      const facture =
+        c.statut === "choisi" && joursConfirmes.has(`${c.menus_du_jour?.restaurant_id}|${c.date}`);
+      return {
+        date: c.date as string,
+        nom: (c.employes?.nom as string) || "",
+        telephone: (c.employes?.telephone as string) || "",
+        service: (c.employes?.service as string) || "Général",
+        statut: c.statut === "choisi" && !facture ? "non_confirme" : (c.statut as string),
+        plat: (c.menus_du_jour?.titre as string) || "",
+        restaurant: (c.menus_du_jour?.restaurants?.nom as string) || "",
+        montant: facture ? c.menus_du_jour?.prix_unitaire ?? 0 : 0,
+      };
+    })
     .sort((a, b) => a.date.localeCompare(b.date) || a.nom.localeCompare(b.nom, "fr"));
 
   const nomFichier = `cantine-pro-${company?.slug || "export"}-${libelle}`;

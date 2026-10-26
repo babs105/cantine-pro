@@ -213,6 +213,7 @@ export interface Database {
           envoi_erreur: string | null;
           envoye_at: string | null;
           confirme_at: string | null;
+          confirme_par: "restaurant" | "rh" | null;
           created_at: string;
         };
         Insert: {
@@ -227,6 +228,7 @@ export interface Database {
           envoi_erreur?: string | null;
           envoye_at?: string | null;
           confirme_at?: string | null;
+          confirme_par?: "restaurant" | "rh" | null;
           created_at?: string;
         };
         Update: {
@@ -237,6 +239,7 @@ export interface Database {
           envoi_erreur?: string | null;
           envoye_at?: string | null;
           confirme_at?: string | null;
+          confirme_par?: "restaurant" | "rh" | null;
         };
       };
     };

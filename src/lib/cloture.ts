@@ -184,7 +184,7 @@ export async function rafraichirRecapCloture(
     // Le restaurant ne doit reconfirmer que si ses propres quantités ont changé
     const change = JSON.stringify(recap) !== JSON.stringify(cloture.recap);
     await (supabase.from("clotures") as any)
-      .update({ recap, total_repas: totalRepas(recap), ...(change ? { confirme_at: null } : {}) })
+      .update({ recap, total_repas: totalRepas(recap), ...(change ? { confirme_at: null, confirme_par: null } : {}) })
       .eq("id", cloture.id);
   }
   return true;

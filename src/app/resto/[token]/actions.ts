@@ -27,7 +27,7 @@ export async function confirmerPreparationAction(
 
   const confirmeAt = new Date().toISOString();
   const { data, error } = await (supabase.from("clotures") as any)
-    .update({ confirme_at: confirmeAt })
+    .update({ confirme_at: confirmeAt, confirme_par: "restaurant" })
     .eq("restaurant_id", (resto as any).id)
     .eq("date", todayDakar())
     .select("id");

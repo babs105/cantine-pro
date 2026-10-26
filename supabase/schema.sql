@@ -183,6 +183,11 @@ END $$;
 
 CREATE INDEX IF NOT EXISTS idx_clotures_company_date ON public.clotures(company_id, date);
 
+-- Qui a confirmé la commande : le restaurant (clic sur son lien) ou le RH (après accord par téléphone)
+ALTER TABLE public.clotures
+    ADD COLUMN IF NOT EXISTS confirme_par TEXT CHECK (confirme_par IN ('restaurant', 'rh'));
+UPDATE public.clotures SET confirme_par = 'restaurant' WHERE confirme_at IS NOT NULL AND confirme_par IS NULL;
+
 -- 8. SÉCURITÉ : RLS ACTIVÉE SANS POLITIQUE
 -- Toutes les lectures/écritures passent par le serveur Next.js (clé service_role).
 -- La clé anon publique ne donne donc accès à aucune donnée (tokens employés inclus).
