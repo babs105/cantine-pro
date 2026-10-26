@@ -30,12 +30,14 @@ async function submitVoteAction(
     const supabase = await createClient();
 
     // 1. Trouver l'employé et l'entreprise via le token
-    const { data: employe, error: empError } = await supabase
+    const { data: rawEmploye, error: empError } = await supabase
       .from("employes")
       .select("id, company_id, companies(heure_limite_vote)")
       .eq("token", token)
       .eq("is_active", true)
       .single();
+
+    const employe: any = rawEmploye;
 
     if (empError || !employe) {
       return { success: false, message: "Employé introuvable ou inactif." };
@@ -60,7 +62,7 @@ async function submitVoteAction(
     const todayDate = now.toISOString().split("T")[0];
 
     // 3. Upsert du vote (choix unique par date)
-    const { error: upsertError } = await supabase.from("commandes").upsert(
+    const { error: upsertError } = await (supabase.from("commandes") as any).upsert(
       {
         company_id: employe.company_id,
         employe_id: employe.id,
@@ -127,12 +129,14 @@ export default async function EmployeVotePage({ params }: PageProps) {
     const supabase = await createClient();
 
     // 1. Récupérer l'employé
-    const { data: employe, error: empError } = await supabase
+    const { data: rawEmp, error: empError } = await supabase
       .from("employes")
       .select("id, nom, company_id, companies(nom, heure_limite_vote)")
       .eq("token", token)
       .eq("is_active", true)
       .single();
+
+    const employe: any = rawEmp;
 
     if (empError || !employe) {
       notFound();
@@ -158,12 +162,14 @@ export default async function EmployeVotePage({ params }: PageProps) {
     }
 
     // 3. Commande existante pour aujourd'hui
-    const { data: cmd } = await supabase
+    const { data: rawCmd } = await supabase
       .from("commandes")
       .select("id, plat_id, statut, menus_du_jour(titre)")
       .eq("employe_id", employe.id)
       .eq("date", todayDate)
       .maybeSingle();
+
+    const cmd: any = rawCmd;
 
     if (cmd) {
       const menuData: any = cmd.menus_du_jour;
