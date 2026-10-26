@@ -46,21 +46,42 @@ export default function HomePage() {
           </div>
         </div>
 
-        {/* Accès rapide démo pour test */}
-        <div className="bg-orange-50 border border-orange-200 rounded-2xl p-5 text-center">
-          <p className="text-xs font-semibold uppercase tracking-wider text-orange-700 mb-1">
-            Mode Démo Pilote
-          </p>
-          <p className="text-sm text-neutral-700 mb-4">
-            Testez l&apos;interface employé comme Moussa (Employé test)
-          </p>
-          <Link
-            href="/p/token-demo-moussa"
-            className="inline-flex items-center justify-center w-full gap-2 px-5 py-3 text-sm font-semibold text-white bg-orange-600 hover:bg-orange-700 active:scale-98 transition rounded-xl shadow-md shadow-orange-600/20"
-          >
-            Tester l&apos;interface Employé
-            <ArrowRight className="w-4 h-4" />
-          </Link>
+        {/* Accès rapides démo pour test */}
+        <div className="bg-orange-50 border border-orange-200 rounded-3xl p-5 space-y-3">
+          <div className="text-center">
+            <p className="text-xs font-bold uppercase tracking-wider text-orange-800">
+              Espace Pilote Thiès & Dakar
+            </p>
+            <p className="text-xs text-neutral-600 mt-0.5">
+              Accédez directement aux interfaces du sprint :
+            </p>
+          </div>
+
+          <div className="space-y-2 pt-1">
+            <Link
+              href="/rh"
+              className="inline-flex items-center justify-between w-full px-4 py-3 text-xs font-bold text-white bg-neutral-900 hover:bg-neutral-800 active:scale-98 transition rounded-2xl shadow-sm"
+            >
+              <span>💼 Cockpit RH (Menus, Suivi Live & Agrégation 11h05)</span>
+              <ArrowRight className="w-4 h-4 text-orange-400" />
+            </Link>
+
+            <Link
+              href="/p/token-demo-moussa"
+              className="inline-flex items-center justify-between w-full px-4 py-3 text-xs font-bold text-white bg-orange-600 hover:bg-orange-700 active:scale-98 transition rounded-2xl shadow-sm shadow-orange-600/20"
+            >
+              <span>📱 Interface Employé (Vote PWA 2 Clics)</span>
+              <ArrowRight className="w-4 h-4" />
+            </Link>
+
+            <Link
+              href="/resto/token-demo-traiteur"
+              className="inline-flex items-center justify-between w-full px-4 py-3 text-xs font-bold text-neutral-700 bg-white hover:bg-neutral-100 active:scale-98 transition rounded-2xl border border-neutral-200"
+            >
+              <span>🍽️ Passerelle Traiteur (Validation 1-Clic)</span>
+              <ArrowRight className="w-4 h-4 text-neutral-400" />
+            </Link>
+          </div>
         </div>
       </main>
 
