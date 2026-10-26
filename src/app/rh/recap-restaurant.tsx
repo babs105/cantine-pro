@@ -1,9 +1,10 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useTransition } from "react";
 import { Check, Copy, ExternalLink, Send, Utensils } from "lucide-react";
 import { buildMessageTraiteur, formatHeure, totalRepas } from "@/lib/recap";
 import type { RecapLigne } from "@/types/database";
+import { marquerRecapEnvoyeAction } from "./actions";
 
 export interface RestaurantInfo {
   id: string;
@@ -30,17 +31,29 @@ interface RecapRestaurantProps {
   cloture: ClotureInfo | null;
   companyNom: string;
   dateStr: string;
+  /** Vrai une fois la journée clôturée (ou en démo) : l'envoi du récap au restaurant est alors possible */
+  peutEnvoyer: boolean;
 }
 
 function heure(iso: string): string {
-  return new Intl.DateTimeFormat("fr-FR", { hour: "2-digit", minute: "2-digit", timeZone: "Africa/Dakar" }).format(
-    new Date(iso)
-  );
+  return new Intl.DateTimeFormat("fr-FR", {
+    hour: "2-digit",
+    minute: "2-digit",
+    timeZone: "Africa/Dakar",
+  }).format(new Date(iso));
 }
 
 /** Carte d'un restaurant : quantités à préparer, état de l'envoi 11h10 et de la confirmation */
-export function RecapRestaurant({ restaurant, recap, cloture, companyNom, dateStr }: RecapRestaurantProps) {
+export function RecapRestaurant({
+  restaurant,
+  recap,
+  cloture,
+  companyNom,
+  dateStr,
+  peutEnvoyer,
+}: RecapRestaurantProps) {
   const [copie, setCopie] = useState(false);
+  const [, startTransition] = useTransition();
   const total = totalRepas(recap);
 
   const message = buildMessageTraiteur({
@@ -58,14 +71,38 @@ export function RecapRestaurant({ restaurant, recap, cloture, companyNom, dateSt
   };
 
   const statut = !cloture
-    ? { texte: "Votes en cours", classe: "bg-neutral-100 text-neutral-600" }
+    ? {
+        texte: "Votes en cours (provisoire)",
+        classe: "bg-neutral-100 text-neutral-600",
+      }
     : cloture.confirme_at
-    ? { texte: `✅ Confirmé à ${heure(cloture.confirme_at)}`, classe: "bg-emerald-50 text-emerald-700" }
-    : cloture.envoi_statut === "envoye"
-    ? { texte: "📤 Envoyé, en attente de confirmation", classe: "bg-orange-50 text-orange-800" }
-    : cloture.envoi_statut === "echec"
-    ? { texte: "⚠️ Envoi automatique échoué : envoyez via WhatsApp", classe: "bg-red-50 text-red-700" }
-    : { texte: "📋 Clôturé : envoyez le récap via WhatsApp", classe: "bg-orange-50 text-orange-800" };
+      ? {
+          texte: `✅ Confirmé par le restaurant à ${heure(cloture.confirme_at)}`,
+          classe: "bg-emerald-50 text-emerald-700",
+        }
+      : cloture.envoi_statut === "envoye"
+        ? {
+            texte: `📤 Envoyé${cloture.envoye_at ? ` à ${heure(cloture.envoye_at)}` : ""}, en attente de confirmation`,
+            classe: "bg-orange-50 text-orange-800",
+          }
+        : cloture.envoi_statut === "echec"
+          ? {
+              texte: "⚠️ Envoi automatique échoué : envoyez via WhatsApp",
+              classe: "bg-red-50 text-red-700",
+            }
+          : {
+              texte: "📋 Récap prêt : envoyez-le au restaurant via WhatsApp",
+              classe: "bg-amber-100 text-amber-900",
+            };
+
+  // Le RH ouvre WhatsApp : on note l'heure d'envoi (le message lui-même part depuis son téléphone)
+  const noterEnvoi = () => {
+    if (cloture && cloture.envoi_statut !== "envoye") {
+      startTransition(async () => {
+        await marquerRecapEnvoyeAction(restaurant.id);
+      });
+    }
+  };
 
   return (
     <div className="bg-white rounded-3xl p-5 border border-neutral-200 shadow-sm space-y-4">
@@ -78,9 +115,13 @@ export function RecapRestaurant({ restaurant, recap, cloture, companyNom, dateSt
           </h3>
           <p className="text-xs text-neutral-500">
             Livraison pour {formatHeure(restaurant.heure_livraison)}
-            {restaurant.telephone_whatsapp ? ` • ${restaurant.telephone_whatsapp}` : " • aucun numéro WhatsApp"}
+            {restaurant.telephone_whatsapp
+              ? ` • ${restaurant.telephone_whatsapp}`
+              : " • aucun numéro WhatsApp"}
           </p>
-          <span className={`inline-block text-[11px] font-semibold px-2 py-0.5 rounded-full ${statut.classe}`}>
+          <span
+            className={`inline-block text-[11px] font-semibold px-2 py-0.5 rounded-full ${statut.classe}`}
+          >
             {statut.texte}
           </span>
           {cloture?.envoi_erreur && (
@@ -91,15 +132,21 @@ export function RecapRestaurant({ restaurant, recap, cloture, companyNom, dateSt
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
-          {restaurant.telephone_whatsapp && (
+          {!peutEnvoyer && (
+            <span className="text-[11px] text-neutral-500">
+              Envoi possible après la clôture de la journée
+            </span>
+          )}
+          {peutEnvoyer && restaurant.telephone_whatsapp && (
             <a
               href={`https://wa.me/${restaurant.telephone_whatsapp.replace(/\D/g, "")}?text=${encodeURIComponent(message)}`}
               target="_blank"
               rel="noreferrer"
+              onClick={noterEnvoi}
               className="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 active:scale-98 text-white font-bold text-xs rounded-xl shadow-sm shadow-emerald-600/20 transition flex items-center gap-1.5"
             >
               <Send className="w-4 h-4" />
-              WhatsApp
+              {cloture?.envoi_statut === "envoye" ? "Renvoyer" : "Envoyer le récap"}
             </a>
           )}
           <a
@@ -112,13 +159,22 @@ export function RecapRestaurant({ restaurant, recap, cloture, companyNom, dateSt
             <ExternalLink className="w-4 h-4 text-neutral-500" />
             Page restaurant
           </a>
-          <button
-            onClick={copier}
-            className="px-3 py-2 bg-neutral-100 hover:bg-neutral-200 active:scale-98 text-neutral-800 font-semibold text-xs rounded-xl transition flex items-center gap-1.5"
-          >
-            {copie ? <Check className="w-4 h-4 text-emerald-600" /> : <Copy className="w-4 h-4 text-neutral-500" />}
-            {copie ? "Copié !" : "Copier"}
-          </button>
+          {peutEnvoyer && (
+            <button
+              onClick={() => {
+                copier();
+                noterEnvoi();
+              }}
+              className="px-3 py-2 bg-neutral-100 hover:bg-neutral-200 active:scale-98 text-neutral-800 font-semibold text-xs rounded-xl transition flex items-center gap-1.5"
+            >
+              {copie ? (
+                <Check className="w-4 h-4 text-emerald-600" />
+              ) : (
+                <Copy className="w-4 h-4 text-neutral-500" />
+              )}
+              {copie ? "Copié !" : "Copier"}
+            </button>
+          )}
         </div>
       </div>
 

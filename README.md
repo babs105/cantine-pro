@@ -16,7 +16,7 @@
 
 2. **Cockpit RH Express (`/rh`) :**
    * **Suivi Live 11h :** Compteurs temps réel (Total repas, En attente, Absents, Taux de participation).
-   * **Clôture automatique 11h10 :** Totaux exacts par plat, un récapitulatif par restaurant.
+   * **Clôture après 11h10 :** Totaux exacts par plat, un récapitulatif par restaurant envoyé par le RH.
    * **Générateur WhatsApp Traiteur :** Message récapitulatif prêt à envoyer en 1 clic à votre traiteur.
    * **Gestionnaire de Menus :** Ajout de plats avec raccourcis sénégalais (Thiéboudienne, Yassa, Mafé, Soupou Kandia).
    * **Gestion des Collaborateurs :** Import en masse CSV (`Nom, Téléphone`), bouton direct de partage WhatsApp.
@@ -88,15 +88,24 @@ dans l'onglet **Restaurants** (nom, WhatsApp, heure de livraison). Chaque restau
 de confirmation `/resto/<token>`.
 Base de démo : slug `pilote-thies`, code `pilote-thies-2026` (à changer avant le go-live).
 
-## ⏰ Principe de fonctionnement
+## ⏰ Principe de fonctionnement (mode manuel du pilote)
 
-1. Le RH publie le menu du jour : chaque plat est rattaché au restaurant qui le prépare.
-2. Les salariés choisissent leur plat sur la PWA entre **08h00 et 11h10** (heures réglables par entreprise).
-3. À **11h10** (cron Vercel, `vercel.json`, lundi–vendredi, heure de Dakar = GMT), `/api/cron/cloture`
-   fige un récapitulatif **par restaurant** dans `clotures` et l'envoie à chaque restaurant
-   (WhatsApp Cloud API, webhook, ou bouton WhatsApp manuel dans le cockpit).
-4. Chaque restaurant confirme d'un clic sur son lien `/resto/<token>` ; à 11h30, le cockpit signale
-   les restaurants qui n'ont pas confirmé.
+Pour le pilote, **rien n'est envoyé automatiquement** : le RH déclenche chaque envoi depuis le cockpit.
+
+1. **Le matin** — le RH publie le menu du jour (chaque plat est rattaché au restaurant qui le prépare),
+   puis clique sur **« Envoyer sur WhatsApp »** (Suivi Live, étape 1) : le message avec le menu, le lien
+   du portail et l'heure limite est prêt à poster dans le groupe WhatsApp des salariés.
+2. **De 08h00 à 11h10** — les salariés votent sur la PWA. À 11h10 le vote se bloque tout seul.
+3. **Après 11h10** — le RH clique sur **« Clôturer la journée »** : un récapitulatif est figé par restaurant.
+   Il envoie ensuite chaque récap avec **« Envoyer le récap »** sur la carte du restaurant (WhatsApp) ;
+   l'heure d'envoi est notée.
+4. **Confirmation** — chaque restaurant confirme d'un clic sur son lien `/resto/<token>` ; à 11h30, le
+   cockpit signale les restaurants qui ont reçu leur récap sans le confirmer.
+
+> Envoi automatique (plus tard) : la route `/api/cron/cloture` clôture et envoie les récaps via
+> l'API WhatsApp Cloud ou un webhook. Pour l'activer, ajoutez dans `vercel.json`
+> `"crons": [{ "path": "/api/cron/cloture", "schedule": "10 11 * * 1-5" }]` (ou appelez-la depuis
+> QStash / cron-job.org avec `Authorization: Bearer CRON_SECRET`).
 
 Variables d'environnement : voir [`.env.local.example`](./.env.local.example).
 

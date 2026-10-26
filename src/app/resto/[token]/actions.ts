@@ -36,7 +36,7 @@ export async function confirmerPreparationAction(
     return { success: false, message: error.message };
   }
   if (!data || data.length === 0) {
-    return { success: false, message: "La commande du jour n'est pas encore clôturée (11h10)." };
+    return { success: false, message: "La commande du jour n'est pas encore clôturée par l'entreprise." };
   }
 
   revalidatePath(`/resto/${token}`);

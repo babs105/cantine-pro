@@ -76,7 +76,7 @@ export default async function TraiteurValidationPage({ params }: RestoPageProps)
         <div className="bg-neutral-800 rounded-3xl p-5 border border-neutral-700 shadow-xl mb-4">
           <div className="flex items-center justify-between text-xs font-semibold text-orange-400 uppercase tracking-wider mb-2">
             <span>Passerelle Traiteur</span>
-            <span>{isCloture ? "Commande clôturée" : "Votes en cours"}</span>
+            <span>{isCloture ? "Commande clôturée" : "En attente de clôture"}</span>
           </div>
 
           <h1 className="text-xl font-black text-white flex items-center gap-2">

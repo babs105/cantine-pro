@@ -6,7 +6,8 @@ import { generateToken, isSupabaseConfigured, todayDakar } from "@/lib/config";
 import { ajouterJours, isDateValide, joursOuvres, lundiDeLaSemaine } from "@/lib/dates";
 import { getRhCompanyId } from "@/lib/rh-session";
 import { lignesVersEmployes, parseCsv, parseFichierEmployes, type LigneEmploye } from "@/lib/excel";
-import { rafraichirRecapCloture } from "@/lib/cloture";
+import { cloturerEntreprise, rafraichirRecapCloture } from "@/lib/cloture";
+import { isApresHeureLimite } from "@/lib/dates";
 
 const CHAMPS_EMPLOYE = "id, nom, telephone, service, token, is_active";
 const CHAMPS_PLAT = "id, date, titre, description, prix_unitaire, is_available, restaurant_id";
@@ -528,4 +529,62 @@ export async function modifierRestaurantAction(
 
   revalidatePath("/rh");
   return { success: !error, message: error?.message };
+}
+
+/**
+ * Clôture manuelle de la journée par le RH (après l'heure limite) : fige un récapitulatif par restaurant.
+ * Rien n'est envoyé automatiquement : le RH envoie ensuite chaque récap via WhatsApp depuis le cockpit.
+ * Peut être relancée (ex : restaurant ajouté après coup) sans toucher aux récaps déjà envoyés.
+ */
+export async function cloturerJourneeAction(): Promise<{ success: boolean; message?: string }> {
+  if (!isSupabaseConfigured()) {
+    return { success: false, message: "Disponible une fois Supabase connecté." };
+  }
+
+  const companyId = await getRhCompanyId();
+  if (!companyId) return { success: false, message: SESSION_EXPIREE };
+
+  const supabase = await createClient();
+  const { data: company } = await supabase.from("companies").select("*").eq("id", companyId).single();
+  if (!company) return { success: false, message: "Entreprise introuvable." };
+
+  const heureLimite = (company as any).heure_limite_vote as string;
+  if (!isApresHeureLimite(heureLimite)) {
+    return {
+      success: false,
+      message: `Les votes sont ouverts jusqu'à ${heureLimite.slice(0, 5).replace(":", "h")} : clôture possible après.`,
+    };
+  }
+
+  try {
+    const clotures = await cloturerEntreprise(supabase, company as any, todayDakar(), { envoyer: false });
+    if (clotures.length === 0) {
+      return { success: false, message: "Aucun menu publié aujourd'hui : rien à clôturer." };
+    }
+  } catch (err: any) {
+    return { success: false, message: err.message };
+  }
+
+  revalidatePath("/rh");
+  return { success: true };
+}
+
+/**
+ * Le RH vient d'ouvrir WhatsApp pour envoyer le récap à un restaurant : on note l'heure d'envoi
+ */
+export async function marquerRecapEnvoyeAction(restaurantId: string): Promise<{ success: boolean }> {
+  if (!isSupabaseConfigured()) return { success: true };
+
+  const companyId = await getRhCompanyId();
+  if (!companyId) return { success: false };
+
+  const supabase = await createClient();
+  const { error } = await (supabase.from("clotures") as any)
+    .update({ envoi_statut: "envoye", envoi_erreur: null, envoye_at: new Date().toISOString() })
+    .eq("company_id", companyId)
+    .eq("restaurant_id", restaurantId)
+    .eq("date", todayDakar());
+
+  revalidatePath("/rh");
+  return { success: !error };
 }

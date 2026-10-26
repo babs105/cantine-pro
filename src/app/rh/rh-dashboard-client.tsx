@@ -20,10 +20,15 @@ import {
   Pencil,
   PhoneCall,
   Store,
+  ExternalLink,
+  Link2,
+  Megaphone,
+  Lock,
 } from "lucide-react";
-import { buildRecap } from "@/lib/recap";
+import { buildMessageMenuDuJour, buildRecap } from "@/lib/recap";
 import {
   addEmployeAction,
+  cloturerJourneeAction,
   desactiverEmployeAction,
   modifierCommandeRhAction,
   modifierServiceEmployeAction,
@@ -84,6 +89,8 @@ interface RhDashboardClientProps {
   restaurants: RestaurantInfo[];
   clotures: ClotureInfo[];
   restaurantsEnRetard: string[];
+  /** Heure limite de vote atteinte (calculé côté serveur, heure de Dakar) */
+  votesClos: boolean;
   appBaseUrl: string;
   isDemo: boolean;
 }
@@ -101,6 +108,7 @@ export function RhDashboardClient({
   restaurants,
   clotures,
   restaurantsEnRetard,
+  votesClos,
   appBaseUrl,
   isDemo,
 }: RhDashboardClientProps) {
@@ -156,6 +164,53 @@ export function RhDashboardClient({
       clotures.some((c) => c.restaurant_id === r.id)
   );
   const nomRestaurant = (id?: string | null) => restaurants.find((r) => r.id === id)?.nom;
+
+  // Lien global de l'entreprise : chaque salarié choisit son nom (à poster dans le groupe WhatsApp)
+  const lienPortail = `${appBaseUrl}/c/${company.slug}`;
+  const messagePortail =
+    `🍽️ Cantine ${company.nom} : choisissez votre repas du jour ici, avant ` +
+    `${company.heure_limite_vote.slice(0, 5).replace(":", "h")} 👉 ${lienPortail}`;
+  const copierLienPortail = () => {
+    navigator.clipboard.writeText(lienPortail);
+    setCopiedToken("__portail__");
+    setTimeout(() => setCopiedToken(null), 2500);
+  };
+
+  // Étape 1 (matin) : message du menu du jour à poster dans le groupe WhatsApp des salariés
+  const menusDuJour = restaurantsDuJour
+    .map((r) => ({ restaurant: r.nom, plats: plats.filter((p) => p.restaurant_id === r.id && p.is_available) }))
+    .filter((m) => m.plats.length > 0);
+  const messageMenuDuJour = buildMessageMenuDuJour({
+    companyNom: company.nom,
+    dateStr: new Intl.DateTimeFormat("fr-FR", {
+      weekday: "long",
+      day: "numeric",
+      month: "long",
+      timeZone: "Africa/Dakar",
+    }).format(new Date()),
+    heureLimite: company.heure_limite_vote,
+    menus: menusDuJour,
+    lienPortail,
+  });
+  const copierMenuDuJour = () => {
+    navigator.clipboard.writeText(messageMenuDuJour);
+    setCopiedToken("__menu__");
+    setTimeout(() => setCopiedToken(null), 2500);
+  };
+
+  // Étape 3 (après 11h10) : clôture manuelle de la journée, puis envoi de chaque récap
+  const restaurantsNonClotures = restaurantsDuJour.filter((r) => !clotures.some((c) => c.restaurant_id === r.id));
+  const cloturerJournee = () => {
+    startTransition(async () => {
+      const res = await cloturerJourneeAction();
+      if (res.success) {
+        setActionError(null);
+        setActionInfo("Journée clôturée : envoyez maintenant chaque récap à son restaurant via WhatsApp.");
+      } else {
+        setActionError(res.message || "Clôture impossible.");
+      }
+    });
+  };
 
   // Copier le lien d'un collaborateur
   const copyLienEmploye = (token: string) => {
@@ -301,8 +356,8 @@ export function RhDashboardClient({
               </h1>
             </div>
             <p className="text-xs text-neutral-500 mt-0.5">
-              Votes de {company.heure_ouverture_vote.slice(0, 5)} à {company.heure_limite_vote.slice(0, 5)} • Commandes
-              envoyées aux restaurants après la clôture
+              Votes de {company.heure_ouverture_vote.slice(0, 5)} à {company.heure_limite_vote.slice(0, 5)} • Le RH
+              clôture puis envoie les récaps aux restaurants
               {joursEssaiRestants !== null && (
                 <>
                   {" "}•{" "}
@@ -440,11 +495,90 @@ export function RhDashboardClient({
               </div>
             )}
 
-            {clotures.length === 0 && !isDemo && (
-              <div className="flex items-center gap-2 text-[11px] text-neutral-500">
-                <RefreshCw className="w-3.5 h-3.5 animate-spin [animation-duration:3s]" />
-                Votes ouverts de {company.heure_ouverture_vote.slice(0, 5)} à {company.heure_limite_vote.slice(0, 5)} —
-                envoi aux restaurants juste après la clôture — actualisation toutes les 20 secondes
+            {/* ÉTAPE 1 (MATIN) : ENVOYER LE MENU DU JOUR AUX SALARIÉS */}
+            {!votesClos && (
+              <div className="bg-white rounded-3xl p-5 border border-orange-200 shadow-sm space-y-3">
+                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                  <div>
+                    <h2 className="text-sm font-extrabold text-neutral-900 flex items-center gap-2">
+                      <Megaphone className="w-4 h-4 text-orange-600" />
+                      1. Envoyer le menu du jour aux salariés
+                    </h2>
+                    <p className="text-xs text-neutral-500 mt-0.5">
+                      Postez ce message dans le groupe WhatsApp de l&apos;entreprise : menu, lien du portail et heure
+                      limite ({company.heure_limite_vote.slice(0, 5).replace(":", "h")}).
+                    </p>
+                  </div>
+                  {menusDuJour.length > 0 && (
+                    <div className="flex flex-wrap gap-2 shrink-0">
+                      <a
+                        href={`https://wa.me/?text=${encodeURIComponent(messageMenuDuJour)}`}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-xl transition flex items-center gap-1.5"
+                      >
+                        <Send className="w-4 h-4" />
+                        Envoyer sur WhatsApp
+                      </a>
+                      <button
+                        type="button"
+                        onClick={copierMenuDuJour}
+                        className="px-3 py-2 bg-neutral-100 hover:bg-neutral-200 text-neutral-800 font-semibold text-xs rounded-xl transition flex items-center gap-1.5"
+                      >
+                        {copiedToken === "__menu__" ? (
+                          <Check className="w-4 h-4 text-emerald-600" />
+                        ) : (
+                          <Copy className="w-4 h-4" />
+                        )}
+                        {copiedToken === "__menu__" ? "Copié !" : "Copier"}
+                      </button>
+                    </div>
+                  )}
+                </div>
+                {menusDuJour.length === 0 ? (
+                  <p className="text-xs text-amber-800 bg-amber-50 rounded-xl p-3">
+                    Aucun plat publié pour aujourd&apos;hui : ajoutez d&apos;abord les plats dans « Menus Semaine ».
+                  </p>
+                ) : (
+                  <pre className="text-[11px] text-neutral-600 bg-neutral-50 rounded-xl p-3 whitespace-pre-wrap font-sans">
+                    {messageMenuDuJour.replace(/\*/g, "")}
+                  </pre>
+                )}
+                {!isDemo && (
+                  <div className="flex items-center gap-2 text-[11px] text-neutral-500">
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin [animation-duration:3s]" />
+                    2. Votes ouverts de {company.heure_ouverture_vote.slice(0, 5)} à{" "}
+                    {company.heure_limite_vote.slice(0, 5)} — actualisation toutes les 20 secondes
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* ÉTAPE 3 (APRÈS L'HEURE LIMITE) : CLÔTURER PUIS ENVOYER LES RÉCAPS AUX RESTAURANTS */}
+            {votesClos && restaurantsDuJour.length > 0 && (
+              <div
+                className={`p-4 rounded-2xl border text-xs flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 ${
+                  restaurantsNonClotures.length > 0
+                    ? "bg-amber-50 border-amber-300 text-amber-900"
+                    : "bg-emerald-50 border-emerald-200 text-emerald-900"
+                }`}
+              >
+                <span className="font-semibold">
+                  {restaurantsNonClotures.length > 0
+                    ? `🔒 Votes clôturés à ${company.heure_limite_vote.slice(0, 5)}. Clôturez la journée pour figer les récaps, puis envoyez-les aux restaurants.`
+                    : "✅ Journée clôturée : envoyez chaque récap à son restaurant avec le bouton « Envoyer le récap »."}
+                </span>
+                {restaurantsNonClotures.length > 0 && !isDemo && (
+                  <button
+                    type="button"
+                    disabled={isPending}
+                    onClick={cloturerJournee}
+                    className="shrink-0 px-4 py-2 bg-neutral-900 hover:bg-neutral-800 disabled:opacity-50 text-white font-bold rounded-xl flex items-center gap-1.5"
+                  >
+                    <Lock className="w-4 h-4" />
+                    {isPending ? "Clôture..." : "Clôturer la journée"}
+                  </button>
+                )}
               </div>
             )}
 
@@ -554,6 +688,7 @@ export function RhDashboardClient({
                     cloture={clotures.find((c) => c.restaurant_id === r.id) || null}
                     companyNom={company.nom}
                     dateStr={dateStr}
+                    peutEnvoyer={isDemo || clotures.some((c) => c.restaurant_id === r.id)}
                   />
                 ))
               )}
@@ -736,6 +871,57 @@ export function RhDashboardClient({
         {/* ============================================================ */}
         {activeTab === "employes" && (
           <div className="space-y-6">
+            {/* LIEN PORTAIL ENTREPRISE (À POSTER DANS LE GROUPE WHATSAPP) */}
+            <div className="bg-orange-50 border border-orange-200 rounded-3xl p-5 space-y-3">
+              <div>
+                <h2 className="text-sm font-extrabold text-neutral-900 flex items-center gap-2">
+                  <Link2 className="w-4 h-4 text-orange-600" />
+                  Lien du portail entreprise
+                </h2>
+                <p className="text-xs text-neutral-600 mt-0.5">
+                  Un seul lien pour tout le monde : postez-le dans le groupe WhatsApp de l&apos;entreprise. Chaque
+                  salarié choisit son nom (ou s&apos;inscrit) puis vote.
+                </p>
+              </div>
+              <div className="flex flex-col sm:flex-row gap-2">
+                <code className="flex-1 text-xs bg-white border border-orange-200 rounded-xl px-3 py-2 break-all">
+                  {lienPortail}
+                </code>
+                <div className="flex flex-wrap gap-2">
+                  <a
+                    href={`/c/${company.slug}`}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="px-3 py-2 bg-white hover:bg-orange-100 border border-orange-200 text-neutral-800 font-semibold text-xs rounded-xl transition flex items-center gap-1.5"
+                  >
+                    <ExternalLink className="w-4 h-4" />
+                    Ouvrir
+                  </a>
+                  <button
+                    type="button"
+                    onClick={copierLienPortail}
+                    className="px-3 py-2 bg-white hover:bg-orange-100 border border-orange-200 text-neutral-800 font-semibold text-xs rounded-xl transition flex items-center gap-1.5"
+                  >
+                    {copiedToken === "__portail__" ? (
+                      <Check className="w-4 h-4 text-emerald-600" />
+                    ) : (
+                      <Copy className="w-4 h-4" />
+                    )}
+                    {copiedToken === "__portail__" ? "Copié !" : "Copier"}
+                  </button>
+                  <a
+                    href={`https://wa.me/?text=${encodeURIComponent(messagePortail)}`}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="px-3 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-xl transition flex items-center gap-1.5"
+                  >
+                    <Send className="w-4 h-4" />
+                    Partager sur WhatsApp
+                  </a>
+                </div>
+              </div>
+            </div>
+
             {/* Actions Rapides Collaborateurs */}
             <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
               <div>

@@ -82,13 +82,16 @@ async function getRestaurantsDuJour(supabase: Supabase, companyId: string, date:
 
 /**
  * Clôture de 11h10 d'une entreprise : pour chaque restaurant du menu du jour, fige le récapitulatif
- * de ses plats dans `clotures` et le lui envoie. Idempotent : un récap déjà envoyé n'est pas renvoyé.
+ * de ses plats dans `clotures`. Avec `envoyer`, le récap part aussi automatiquement (WhatsApp / webhook) ;
+ * sinon le RH l'envoie lui-même depuis le cockpit. Idempotent : un récap déjà envoyé n'est pas modifié.
  */
 export async function cloturerEntreprise(
   supabase: Supabase,
   company: Company,
-  date: string
+  date: string,
+  options: { envoyer?: boolean } = {}
 ): Promise<Array<Cloture & { restaurant_nom: string }>> {
+  const envoyer = options.envoyer ?? true;
   const restaurants = await getRestaurantsDuJour(supabase, company.id, date);
   const commandes = await getCommandesDuJour(supabase, company.id, date);
 
@@ -118,7 +121,7 @@ export async function cloturerEntreprise(
     });
 
     const resultat =
-      restaurant.is_active && restaurant.telephone_whatsapp
+      envoyer && restaurant.is_active && restaurant.telephone_whatsapp
         ? await envoyerWhatsApp({
             to: restaurant.telephone_whatsapp,
             message,

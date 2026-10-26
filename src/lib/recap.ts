@@ -36,6 +36,29 @@ export function formatHeure(heure: string | null | undefined, defaut = "12:30"):
   return (heure || defaut).slice(0, 5).replace(":", "h");
 }
 
+/** Message du matin posté par le RH dans le groupe WhatsApp des salariés */
+export function buildMessageMenuDuJour(params: {
+  companyNom: string;
+  dateStr: string;
+  heureLimite: string;
+  menus: Array<{ restaurant: string; plats: Array<{ titre: string; prix_unitaire: number }> }>;
+  lienPortail: string;
+}): string {
+  const { companyNom, dateStr, heureLimite, menus, lienPortail } = params;
+  let msg = `🍽️ *MENU DU JOUR — ${companyNom.toUpperCase()}*\n`;
+  msg += `📅 ${dateStr}\n\n`;
+  for (const menu of menus) {
+    if (menus.length > 1) msg += `*${menu.restaurant}*\n`;
+    for (const plat of menu.plats) {
+      msg += `• ${plat.titre} (${plat.prix_unitaire.toLocaleString("fr-FR").replace(/\u202f/g, " ")} F)\n`;
+    }
+    msg += `\n`;
+  }
+  msg += `⏰ Choisissez votre plat avant *${formatHeure(heureLimite)}* :\n`;
+  msg += `👉 ${lienPortail}`;
+  return msg;
+}
+
 /** Message WhatsApp complet envoyé au traiteur à la clôture */
 export function buildMessageTraiteur(params: {
   companyNom: string;

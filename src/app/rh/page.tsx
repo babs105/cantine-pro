@@ -170,6 +170,7 @@ export default async function RhDashboardPage({ searchParams }: PageProps) {
         restaurants={demoRestaurants}
         clotures={[]}
         restaurantsEnRetard={[]}
+        votesClos={isApresHeureLimite(company.heure_limite_vote)}
         appBaseUrl={appBaseUrl}
         isDemo
       />
@@ -235,9 +236,11 @@ export default async function RhDashboardPage({ searchParams }: PageProps) {
 
   const clotures = ((rawClotures as any[]) || []);
   const restaurants = ((restos as any[]) || []).map((r) => ({ ...r, lien: lienRestaurant(r) }));
-  // Restaurants qui n'ont toujours pas confirmé leur commande après 11h30
+  // Restaurants à qui le récap a été envoyé et qui n'ont toujours pas confirmé après 11h30
   const restaurantsEnRetard = isApresHeureLimite(HEURE_ALERTE_TRAITEUR)
-    ? clotures.filter((c) => !c.confirme_at && c.total_repas > 0).map((c) => c.restaurant_id as string)
+    ? clotures
+        .filter((c) => c.envoi_statut === "envoye" && !c.confirme_at && c.total_repas > 0)
+        .map((c) => c.restaurant_id as string)
     : [];
 
   return (
@@ -252,6 +255,7 @@ export default async function RhDashboardPage({ searchParams }: PageProps) {
       restaurants={restaurants}
       clotures={clotures}
       restaurantsEnRetard={restaurantsEnRetard}
+      votesClos={isApresHeureLimite(comp.heure_limite_vote)}
       appBaseUrl={appBaseUrl}
       isDemo={false}
     />
