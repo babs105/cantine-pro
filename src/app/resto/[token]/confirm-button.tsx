@@ -8,10 +8,12 @@ interface ConfirmButtonProps {
   token: string;
   totalRepas: number;
   confirmeAt: string | null;
+  /** Vrai si l'entreprise a confirmé à la place du restaurant, après accord par téléphone */
+  confirmeParRh?: boolean;
   isCloture: boolean;
 }
 
-export function ConfirmButton({ token, totalRepas, confirmeAt, isCloture }: ConfirmButtonProps) {
+export function ConfirmButton({ token, totalRepas, confirmeAt, confirmeParRh, isCloture }: ConfirmButtonProps) {
   const [confirme, setConfirme] = useState<string | null>(confirmeAt);
   const [erreur, setErreur] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
@@ -25,7 +27,7 @@ export function ConfirmButton({ token, totalRepas, confirmeAt, isCloture }: Conf
     return (
       <div className="w-full py-3.5 px-4 bg-emerald-950/60 border border-emerald-700 text-emerald-300 font-bold text-sm rounded-2xl flex items-center justify-center gap-2">
         <CheckCircle2 className="w-5 h-5" />
-        Préparation confirmée à {heure}
+        {confirmeParRh ? `Confirmée par téléphone avec l'entreprise à ${heure}` : `Préparation confirmée à ${heure}`}
       </div>
     );
   }
@@ -33,7 +35,7 @@ export function ConfirmButton({ token, totalRepas, confirmeAt, isCloture }: Conf
   if (!isCloture) {
     return (
       <div className="w-full py-3.5 px-4 bg-neutral-900/60 border border-neutral-700 text-neutral-400 text-xs rounded-2xl">
-        Les votes sont encore en cours. Le total définitif sera disponible à 11h05.
+        Commande pas encore clôturée : l'entreprise vous enverra le total définitif après la fin des votes (11h10).
       </div>
     );
   }

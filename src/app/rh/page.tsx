@@ -3,12 +3,12 @@ import { createClient } from "@/lib/supabase/server";
 import { getAppBaseUrl, isApresHeureLimite, isSupabaseConfigured, todayDakar } from "@/lib/config";
 import { isDateValide, joursOuvres, lundiDeLaSemaine } from "@/lib/dates";
 import { getRhCompanyId } from "@/lib/rh-session";
-import { getCommandesDuJour, lienTraiteur } from "@/lib/cloture";
+import { getCommandesDuJour, lienRestaurant } from "@/lib/cloture";
 import { RhDashboardClient } from "./rh-dashboard-client";
 
 export const dynamic = "force-dynamic";
 
-/** Heure à partir de laquelle une clôture non confirmée par le traiteur déclenche une alerte */
+/** Heure à partir de laquelle une clôture non confirmée par un restaurant déclenche une alerte */
 const HEURE_ALERTE_TRAITEUR = "11:30:00";
 
 interface PageProps {
@@ -28,12 +28,31 @@ export default async function RhDashboardPage({ searchParams }: PageProps) {
     id: "demo-company-thies",
     nom: "Pilote Thiès Innovation",
     slug: "pilote-thies",
-    traiteur_nom: "Chez Fatou Traiteur Thiès",
-    traiteur_telephone: "+221770000000",
-    heure_limite_vote: "11:00:00",
-    heure_livraison_souhaitee: "12:30:00",
+    heure_ouverture_vote: "08:00:00",
+    heure_limite_vote: "11:10:00",
     trial_ends_at: null,
   };
+
+  const demoRestaurants = [
+    {
+      id: "demo-resto-1",
+      nom: "Chez Fatou Traiteur Thiès",
+      telephone_whatsapp: "+221770000000",
+      heure_livraison: "12:30:00",
+      token: "token-demo-traiteur",
+      is_active: true,
+      lien: `${appBaseUrl}/resto/token-demo-traiteur`,
+    },
+    {
+      id: "demo-resto-2",
+      nom: "Restaurant Le Teranga",
+      telephone_whatsapp: "+221770000001",
+      heure_livraison: "12:45:00",
+      token: "token-demo-teranga",
+      is_active: true,
+      lien: `${appBaseUrl}/resto/token-demo-teranga`,
+    },
+  ];
 
   const initialEmployes = [
     {
@@ -81,6 +100,7 @@ export default async function RhDashboardPage({ searchParams }: PageProps) {
   const initialPlats = [
     {
       id: "demo-plat-1",
+      restaurant_id: "demo-resto-1",
       titre: "Thiéboudienne Rouge Penda Mbaye",
       description: "Riz rouge au poisson avec légumes et beignets de niébé",
       prix_unitaire: 1500,
@@ -89,6 +109,7 @@ export default async function RhDashboardPage({ searchParams }: PageProps) {
     },
     {
       id: "demo-plat-2",
+      restaurant_id: "demo-resto-1",
       titre: "Yassa Poulet au Feu de Bois",
       description: "Poulet mariné citron et oignons caramélisés avec riz blanc",
       prix_unitaire: 1500,
@@ -97,6 +118,7 @@ export default async function RhDashboardPage({ searchParams }: PageProps) {
     },
     {
       id: "demo-plat-3",
+      restaurant_id: "demo-resto-2",
       titre: "Soupou Kandia (Sauce Gombo)",
       description: "Riz blanc parfumé avec sauce gombo et poisson fumé",
       prix_unitaire: 1700,
@@ -114,6 +136,7 @@ export default async function RhDashboardPage({ searchParams }: PageProps) {
       plat_titre: "Thiéboudienne Rouge Penda Mbaye",
       prix: 1500,
       plat_id: "demo-plat-1",
+      restaurant_id: "demo-resto-1",
     },
     {
       employe_id: "demo-emp-2",
@@ -123,6 +146,7 @@ export default async function RhDashboardPage({ searchParams }: PageProps) {
       plat_titre: "Yassa Poulet au Feu de Bois",
       prix: 1500,
       plat_id: "demo-plat-2",
+      restaurant_id: "demo-resto-1",
     },
     {
       employe_id: "demo-emp-3",
@@ -143,9 +167,10 @@ export default async function RhDashboardPage({ searchParams }: PageProps) {
         semaineLundi={semaineLundi}
         todayDate={todayDate}
         initialCommandes={initialCommandes}
-        cloture={null}
-        alerteTraiteur={false}
-        lienTraiteur={`${appBaseUrl}/resto/token-demo-traiteur`}
+        restaurants={demoRestaurants}
+        clotures={[]}
+        restaurantsEnRetard={[]}
+        votesClos={isApresHeureLimite(company.heure_limite_vote)}
         appBaseUrl={appBaseUrl}
         isDemo
       />
@@ -159,20 +184,24 @@ export default async function RhDashboardPage({ searchParams }: PageProps) {
 
   const supabase = await createClient();
 
-  const { data: rawComp } = await supabase
+  const { data: rawComp, error: compError } = await supabase
     .from("companies")
-    .select(
-      "id, nom, slug, traiteur_nom, traiteur_telephone, traiteur_token, heure_limite_vote, heure_livraison_souhaitee, trial_ends_at"
-    )
+    .select("id, nom, slug, heure_ouverture_vote, heure_limite_vote, trial_ends_at")
     .eq("id", companyId)
     .maybeSingle();
+
+  // Erreur de lecture (ex : base pas à jour) : on l'affiche au lieu de renvoyer en boucle vers la connexion
+  if (compError) {
+    return <ErreurBase message={compError.message} />;
+  }
 
   const comp: any = rawComp;
   if (!comp) {
     redirect("/rh/login");
   }
 
-  const [{ data: emps }, { data: dishes }, { data: weekDishes }, commandes, { data: rawCloture }] = await Promise.all([
+  const [{ data: emps }, { data: dishes }, { data: weekDishes }, commandes, { data: rawClotures }, { data: restos }] =
+    await Promise.all([
     supabase
       .from("employes")
       .select("id, nom, telephone, service, token, is_active")
@@ -181,13 +210,13 @@ export default async function RhDashboardPage({ searchParams }: PageProps) {
       .order("nom"),
     supabase
       .from("menus_du_jour")
-      .select("id, date, titre, description, prix_unitaire, is_available")
+      .select("id, date, titre, description, prix_unitaire, is_available, restaurant_id")
       .eq("company_id", comp.id)
       .eq("date", todayDate)
       .order("created_at"),
     supabase
       .from("menus_du_jour")
-      .select("id, date, titre, description, prix_unitaire, is_available")
+      .select("id, date, titre, description, prix_unitaire, is_available, restaurant_id")
       .eq("company_id", comp.id)
       .gte("date", jours[0])
       .lte("date", jours[4])
@@ -195,16 +224,24 @@ export default async function RhDashboardPage({ searchParams }: PageProps) {
     getCommandesDuJour(supabase, comp.id, todayDate),
     supabase
       .from("clotures")
-      .select("envoi_statut, envoi_erreur, envoye_at, confirme_at, total_repas")
+      .select("restaurant_id, envoi_statut, envoi_erreur, envoye_at, confirme_at, confirme_par, total_repas")
       .eq("company_id", comp.id)
-      .eq("date", todayDate)
-      .maybeSingle(),
+      .eq("date", todayDate),
+    supabase
+      .from("restaurants")
+      .select("id, nom, telephone_whatsapp, heure_livraison, token, is_active")
+      .eq("company_id", comp.id)
+      .order("created_at"),
   ]);
 
-  const cloture: any = rawCloture;
-  const alerteTraiteur = Boolean(
-    cloture && !cloture.confirme_at && isApresHeureLimite(HEURE_ALERTE_TRAITEUR)
-  );
+  const clotures = ((rawClotures as any[]) || []);
+  const restaurants = ((restos as any[]) || []).map((r) => ({ ...r, lien: lienRestaurant(r) }));
+  // Restaurants à qui le récap a été envoyé et qui n'ont toujours pas confirmé après 11h30
+  const restaurantsEnRetard = isApresHeureLimite(HEURE_ALERTE_TRAITEUR)
+    ? clotures
+        .filter((c) => c.envoi_statut === "envoye" && !c.confirme_at && c.total_repas > 0)
+        .map((c) => c.restaurant_id as string)
+    : [];
 
   return (
     <RhDashboardClient
@@ -215,11 +252,33 @@ export default async function RhDashboardPage({ searchParams }: PageProps) {
       semaineLundi={semaineLundi}
       todayDate={todayDate}
       initialCommandes={commandes}
-      cloture={cloture || null}
-      alerteTraiteur={alerteTraiteur}
-      lienTraiteur={lienTraiteur(comp)}
+      restaurants={restaurants}
+      clotures={clotures}
+      restaurantsEnRetard={restaurantsEnRetard}
+      votesClos={isApresHeureLimite(comp.heure_limite_vote)}
       appBaseUrl={appBaseUrl}
       isDemo={false}
     />
+  );
+}
+
+function ErreurBase({ message }: { message: string }) {
+  const migrationManquante = /does not exist|schema cache|column/i.test(message);
+  return (
+    <div className="min-h-screen bg-neutral-50 px-4 py-10 max-w-md mx-auto flex flex-col justify-center">
+      <div className="bg-white rounded-3xl p-6 shadow-sm border border-red-200 space-y-3">
+        <h1 className="text-lg font-extrabold text-red-700">Base de données à mettre à jour</h1>
+        {migrationManquante ? (
+          <p className="text-sm text-neutral-700">
+            La base Supabase n&apos;a pas encore la dernière structure. Exécutez le fichier{" "}
+            <code className="bg-neutral-100 px-1 rounded">supabase/schema.sql</code> dans l&apos;éditeur SQL de
+            Supabase, puis rechargez cette page.
+          </p>
+        ) : (
+          <p className="text-sm text-neutral-700">Impossible de charger les données de l&apos;entreprise.</p>
+        )}
+        <p className="text-[11px] text-neutral-400 font-mono break-words">{message}</p>
+      </div>
+    </div>
   );
 }

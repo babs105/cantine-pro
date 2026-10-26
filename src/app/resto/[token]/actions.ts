@@ -15,20 +15,20 @@ export async function confirmerPreparationAction(
   }
 
   const supabase = await createClient();
-  const { data: comp } = await supabase
-    .from("companies")
+  const { data: resto } = await supabase
+    .from("restaurants")
     .select("id")
-    .eq("traiteur_token", token)
+    .eq("token", token)
     .maybeSingle();
 
-  if (!comp) {
-    return { success: false, message: "Lien traiteur invalide." };
+  if (!resto) {
+    return { success: false, message: "Lien restaurant invalide." };
   }
 
   const confirmeAt = new Date().toISOString();
   const { data, error } = await (supabase.from("clotures") as any)
-    .update({ confirme_at: confirmeAt })
-    .eq("company_id", (comp as any).id)
+    .update({ confirme_at: confirmeAt, confirme_par: "restaurant" })
+    .eq("restaurant_id", (resto as any).id)
     .eq("date", todayDakar())
     .select("id");
 
@@ -36,7 +36,7 @@ export async function confirmerPreparationAction(
     return { success: false, message: error.message };
   }
   if (!data || data.length === 0) {
-    return { success: false, message: "La commande du jour n'est pas encore clôturée (11h05)." };
+    return { success: false, message: "La commande du jour n'est pas encore clôturée par l'entreprise." };
   }
 
   revalidatePath(`/resto/${token}`);

@@ -1,7 +1,11 @@
 import Link from "next/link";
 import { Utensils, ShieldCheck, Clock, Users, ArrowRight } from "lucide-react";
+import { isSupabaseConfigured } from "@/lib/config";
 
 export default function HomePage() {
+  // Avec une vraie base, chaque restaurant a son propre lien secret : on renvoie vers le cockpit
+  const lienRestaurant = isSupabaseConfigured() ? "/rh" : "/resto/token-demo-traiteur";
+
   return (
     <div className="flex min-h-screen flex-col justify-between p-6 max-w-md mx-auto sm:max-w-xl">
       <header className="pt-8 pb-4 text-center">
@@ -25,7 +29,7 @@ export default function HomePage() {
             <div className="flex items-start gap-3">
               <Clock className="w-5 h-5 text-orange-500 shrink-0 mt-0.5" />
               <span>
-                <strong>Vote avant 11h00 :</strong> Chaque collaborateur choisit
+                <strong>Vote avant 11h10 :</strong> Chaque collaborateur choisit
                 son plat du jour en 5 secondes sur son téléphone.
               </span>
             </div>
@@ -62,7 +66,7 @@ export default function HomePage() {
               href="/rh"
               className="inline-flex items-center justify-between w-full px-4 py-3 text-xs font-bold text-white bg-neutral-900 hover:bg-neutral-800 active:scale-98 transition rounded-2xl shadow-sm"
             >
-              <span>💼 Cockpit RH (Menus, Suivi Live & Agrégation 11h05)</span>
+              <span>💼 Cockpit RH (Menus, Suivi Live & Clôture 11h10)</span>
               <ArrowRight className="w-4 h-4 text-orange-400" />
             </Link>
 
@@ -83,10 +87,17 @@ export default function HomePage() {
             </Link>
 
             <Link
-              href="/resto/token-demo-traiteur"
+              href={lienRestaurant}
               className="inline-flex items-center justify-between w-full px-4 py-3 text-xs font-bold text-neutral-700 bg-white hover:bg-neutral-100 active:scale-98 transition rounded-2xl border border-neutral-200"
             >
-              <span>🍽️ Passerelle Traiteur (Validation 1-Clic)</span>
+              <span>
+                🍽️ Passerelle Restaurant (Validation 1-Clic)
+                {lienRestaurant === "/rh" && (
+                  <span className="block font-medium text-neutral-500">
+                    Liens dans le Cockpit RH → onglet Restaurants
+                  </span>
+                )}
+              </span>
               <ArrowRight className="w-4 h-4 text-neutral-400" />
             </Link>
           </div>

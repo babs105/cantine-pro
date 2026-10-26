@@ -17,7 +17,7 @@ export default async function CompanyPortalPage({ params }: PageProps) {
     id: "demo-company-thies",
     nom: "Pilote Thiès Innovation",
     slug: slug || "pilote-thies",
-    heure_limite_vote: "11:00:00",
+    heure_limite_vote: "11:10:00",
   };
 
   let employes = [

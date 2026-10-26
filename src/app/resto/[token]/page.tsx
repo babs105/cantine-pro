@@ -28,40 +28,43 @@ export default async function TraiteurValidationPage({ params }: RestoPageProps)
   ];
   let isCloture = true;
   let confirmeAt: string | null = null;
+  let confirmeParRh = false;
 
   if (isSupabaseConfigured()) {
     const supabase = await createClient();
-    const { data: rawComp } = await supabase
-      .from("companies")
-      .select("id, nom, traiteur_nom, heure_livraison_souhaitee")
-      .eq("traiteur_token", token)
+    const { data: rawResto } = await supabase
+      .from("restaurants")
+      .select("id, nom, heure_livraison, company_id, companies(nom)")
+      .eq("token", token)
       .maybeSingle();
 
-    const comp: any = rawComp;
-    if (!comp) {
+    const resto: any = rawResto;
+    if (!resto) {
       notFound();
     }
 
-    traiteurNom = comp.traiteur_nom || "Traiteur partenaire";
-    companyNom = comp.nom;
-    heureLivraison = comp.heure_livraison_souhaitee;
+    traiteurNom = resto.nom;
+    companyNom = resto.companies?.nom || "Entreprise";
+    heureLivraison = resto.heure_livraison;
 
     const { data: rawCloture } = await supabase
       .from("clotures")
-      .select("recap, confirme_at")
-      .eq("company_id", comp.id)
+      .select("recap, confirme_at, confirme_par")
+      .eq("restaurant_id", resto.id)
       .eq("date", today)
       .maybeSingle();
 
     const cloture: any = rawCloture;
     if (cloture) {
-      // Récapitulatif figé à 11h05 : c'est ce qui a été envoyé au traiteur
+      // Récapitulatif figé à la clôture : c'est ce qui a été envoyé au restaurant
       recap = cloture.recap;
       confirmeAt = cloture.confirme_at;
+      confirmeParRh = cloture.confirme_par === "rh";
       isCloture = true;
     } else {
-      // Avant la clôture : aperçu des votes en cours
-      recap = buildRecap(await getCommandesDuJour(supabase, comp.id, today));
+      // Avant la clôture : aperçu des votes en cours, limité aux plats de ce restaurant
+      const commandes = await getCommandesDuJour(supabase, resto.company_id, today);
+      recap = buildRecap(commandes.filter((c) => c.restaurant_id === resto.id));
       isCloture = false;
     }
   }
@@ -75,7 +78,7 @@ export default async function TraiteurValidationPage({ params }: RestoPageProps)
         <div className="bg-neutral-800 rounded-3xl p-5 border border-neutral-700 shadow-xl mb-4">
           <div className="flex items-center justify-between text-xs font-semibold text-orange-400 uppercase tracking-wider mb-2">
             <span>Passerelle Traiteur</span>
-            <span>{isCloture ? "Clôturé 11h05" : "Votes en cours"}</span>
+            <span>{isCloture ? "Commande clôturée" : "En attente de clôture"}</span>
           </div>
 
           <h1 className="text-xl font-black text-white flex items-center gap-2">
@@ -138,6 +141,7 @@ export default async function TraiteurValidationPage({ params }: RestoPageProps)
             token={token}
             totalRepas={totalPlats}
             confirmeAt={confirmeAt}
+            confirmeParRh={confirmeParRh}
             isCloture={isCloture}
           />
         </div>

@@ -19,12 +19,14 @@ export interface PlatSemaine {
   description: string | null;
   prix_unitaire: number;
   is_available: boolean;
+  restaurant_id?: string | null;
 }
 
 interface MenusSemaineProps {
   platsSemaine: PlatSemaine[];
   semaineLundi: string;
   todayDate: string;
+  restaurants: Array<{ id: string; nom: string }>;
   isDemo: boolean;
   onError: (message: string | null) => void;
 }
@@ -37,7 +39,7 @@ const SUGGESTIONS = [
   { label: "Salade", titre: "Salade Complète Végétarienne", prix: 1500, desc: "Œuf dur, maïs, crudités" },
 ];
 
-export function MenusSemaine({ platsSemaine, semaineLundi, todayDate, isDemo, onError }: MenusSemaineProps) {
+export function MenusSemaine({ platsSemaine, semaineLundi, todayDate, restaurants, isDemo, onError }: MenusSemaineProps) {
   const router = useRouter();
   const [plats, setPlats] = useState<PlatSemaine[]>(platsSemaine);
   const [isPending, startTransition] = useTransition();
@@ -49,6 +51,12 @@ export function MenusSemaine({ platsSemaine, semaineLundi, todayDate, isDemo, on
   const [titre, setTitre] = useState("");
   const [prix, setPrix] = useState("1500");
   const [desc, setDesc] = useState("");
+  const [restaurantId, setRestaurantId] = useState<string>(restaurants[0]?.id || "");
+  const nomRestaurant = (id?: string | null) => restaurants.find((r) => r.id === id)?.nom;
+
+  useEffect(() => {
+    if (!restaurants.some((r) => r.id === restaurantId)) setRestaurantId(restaurants[0]?.id || "");
+  }, [restaurants, restaurantId]);
 
   useEffect(() => setPlats(platsSemaine), [platsSemaine]);
   useEffect(() => {
@@ -64,7 +72,13 @@ export function MenusSemaine({ platsSemaine, semaineLundi, todayDate, isDemo, on
     e.preventDefault();
     if (!titre.trim()) return;
     startTransition(async () => {
-      const res = await addMenuPlatAction(titre.trim(), parseInt(prix, 10) || 1500, desc.trim() || undefined, jourCible);
+      const res = await addMenuPlatAction(
+        titre.trim(),
+        parseInt(prix, 10) || 1500,
+        desc.trim() || undefined,
+        jourCible,
+        restaurantId
+      );
       if (res.success && res.plat) {
         setPlats((prev) => [...prev, { ...res.plat, date: res.plat.date || jourCible }]);
         setTitre("");
@@ -156,6 +170,10 @@ export function MenusSemaine({ platsSemaine, semaineLundi, todayDate, isDemo, on
 
           {joursModifiables.length === 0 ? (
             <p className="text-xs text-neutral-500">Cette semaine est passée : elle n&apos;est plus modifiable.</p>
+          ) : restaurants.length === 0 ? (
+            <p className="text-xs text-neutral-500">
+              Ajoutez d&apos;abord un restaurant partenaire dans l&apos;onglet « Restaurants ».
+            </p>
           ) : (
             <>
               <div className="flex flex-wrap gap-1.5">
@@ -187,6 +205,20 @@ export function MenusSemaine({ platsSemaine, semaineLundi, todayDate, isDemo, on
                       <option key={j} value={j}>
                         {formatJourCourt(j)}
                         {j === todayDate ? " (aujourd'hui)" : ""}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-neutral-700 mb-1">Restaurant</label>
+                  <select
+                    value={restaurantId}
+                    onChange={(e) => setRestaurantId(e.target.value)}
+                    className="w-full text-xs px-3 py-2 rounded-xl border border-neutral-200 bg-white focus:outline-none focus:ring-2 focus:ring-orange-500"
+                  >
+                    {restaurants.map((r) => (
+                      <option key={r.id} value={r.id}>
+                        {r.nom}
                       </option>
                     ))}
                   </select>
@@ -274,6 +306,11 @@ export function MenusSemaine({ platsSemaine, semaineLundi, todayDate, isDemo, on
                           <div className="flex items-center gap-2 flex-wrap">
                             <span className="font-bold text-neutral-900 text-xs">{plat.titre}</span>
                             <span className="font-extrabold text-orange-600 text-xs">{formatFCFA(plat.prix_unitaire)}</span>
+                            {nomRestaurant(plat.restaurant_id) && (
+                              <span className="text-[10px] bg-neutral-100 text-neutral-600 px-2 py-0.5 rounded-full font-semibold">
+                                {nomRestaurant(plat.restaurant_id)}
+                              </span>
+                            )}
                             {!plat.is_available && (
                               <span className="text-[10px] bg-red-100 text-red-700 px-2 py-0.5 rounded-full font-bold">
                                 Rupture

@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "cantine-pro",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": ["next", "dev", "-p", "3124"],
+      "port": 3124
+    }
+  ]
+}
