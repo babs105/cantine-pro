@@ -17,6 +17,7 @@ interface CommandeVote {
   plat_id: string | null;
   statut: "choisi" | "absent" | "ne_mange_pas";
   plat_titre?: string;
+  enregistre_at?: string;
 }
 
 interface VoteClientProps {
@@ -26,13 +27,29 @@ interface VoteClientProps {
   heureLimite: string; // "11:00:00"
   dateAujourdhuiStr: string; // "26 Octobre 2026"
   isVerrouille: boolean;
+  secondesRestantes: number; // calculé côté serveur (heure de Dakar), indépendant de l'horloge du téléphone
   platsDisponibles: Plat[];
   commandeExistante: CommandeVote | null;
   onVoteAction: (
     token: string,
     statut: "choisi" | "absent" | "ne_mange_pas",
     platId: string | null
-  ) => Promise<{ success: boolean; message?: string }>;
+  ) => Promise<{ success: boolean; message?: string; enregistreAt?: string }>;
+}
+
+function formatTempsRestant(secondes: number): string {
+  const h = Math.floor(secondes / 3600);
+  const m = Math.ceil((secondes % 3600) / 60);
+  if (h === 0) return m <= 1 ? "moins d'1 min" : `${m} min`;
+  return m === 0 ? `${h} h` : `${h} h ${m.toString().padStart(2, "0")}`;
+}
+
+function formatHeureLocale(iso: string): string {
+  return new Intl.DateTimeFormat("fr-FR", {
+    hour: "2-digit",
+    minute: "2-digit",
+    timeZone: "Africa/Dakar",
+  }).format(new Date(iso));
 }
 
 export function VoteClient({
@@ -41,7 +58,8 @@ export function VoteClient({
   companyNom,
   heureLimite,
   dateAujourdhuiStr,
-  isVerrouille,
+  isVerrouille: verrouilleInitial,
+  secondesRestantes,
   platsDisponibles,
   commandeExistante,
   onVoteAction,
@@ -50,6 +68,22 @@ export function VoteClient({
   const [isPending, startTransition] = useTransition();
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isModifying, setIsModifying] = useState<boolean>(false);
+
+  // Compte à rebours avant la clôture ; l'interface se verrouille d'elle-même à l'heure limite
+  const [restant, setRestant] = useState<number>(secondesRestantes);
+  useEffect(() => {
+    if (verrouilleInitial) return;
+    const fin = Date.now() + secondesRestantes * 1000;
+    const tick = () => setRestant(Math.max(0, Math.round((fin - Date.now()) / 1000)));
+    const interval = setInterval(tick, 15_000);
+    const onVisible = () => document.visibilityState === "visible" && tick();
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      clearInterval(interval);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [verrouilleInitial, secondesRestantes]);
+  const isVerrouille = verrouilleInitial || restant <= 0;
 
   // Sauvegarde automatique du token dans le smartphone (PWA - Jour 3)
   useEffect(() => {
@@ -73,6 +107,7 @@ export function VoteClient({
             plat_id: platId,
             statut,
             plat_titre: platTitre,
+            enregistre_at: res.enregistreAt,
           });
           setIsModifying(false);
         } else {
@@ -115,6 +150,16 @@ export function VoteClient({
               {isVerrouille ? "Verrouillé à " + formattedHeureLimite : formattedHeureLimite + " précises"}
             </span>
           </div>
+
+          {!isVerrouille && (
+            <div
+              className={`mt-3 text-center text-xs font-bold py-2 rounded-xl ${
+                restant <= 15 * 60 ? "bg-red-50 text-red-700 animate-pulse" : "bg-orange-50 text-orange-800"
+              }`}
+            >
+              ⏱️ Il vous reste {formatTempsRestant(restant)} pour choisir
+            </div>
+          )}
         </div>
 
         {/* Message d'erreur éventuel */}
@@ -130,7 +175,7 @@ export function VoteClient({
           <div className="mb-4 p-4 bg-amber-50 border border-amber-200 rounded-2xl text-xs text-amber-900 flex items-center gap-2">
             <Clock className="w-4 h-4 text-amber-600 shrink-0" />
             <span>
-              L&apos;heure limite ({formattedHeureLimite}) est passée. La commande est en cours de préparation chez le traiteur.
+              Les commandes sont clôturées pour aujourd&apos;hui ({formattedHeureLimite}). La commande est en cours de préparation chez le traiteur.
             </span>
           </div>
         )}
@@ -144,7 +189,7 @@ export function VoteClient({
 
             <div>
               <p className="text-xs uppercase font-bold tracking-wider text-emerald-600 mb-1">
-                Choix Enregistré
+                Choix enregistré{commande.enregistre_at ? ` à ${formatHeureLocale(commande.enregistre_at)}` : ""}
               </p>
               <h2 className="text-lg font-extrabold text-neutral-900">
                 {commande.statut === "choisi"
@@ -202,7 +247,11 @@ export function VoteClient({
                 {platsDisponibles.map((plat) => (
                   <div
                     key={plat.id}
-                    className="bg-white rounded-2xl p-4 shadow-sm border border-neutral-100 hover:border-orange-300 transition-all flex flex-col justify-between"
+                    className={`bg-white rounded-2xl p-4 shadow-sm border transition-all flex flex-col justify-between ${
+                      commande?.plat_id === plat.id
+                        ? "border-emerald-400 ring-2 ring-emerald-100"
+                        : "border-neutral-100 hover:border-orange-300"
+                    }`}
                   >
                     <div>
                       <div className="flex justify-between items-start gap-2">
@@ -226,7 +275,7 @@ export function VoteClient({
                       onClick={() => handleVote("choisi", plat.id, plat.titre)}
                       className="mt-3.5 w-full py-2.5 px-4 bg-orange-600 hover:bg-orange-700 active:scale-98 disabled:opacity-50 text-white font-semibold text-xs rounded-xl shadow-sm shadow-orange-600/20 transition flex items-center justify-center gap-2"
                     >
-                      {isPending ? "Validation..." : "Commander ce plat"}
+                      {isPending ? "Validation..." : commande?.plat_id === plat.id ? "✓ Votre choix actuel" : "Commander ce plat"}
                     </button>
                   </div>
                 ))}

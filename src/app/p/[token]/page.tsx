@@ -2,7 +2,7 @@ import { createClient } from "@/lib/supabase/server";
 import { VoteClient } from "./vote-client";
 import { notFound } from "next/navigation";
 import { revalidatePath } from "next/cache";
-import { isApresHeureLimite, isSupabaseConfigured, TIMEZONE, todayDakar } from "@/lib/config";
+import { isApresHeureLimite, isSupabaseConfigured, secondesAvantHeure, TIMEZONE, todayDakar } from "@/lib/config";
 
 export const dynamic = "force-dynamic";
 
@@ -15,13 +15,13 @@ async function submitVoteAction(
   token: string,
   statut: "choisi" | "absent" | "ne_mange_pas",
   platId: string | null
-): Promise<{ success: boolean; message?: string }> {
+): Promise<{ success: boolean; message?: string; enregistreAt?: string }> {
   "use server";
 
 
   if (!isSupabaseConfigured()) {
     // Mode Démo / Mock local si Supabase non encore connecté
-    return { success: true };
+    return { success: true, enregistreAt: new Date().toISOString() };
   }
 
   try {
@@ -70,6 +70,8 @@ async function submitVoteAction(
       }
     }
 
+    const enregistreAt = new Date().toISOString();
+
     // 4. Upsert du vote (choix unique par date)
     const { error: upsertError } = await (supabase.from("commandes") as any).upsert(
       {
@@ -78,7 +80,8 @@ async function submitVoteAction(
         plat_id: statut === "choisi" ? platId : null,
         date: todayDate,
         statut,
-        updated_at: new Date().toISOString(),
+        modifie_par_rh: false,
+        updated_at: enregistreAt,
       },
       { onConflict: "employe_id,date" }
     );
@@ -91,7 +94,7 @@ async function submitVoteAction(
     }
 
     revalidatePath(`/p/${token}`);
-    return { success: true };
+    return { success: true, enregistreAt };
   } catch (err: any) {
     return { success: false, message: err.message || "Erreur serveur." };
   }
@@ -167,7 +170,7 @@ export default async function EmployeVotePage({ params }: PageProps) {
     // 3. Commande existante pour aujourd'hui
     const { data: rawCmd } = await supabase
       .from("commandes")
-      .select("id, plat_id, statut, menus_du_jour(titre)")
+      .select("id, plat_id, statut, updated_at, menus_du_jour(titre)")
       .eq("employe_id", employe.id)
       .eq("date", todayDate)
       .maybeSingle();
@@ -181,6 +184,7 @@ export default async function EmployeVotePage({ params }: PageProps) {
         plat_id: cmd.plat_id,
         statut: cmd.statut as "choisi" | "absent" | "ne_mange_pas",
         plat_titre: menuData?.titre || undefined,
+        enregistre_at: cmd.updated_at || undefined,
       };
     }
   }
@@ -188,6 +192,7 @@ export default async function EmployeVotePage({ params }: PageProps) {
   // Vérification si l'heure limite est dépassée
   const now = new Date();
   const isVerrouille = isApresHeureLimite(heureLimite, now);
+  const secondesRestantes = secondesAvantHeure(heureLimite, now);
 
   // Formatage date locale ex: "Lundi 26 Octobre"
   const dateAujourdhuiStr = new Intl.DateTimeFormat("fr-FR", {
@@ -205,6 +210,7 @@ export default async function EmployeVotePage({ params }: PageProps) {
       heureLimite={heureLimite}
       dateAujourdhuiStr={dateAujourdhuiStr}
       isVerrouille={isVerrouille}
+      secondesRestantes={secondesRestantes}
       platsDisponibles={platsDisponibles}
       commandeExistante={commandeExistante}
       onVoteAction={submitVoteAction}

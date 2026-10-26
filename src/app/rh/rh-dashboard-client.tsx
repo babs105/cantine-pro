@@ -177,6 +177,7 @@ export function RhDashboardClient({
         setEmployes((prev) => [res.employe, ...prev]);
         setNewNom("");
         setNewTel("");
+        setNewService("");
         setActionError(null);
       } else {
         setActionError(res.message || "Impossible d'ajouter le collaborateur.");
@@ -252,6 +253,8 @@ export function RhDashboardClient({
     year: "numeric",
     month: "2-digit",
   }).format(new Date());
+
+  const [moisExport, setMoisExport] = useState(moisCourant);
 
   const getWhatsAppTraiteurText = () =>
     buildMessageTraiteur({
@@ -350,7 +353,7 @@ export function RhDashboardClient({
               }`}
             >
               <Utensils className="w-3.5 h-3.5" />
-              Menus du Jour
+              Menus Semaine
             </button>
             <button
               onClick={() => setActiveTab("employes")}
@@ -400,6 +403,15 @@ export function RhDashboardClient({
         {/* ============================================================ */}
         {/* ONGLET 1 : SUIVI LIVE & AGRÉGATION 11H05                      */}
         {/* ============================================================ */}
+        {actionInfo && (
+          <div className="mb-4 p-3 bg-blue-50 border border-blue-200 text-blue-800 rounded-2xl text-xs flex items-center justify-between gap-2">
+            <span>{actionInfo}</span>
+            <button onClick={() => setActionInfo(null)} className="font-bold">
+              ✕
+            </button>
+          </div>
+        )}
+
         {activeTab === "live" && (
           <div className="space-y-6">
             {/* ALERTE 11H30 : TRAITEUR SANS CONFIRMATION */}
@@ -418,15 +430,6 @@ export function RhDashboardClient({
                     Appeler {company.traiteur_telephone}
                   </a>
                 )}
-              </div>
-            )}
-
-            {actionInfo && (
-              <div className="p-3 bg-blue-50 border border-blue-200 text-blue-800 rounded-2xl text-xs flex items-center justify-between gap-2">
-                <span>{actionInfo}</span>
-                <button onClick={() => setActionInfo(null)} className="font-bold">
-                  ✕
-                </button>
               </div>
             )}
 
@@ -564,13 +567,23 @@ export function RhDashboardClient({
                         <Download className="w-4 h-4" />
                         Facture du jour
                       </a>
-                      <a
-                        href={`/rh/export?mois=${moisCourant}`}
-                        className="px-3.5 py-2 bg-neutral-100 hover:bg-neutral-200 active:scale-98 text-neutral-700 font-semibold text-xs rounded-xl transition flex items-center gap-1.5"
-                      >
-                        <FileSpreadsheet className="w-4 h-4" />
-                        Facture du mois
-                      </a>
+                      <div className="flex items-center bg-neutral-100 rounded-xl">
+                        <input
+                          type="month"
+                          value={moisExport}
+                          max={moisCourant}
+                          onChange={(e) => setMoisExport(e.target.value || moisCourant)}
+                          className="bg-transparent text-xs pl-2.5 py-2 w-[7.5rem] focus:outline-none"
+                          title="Mois à exporter"
+                        />
+                        <a
+                          href={`/rh/export?mois=${moisExport}&format=xlsx`}
+                          className="px-3 py-2 hover:bg-neutral-200 active:scale-98 text-neutral-700 font-semibold text-xs rounded-r-xl transition flex items-center gap-1.5"
+                        >
+                          <FileSpreadsheet className="w-4 h-4 text-emerald-600" />
+                          Paie Excel
+                        </a>
+                      </div>
                     </>
                   )}
                 </div>
@@ -807,7 +820,7 @@ export function RhDashboardClient({
                 />
               </div>
 
-              <div className="w-full sm:w-60">
+              <div className="w-full sm:w-48">
                 <input
                   type="text"
                   placeholder="Téléphone (+221 77...)"
@@ -815,6 +828,22 @@ export function RhDashboardClient({
                   onChange={(e) => setNewTel(e.target.value)}
                   className="w-full text-xs px-3.5 py-2.5 rounded-xl border border-neutral-200 focus:outline-none focus:ring-2 focus:ring-orange-500"
                 />
+              </div>
+
+              <div className="w-full sm:w-40">
+                <input
+                  type="text"
+                  list="services-existants"
+                  placeholder="Service"
+                  value={newService}
+                  onChange={(e) => setNewService(e.target.value)}
+                  className="w-full text-xs px-3.5 py-2.5 rounded-xl border border-neutral-200 focus:outline-none focus:ring-2 focus:ring-orange-500"
+                />
+                <datalist id="services-existants">
+                  {services.map((svc) => (
+                    <option key={svc} value={svc} />
+                  ))}
+                </datalist>
               </div>
 
               <button
@@ -834,6 +863,7 @@ export function RhDashboardClient({
                   <thead>
                     <tr className="border-b border-neutral-100 text-neutral-400 font-semibold uppercase tracking-wider">
                       <th className="pb-3">Nom Collaborateur</th>
+                      <th className="pb-3">Service</th>
                       <th className="pb-3">Téléphone</th>
                       <th className="pb-3">Lien Magique Personnel</th>
                       <th className="pb-3 text-right">Partager sur WhatsApp</th>
@@ -846,6 +876,16 @@ export function RhDashboardClient({
                       return (
                         <tr key={emp.id} className="hover:bg-neutral-50/50 transition">
                           <td className="py-3 font-semibold text-neutral-900">{emp.nom}</td>
+                          <td className="py-3">
+                            <input
+                              type="text"
+                              list="services-existants"
+                              defaultValue={emp.service || "Général"}
+                              onBlur={(e) => changerService(emp, e.target.value)}
+                              onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
+                              className="w-28 text-xs px-2 py-1 rounded-lg border border-transparent hover:border-neutral-200 focus:border-orange-300 focus:outline-none bg-transparent"
+                            />
+                          </td>
                           <td className="py-3 text-neutral-500">{emp.telephone || "-"}</td>
                           <td className="py-3">
                             <button

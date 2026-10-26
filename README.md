@@ -92,3 +92,14 @@ Le cron Vercel (`vercel.json`, 11h05 GMT = heure de Dakar, lundi–vendredi) app
 il fige le récapitulatif du jour dans `clotures`, l'envoie au traiteur (WhatsApp Cloud API, webhook, ou
 bouton manuel dans le cockpit) et le traiteur confirme d'un clic sur `/resto/<token>`.
 Variables d'environnement : voir [`.env.local.example`](./.env.local.example).
+
+## 📋 Fonctions V2 Pilote
+
+* **Import Excel (.xlsx) ou CSV** : colonnes `Nom`, `Prénom`, `Téléphone`, `Service` (détection automatique des en-têtes, doublons ignorés, numéros à 9 chiffres complétés en +221).
+* **Menus de la semaine** (lundi → vendredi) avec **« Dupliquer la semaine précédente »**.
+* **Modification manuelle par le RH** d'un vote (y compris après 11h) : si la clôture est déjà faite, le récap traiteur est recalculé et le traiteur doit reconfirmer.
+* **Alerte 11h30** sur le cockpit si le traiteur n'a pas confirmé, avec bouton d'appel.
+* **Compte à rebours** sur la PWA employé, verrouillage automatique à l'heure limite, heure d'enregistrement du choix.
+* **Export Excel paie** (`/rh/export?mois=AAAA-MM&format=xlsx`) : onglets *Paie par service*, *Récap services*, *Facture traiteur*, *Détail jour par jour*.
+
+> Après mise à jour, relancez `supabase/schema.sql` (ajoute `employes.service` et `commandes.modifie_par_rh`).
