@@ -28,6 +28,7 @@ import {
   BarChart3,
   Settings,
   PartyPopper,
+  BellRing,
 } from "lucide-react";
 import { buildMessageMenuDuJour, buildRecap } from "@/lib/recap";
 import {
@@ -36,6 +37,7 @@ import {
   desactiverEmployeAction,
   modifierCommandeRhAction,
   modifierServiceEmployeAction,
+  envoyerRelanceDernierRappelAction,
 } from "./actions";
 import { logoutRhAction } from "./login/actions";
 import { MenusSemaine, type PlatSemaine } from "./menus-semaine";
@@ -619,6 +621,29 @@ export function RhDashboardClient({
                     <RefreshCw className="w-3.5 h-3.5 animate-spin [animation-duration:3s]" />
                     2. Commandes ouvertes de {company.heure_ouverture_vote.slice(0, 5)} à{" "}
                     {company.heure_limite_vote.slice(0, 5)} — actualisation toutes les 20 secondes
+                  </div>
+                )}
+
+                {/* RELANCE 10H30 — visible seulement si des gens n'ont pas commandé */}
+                {countEnAttente > 0 && !isDemo && (
+                  <div className="pt-2 border-t border-orange-100">
+                    <button
+                      type="button"
+                      disabled={isPending}
+                      onClick={async () => {
+                        const res = await envoyerRelanceDernierRappelAction();
+                        if (res.success && res.url) {
+                          window.open(res.url, "_blank");
+                          if (res.message) setActionInfo(res.message);
+                        } else {
+                          setActionError(res.message || "Impossible d'envoyer la relance.");
+                        }
+                      }}
+                      className="w-full sm:w-auto px-4 py-2 bg-amber-600 hover:bg-amber-700 disabled:opacity-50 text-white font-bold text-xs rounded-xl transition flex items-center justify-center gap-1.5"
+                    >
+                      <BellRing className="w-4 h-4" />
+                      Relance 10h30 — {countEnAttente} en attente
+                    </button>
                   </div>
                 )}
               </div>

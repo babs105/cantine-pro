@@ -2,7 +2,7 @@
 
 import { createClient } from "@/lib/supabase/server";
 import { revalidatePath } from "next/cache";
-import { generateToken, isSupabaseConfigured, todayDakar } from "@/lib/config";
+import { generateToken, isSupabaseConfigured, todayDakar, getAppBaseUrl } from "@/lib/config";
 import { ajouterJours, isDateValide, joursOuvres, lundiDeLaSemaine, normaliserJoursTravail } from "@/lib/dates";
 import { getRhCompanyId } from "@/lib/rh-session";
 import { lignesVersEmployes, parseCsv, parseFichierEmployes, type LigneEmploye } from "@/lib/excel";
@@ -669,4 +669,66 @@ export async function confirmerParTelephoneAction(
 
   revalidatePath("/rh");
   return { success: true };
+}
+
+/**
+ * Relance « Dernier rappel » à 10h30 : ouvre WhatsApp avec un message pré-rempli
+ * ciblant les collaborateurs qui n'ont pas encore commandé.
+ */
+export async function envoyerRelanceDernierRappelAction(): Promise<{ success: boolean; message?: string; url?: string }> {
+  if (!isSupabaseConfigured()) {
+    return { success: true, url: "https://wa.me/?text=Demo" };
+  }
+
+  const companyId = await getRhCompanyId();
+  if (!companyId) return { success: false, message: SESSION_EXPIREE };
+
+  const supabase = await createClient();
+  const { data: company } = await supabase
+    .from("companies")
+    .select("nom, slug, heure_limite_vote")
+    .eq("id", companyId)
+    .single();
+
+  if (!company) return { success: false, message: "Entreprise introuvable." };
+
+  const today = todayDakar();
+
+  // Collaborateurs actifs sans commande pour aujourd'hui
+  const { data: employesSansCommande } = await supabase
+    .from("employes")
+    .select("id, nom, telephone")
+    .eq("company_id", companyId)
+    .eq("is_active", true);
+
+  if (!employesSansCommande || employesSansCommande.length === 0) {
+    return { success: false, message: "Aucun collaborateur actif." };
+  }
+
+  const { data: commandesDuJour } = await supabase
+    .from("commandes")
+    .select("employe_id")
+    .eq("company_id", companyId)
+    .eq("date", today);
+
+  const dejaCommande = new Set((commandesDuJour || []).map((c: any) => c.employe_id));
+  const aRelancer = (employesSansCommande as any[])
+    .filter((e) => !dejaCommande.has(e.id) && e.telephone)
+    .map((e) => e.nom);
+
+  if (aRelancer.length === 0) {
+    return { success: false, message: "Tout le monde a déjà commandé !" };
+  }
+
+  const comp: any = company;
+  const lienPortail = `${getAppBaseUrl()}/c/${comp.slug}`;
+  const heureLimite = (comp.heure_limite_vote || "11:10:00").slice(0, 5).replace(":", "h");
+
+  const message = `⏰ *DERNIER RAPPEL — ${String(comp.nom).toUpperCase()}*\n` +
+    `Les commandes ferment à *${heureLimite}* !\n\n` +
+    `👉 Choisissez ici : ${lienPortail}\n\n` +
+    `_Sans réponse = « Ne mange pas » pour la facturation._`;
+
+  const url = `https://wa.me/?text=${encodeURIComponent(message)}`;
+  return { success: true, url, message: `${aRelancer.length} collaborateur(s) concerné(s)` };
 }
