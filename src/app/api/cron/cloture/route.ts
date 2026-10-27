@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { isApresHeureLimite, isSupabaseConfigured, todayDakar } from "@/lib/config";
 import { cloturerEntreprise } from "@/lib/cloture";
+import { etatAbonnement } from "@/lib/abonnement";
 
 export const dynamic = "force-dynamic";
 
@@ -49,6 +50,11 @@ export async function GET(request: Request) {
       // Une entreprise avec une heure limite plus tardive sera clôturée au prochain passage
       if (!isApresHeureLimite(company.heure_limite_vote)) {
         resultats.push({ company: company.nom, statut: "votes_en_cours" });
+        continue;
+      }
+      // Impayé à J+3 ou compte suspendu : rien n'est envoyé aux restaurants
+      if (etatAbonnement(company, today).envoiBloque) {
+        resultats.push({ company: company.nom, statut: "abonnement_suspendu" });
         continue;
       }
       try {

@@ -1,6 +1,6 @@
 -- ==============================================================================
 -- CANTINE PRO — SCHÉMA SUPABASE (Sprint Fast-Track 10 Jours)
--- Version: 1.2 (Pilote Thiès) — auth RH, restaurants partenaires, clôtures
+-- Version: 1.3 — auth RH, restaurants partenaires, clôtures, inscription & abonnements
 -- ==============================================================================
 
 -- Extension pour la génération automatique de tokens aléatoires sécurisés si besoin
@@ -188,6 +188,45 @@ ALTER TABLE public.clotures
     ADD COLUMN IF NOT EXISTS confirme_par TEXT CHECK (confirme_par IN ('restaurant', 'rh'));
 UPDATE public.clotures SET confirme_par = 'restaurant' WHERE confirme_at IS NOT NULL AND confirme_par IS NULL;
 
+-- 7 bis. INSCRIPTION EN LIBRE-SERVICE & ABONNEMENTS (v1.3)
+-- Les entreprises déjà présentes passent en « active » sans date de fin (pilotes gratuits) ;
+-- les nouvelles inscriptions démarrent en « trial » (14 jours via trial_ends_at).
+ALTER TABLE public.companies
+    ADD COLUMN IF NOT EXISTS responsable_nom TEXT,
+    ADD COLUMN IF NOT EXISTS email_contact TEXT,
+    ADD COLUMN IF NOT EXISTS telephone_contact TEXT,
+    ADD COLUMN IF NOT EXISTS plan TEXT NOT NULL DEFAULT 'pro',
+    ADD COLUMN IF NOT EXISTS statut_abonnement TEXT NOT NULL DEFAULT 'active',
+    ADD COLUMN IF NOT EXISTS abonnement_fin DATE; -- Payé jusqu'au (NULL = sans échéance)
+
+ALTER TABLE public.companies ALTER COLUMN statut_abonnement SET DEFAULT 'trial';
+
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'companies_plan_check') THEN
+        ALTER TABLE public.companies
+            ADD CONSTRAINT companies_plan_check CHECK (plan IN ('starter', 'pro', 'business'));
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'companies_statut_abonnement_check') THEN
+        ALTER TABLE public.companies
+            ADD CONSTRAINT companies_statut_abonnement_check
+            CHECK (statut_abonnement IN ('trial', 'active', 'suspended', 'cancelled'));
+    END IF;
+END $$;
+
+-- Paiements reçus (Wave direct pendant le pilote, saisis depuis la console /admin)
+CREATE TABLE IF NOT EXISTS public.paiements (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    company_id UUID NOT NULL REFERENCES public.companies(id) ON DELETE CASCADE,
+    montant INTEGER NOT NULL, -- FCFA
+    mode TEXT NOT NULL DEFAULT 'wave',
+    reference TEXT,
+    periode_fin DATE NOT NULL, -- L'abonnement est payé jusqu'à cette date
+    created_at TIMESTAMPTZ DEFAULT timezone('utc'::text, now()) NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_paiements_company ON public.paiements(company_id);
+
 -- 8. SÉCURITÉ : RLS ACTIVÉE SANS POLITIQUE
 -- Toutes les lectures/écritures passent par le serveur Next.js (clé service_role).
 -- La clé anon publique ne donne donc accès à aucune donnée (tokens employés inclus).
@@ -197,6 +236,7 @@ ALTER TABLE public.menus_du_jour ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.commandes ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.clotures ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.restaurants ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.paiements ENABLE ROW LEVEL SECURITY;
 ALTER VIEW public.vue_recapitulatif_traiteur SET (security_invoker = true);
 
 -- 9. JEU DE DONNÉES DE TEST / DÉMARRAGE (ENTREPRISES PILOTES THIÈS)

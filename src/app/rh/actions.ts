@@ -7,6 +7,8 @@ import { ajouterJours, isDateValide, joursOuvres, lundiDeLaSemaine } from "@/lib
 import { getRhCompanyId } from "@/lib/rh-session";
 import { lignesVersEmployes, parseCsv, parseFichierEmployes, type LigneEmploye } from "@/lib/excel";
 import { cloturerEntreprise, rafraichirRecapCloture } from "@/lib/cloture";
+import { placesRestantes } from "@/lib/limite-employes";
+import { etatAbonnement } from "@/lib/abonnement";
 import { isApresHeureLimite } from "@/lib/dates";
 
 const CHAMPS_EMPLOYE = "id, nom, telephone, service, token, is_active";
@@ -52,6 +54,9 @@ export async function addEmployeAction(
 
   try {
     const supabase = await createClient();
+    const places = await placesRestantes(supabase, companyId);
+    if (places.restantes < 1) return { success: false, message: places.message };
+
     const { data, error } = await (supabase.from("employes") as any)
       .insert({
         company_id: companyId,
@@ -140,6 +145,11 @@ export async function importEmployesAction(
 
     if (nouveaux.length === 0) {
       return { success: true, employes: [], ignores: lignes.length };
+    }
+
+    const places = await placesRestantes(supabase, companyId);
+    if (nouveaux.length > places.restantes) {
+      return { success: false, message: `${nouveaux.length} nouveaux salariés à importer. ${places.message}` };
     }
 
     const { data, error } = await (supabase.from("employes") as any)
@@ -578,6 +588,15 @@ export async function cloturerJourneeAction(): Promise<{ success: boolean; messa
   const supabase = await createClient();
   const { data: company } = await supabase.from("companies").select("*").eq("id", companyId).single();
   if (!company) return { success: false, message: "Entreprise introuvable." };
+
+  // Impayé à J+3 ou compte suspendu : la commande n'est plus transmise aux restaurants
+  const abonnement = etatAbonnement(company as any, todayDakar());
+  if (abonnement.envoiBloque) {
+    return {
+      success: false,
+      message: `${abonnement.libelle} : l'envoi aux restaurants est suspendu. Réglez l'abonnement (onglet Paramètres).`,
+    };
+  }
 
   const heureLimite = (company as any).heure_limite_vote as string;
   if (!isApresHeureLimite(heureLimite)) {

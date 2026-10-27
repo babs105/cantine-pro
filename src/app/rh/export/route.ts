@@ -3,29 +3,14 @@ import ExcelJS from "exceljs";
 import { createClient } from "@/lib/supabase/server";
 import { isSupabaseConfigured, todayDakar } from "@/lib/config";
 import { getRhCompanyId } from "@/lib/rh-session";
+import { STATUTS, getLignesFacturation, periodeMois, type LigneFacturation } from "@/lib/facturation";
 
 export const dynamic = "force-dynamic";
-
-const STATUTS: Record<string, string> = {
-  choisi: "Repas",
-  absent: "Absent(e)",
-  ne_mange_pas: "Ne mange pas",
-  non_confirme: "Non confirmé (non facturé)",
-};
 
 const FORMAT_FCFA = '#,##0" FCFA"';
 const ORANGE = "FFF97316";
 
-interface Ligne {
-  date: string;
-  nom: string;
-  telephone: string;
-  service: string;
-  statut: string;
-  plat: string;
-  restaurant: string;
-  montant: number;
-}
+type Ligne = LigneFacturation;
 
 function cellule(valeur: string | number | null | undefined): string {
   const s = String(valeur ?? "");
@@ -213,10 +198,9 @@ export async function GET(request: Request) {
   let debut: string;
   let fin: string;
   let libelle: string;
-  if (mois && /^\d{4}-\d{2}$/.test(mois)) {
-    const [annee, m] = mois.split("-").map(Number);
-    debut = `${mois}-01`;
-    fin = new Date(Date.UTC(annee, m, 0)).toISOString().slice(0, 10); // dernier jour du mois
+  const periode = mois ? periodeMois(mois) : null;
+  if (mois && periode) {
+    ({ debut, fin } = periode);
     libelle = mois;
   } else if (/^\d{4}-\d{2}-\d{2}$/.test(date)) {
     debut = fin = libelle = date;
@@ -225,52 +209,15 @@ export async function GET(request: Request) {
   }
 
   const supabase = await createClient();
-  const [{ data: comp }, { data: cmds, error }, { data: confirmees }] = await Promise.all([
-    supabase.from("companies").select("nom, slug").eq("id", companyId).single(),
-    supabase
-      .from("commandes")
-      .select(
-        "date, statut, employes(nom, telephone, service), menus_du_jour(titre, prix_unitaire, restaurant_id, restaurants(nom))"
-      )
-      .eq("company_id", companyId)
-      .gte("date", debut)
-      .lte("date", fin)
-      .order("date"),
-    // Commandes confirmées par le restaurant (ou par le RH après accord au téléphone)
-    supabase
-      .from("clotures")
-      .select("restaurant_id, date")
-      .eq("company_id", companyId)
-      .gte("date", debut)
-      .lte("date", fin)
-      .not("confirme_at", "is", null),
-  ]);
-
-  // Règle : un repas n'est facturé que si la commande de son restaurant a été confirmée ce jour-là
-  const joursConfirmes = new Set(((confirmees as any[]) || []).map((c) => `${c.restaurant_id}|${c.date}`));
-
-  if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+  const { data: comp } = await supabase.from("companies").select("nom, slug").eq("id", companyId).single();
+  let lignes: Ligne[];
+  try {
+    lignes = await getLignesFacturation(supabase, companyId, debut, fin);
+  } catch (err: any) {
+    return NextResponse.json({ error: err.message }, { status: 500 });
   }
 
   const company: any = comp;
-  const lignes: Ligne[] = (cmds || [])
-    .map((c: any) => {
-      const facture =
-        c.statut === "choisi" && joursConfirmes.has(`${c.menus_du_jour?.restaurant_id}|${c.date}`);
-      return {
-        date: c.date as string,
-        nom: (c.employes?.nom as string) || "",
-        telephone: (c.employes?.telephone as string) || "",
-        service: (c.employes?.service as string) || "Général",
-        statut: c.statut === "choisi" && !facture ? "non_confirme" : (c.statut as string),
-        plat: (c.menus_du_jour?.titre as string) || "",
-        restaurant: (c.menus_du_jour?.restaurants?.nom as string) || "",
-        montant: facture ? c.menus_du_jour?.prix_unitaire ?? 0 : 0,
-      };
-    })
-    .sort((a, b) => a.date.localeCompare(b.date) || a.nom.localeCompare(b.nom, "fr"));
-
   const nomFichier = `cantine-pro-${company?.slug || "export"}-${libelle}`;
 
   if (format === "xlsx") {

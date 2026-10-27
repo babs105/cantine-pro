@@ -17,14 +17,16 @@ export async function loginRhAction(
   const code = String(formData.get("code") || "");
 
   if (!slug || !code) {
-    return { error: "Renseignez l'identifiant entreprise et le code d'accès." };
+    return { error: "Renseignez l'identifiant (ou l'e-mail) et le code d'accès." };
   }
 
   const supabase = await createClient();
+  // Identifiant entreprise (slug) ou e-mail du responsable saisi à l'inscription
   const { data: rawComp } = await supabase
     .from("companies")
     .select("id, rh_code_hash, is_active")
-    .eq("slug", slug)
+    .eq(slug.includes("@") ? "email_contact" : "slug", slug)
+    .limit(1)
     .maybeSingle();
 
   const comp: any = rawComp;

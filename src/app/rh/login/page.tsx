@@ -1,6 +1,7 @@
 "use client";
 
 import { useActionState } from "react";
+import Link from "next/link";
 import { Lock, Utensils } from "lucide-react";
 import { loginRhAction } from "./actions";
 
@@ -31,7 +32,7 @@ export default function RhLoginPage() {
         <form action={formAction} className="space-y-3">
           <div>
             <label className="block text-xs font-bold text-neutral-700 mb-1">
-              Identifiant entreprise
+              Identifiant entreprise ou e-mail
             </label>
             <input
               type="text"
@@ -39,7 +40,7 @@ export default function RhLoginPage() {
               required
               autoCapitalize="none"
               autoCorrect="off"
-              placeholder="ex: pilote-thies"
+              placeholder="ex: pilote-thies ou rh@entreprise.sn"
               className="w-full text-xs px-3 py-2.5 rounded-xl border border-neutral-200 focus:outline-none focus:ring-2 focus:ring-orange-500"
             />
           </div>
@@ -64,6 +65,13 @@ export default function RhLoginPage() {
             {isPending ? "Connexion..." : "Se connecter"}
           </button>
         </form>
+
+        <p className="text-center text-xs text-neutral-500">
+          Pas encore de compte ?{" "}
+          <Link href="/inscription" className="font-bold text-orange-600 hover:underline">
+            Essai gratuit 14 jours
+          </Link>
+        </p>
       </div>
     </div>
   );

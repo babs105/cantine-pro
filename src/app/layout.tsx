@@ -7,7 +7,8 @@ export const metadata: Metadata = {
     "Solution rapide et locale pour la gestion des repas d'entreprise à Thiès et Dakar.",
   manifest: "/manifest.json",
   icons: {
-    icon: "/favicon.ico",
+    icon: "/icon.svg",
+    apple: "/apple-touch-icon.png",
   },
 };
 

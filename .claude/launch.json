@@ -6,6 +6,20 @@
       "runtimeExecutable": "npx",
       "runtimeArgs": ["next", "dev", "-p", "3124"],
       "port": 3124
+    },
+    {
+      "name": "cantine-pro-demo",
+      "runtimeExecutable": "env",
+      "runtimeArgs": [
+        "NEXT_PUBLIC_SUPABASE_URL=",
+        "SUPABASE_SERVICE_ROLE_KEY=",
+        "npx",
+        "next",
+        "dev",
+        "-p",
+        "3125"
+      ],
+      "port": 3125
     }
   ]
 }

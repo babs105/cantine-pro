@@ -1,5 +1,6 @@
 "use server";
 
+import { placesRestantes } from "@/lib/limite-employes";
 import { createClient } from "@/lib/supabase/server";
 import { generateToken, isSupabaseConfigured } from "@/lib/config";
 
@@ -34,6 +35,11 @@ export async function inscriptionEmployeAction(
 
     if (!comp) {
       return { success: false, message: "Entreprise introuvable." };
+    }
+
+    const places = await placesRestantes(supabase, (comp as any).id);
+    if (places.restantes < 1) {
+      return { success: false, message: "Inscription impossible : le nombre maximum de salariés est atteint. Contactez votre RH." };
     }
 
     const { data, error } = await (supabase.from("employes") as any)

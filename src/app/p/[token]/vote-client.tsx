@@ -1,8 +1,9 @@
 "use client";
 
 import { useEffect, useState, useTransition } from "react";
-import { Utensils, CheckCircle2, Clock, AlertTriangle, UserCheck, XCircle } from "lucide-react";
+import { Utensils, CheckCircle2, Clock, AlertTriangle, UserCheck, XCircle, WifiOff } from "lucide-react";
 import { formatFCFA } from "@/lib/utils";
+import { InstallBanner } from "./install-banner";
 
 interface Plat {
   id: string;
@@ -19,6 +20,13 @@ interface CommandeVote {
   statut: "choisi" | "absent" | "ne_mange_pas";
   plat_titre?: string;
   enregistre_at?: string;
+}
+
+/** Choix fait sans réseau, gardé dans le téléphone jusqu'au retour de la connexion */
+interface CommandeEnAttente {
+  statut: CommandeVote["statut"];
+  platId: string | null;
+  platTitre?: string;
 }
 
 interface VoteClientProps {
@@ -115,31 +123,87 @@ export function VoteClient({
     }
   }, [token, employeNom]);
 
+  // Coupure réseau : le choix est gardé dans le téléphone et envoyé dès le retour de la connexion
+  const cleAttente = `cantine_pro_commande_en_attente_${token}`;
+  const [enAttente, setEnAttente] = useState<CommandeEnAttente | null>(null);
+
+  const garderEnAttente = (c: CommandeEnAttente | null) => {
+    setEnAttente(c);
+    try {
+      if (c) localStorage.setItem(cleAttente, JSON.stringify(c));
+      else localStorage.removeItem(cleAttente);
+    } catch {
+      // stockage indisponible (navigation privée) : le choix reste en mémoire tant que la page est ouverte
+    }
+  };
+
+  const envoyer = async (c: CommandeEnAttente): Promise<"ok" | "hors_ligne" | "refuse"> => {
+    try {
+      const res = await onVoteAction(token, c.statut, c.platId);
+      if (res.success) {
+        setCommande({ plat_id: c.platId, statut: c.statut, plat_titre: c.platTitre, enregistre_at: res.enregistreAt });
+        setIsModifying(false);
+        return "ok";
+      }
+      setErrorMessage(res.message || "Une erreur est survenue.");
+      return "refuse";
+    } catch {
+      // L'appel n'a pas atteint le serveur (réseau coupé)
+      return "hors_ligne";
+    }
+  };
+
   const handleVote = (
     statut: "choisi" | "absent" | "ne_mange_pas",
     platId: string | null,
     platTitre?: string
   ) => {
     setErrorMessage(null);
+    const choix = { statut, platId, platTitre };
+    if (typeof navigator !== "undefined" && !navigator.onLine) {
+      garderEnAttente(choix);
+      setIsModifying(false);
+      return;
+    }
     startTransition(async () => {
-      try {
-        const res = await onVoteAction(token, statut, platId);
-        if (res.success) {
-          setCommande({
-            plat_id: platId,
-            statut,
-            plat_titre: platTitre,
-            enregistre_at: res.enregistreAt,
-          });
-          setIsModifying(false);
-        } else {
-          setErrorMessage(res.message || "Une erreur est survenue.");
-        }
-      } catch (err: any) {
-        setErrorMessage(err.message || "Erreur de connexion.");
+      const resultat = await envoyer(choix);
+      if (resultat === "hors_ligne") {
+        garderEnAttente(choix);
+        setIsModifying(false);
+      } else {
+        garderEnAttente(null);
       }
     });
   };
+
+  // Au chargement et à chaque retour du réseau : envoi du choix en attente
+  useEffect(() => {
+    let attente: CommandeEnAttente | null = null;
+    try {
+      attente = JSON.parse(localStorage.getItem(cleAttente) || "null");
+    } catch {
+      attente = null;
+    }
+    if (attente) setEnAttente(attente);
+
+    const synchroniser = () => {
+      let c: CommandeEnAttente | null = null;
+      try {
+        c = JSON.parse(localStorage.getItem(cleAttente) || "null");
+      } catch {
+        c = null;
+      }
+      if (!c || !navigator.onLine) return;
+      startTransition(async () => {
+        const resultat = await envoyer(c!);
+        if (resultat !== "hors_ligne") garderEnAttente(null);
+      });
+    };
+    synchroniser();
+    window.addEventListener("online", synchroniser);
+    return () => window.removeEventListener("online", synchroniser);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cleAttente]);
 
   const formattedHeureLimite = heureLimite.slice(0, 5); // "11:10"
 
@@ -189,6 +253,22 @@ export function VoteClient({
             </div>
           )}
         </div>
+
+        {enAttente && (
+          <div className="mb-4 p-3 bg-amber-50 border border-amber-200 text-amber-900 rounded-2xl text-xs flex items-start gap-2">
+            <WifiOff className="w-4 h-4 shrink-0 mt-0.5" />
+            <span>
+              Pas de réseau : votre choix «{" "}
+              {enAttente.statut === "choisi"
+                ? enAttente.platTitre || "Plat du jour"
+                : enAttente.statut === "absent"
+                  ? "Absent(e)"
+                  : "Ne mange pas"}{" "}
+              » sera envoyé automatiquement dès le retour de la connexion, avant {heureLimite.slice(0, 5)}. Gardez
+              cette page ouverte.
+            </span>
+          </div>
+        )}
 
         {/* Message d'erreur éventuel */}
         {errorMessage && (
@@ -344,6 +424,8 @@ export function VoteClient({
           </div>
         )}
       </div>
+
+      <InstallBanner />
 
       {/* FOOTER DISCRET PWA */}
       <footer className="mt-8 text-center text-[11px] text-neutral-400">

@@ -6,6 +6,9 @@ export type Json =
   | { [key: string]: Json | undefined }
   | Json[];
 
+export type PlanId = "starter" | "pro" | "business";
+export type StatutAbonnement = "trial" | "active" | "suspended" | "cancelled";
+
 export type EnvoiStatut = "en_attente" | "envoye" | "echec" | "manuel";
 
 export interface RecapLigne {
@@ -32,6 +35,12 @@ export interface Database {
           is_active: boolean;
           rh_code_hash: string | null;
           traiteur_token: string;
+          responsable_nom: string | null;
+          email_contact: string | null;
+          telephone_contact: string | null;
+          plan: PlanId;
+          statut_abonnement: StatutAbonnement;
+          abonnement_fin: string | null;
           created_at: string;
         };
         Insert: {
@@ -48,6 +57,12 @@ export interface Database {
           is_active?: boolean;
           rh_code_hash?: string | null;
           traiteur_token?: string;
+          responsable_nom?: string | null;
+          email_contact?: string | null;
+          telephone_contact?: string | null;
+          plan?: PlanId;
+          statut_abonnement?: StatutAbonnement;
+          abonnement_fin?: string | null;
           created_at?: string;
         };
         Update: {
@@ -64,6 +79,12 @@ export interface Database {
           is_active?: boolean;
           rh_code_hash?: string | null;
           traiteur_token?: string;
+          responsable_nom?: string | null;
+          email_contact?: string | null;
+          telephone_contact?: string | null;
+          plan?: PlanId;
+          statut_abonnement?: StatutAbonnement;
+          abonnement_fin?: string | null;
           created_at?: string;
         };
       };
@@ -240,6 +261,32 @@ export interface Database {
           envoye_at?: string | null;
           confirme_at?: string | null;
           confirme_par?: "restaurant" | "rh" | null;
+        };
+      };
+      paiements: {
+        Row: {
+          id: string;
+          company_id: string;
+          montant: number;
+          mode: string;
+          reference: string | null;
+          periode_fin: string;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          company_id: string;
+          montant: number;
+          mode?: string;
+          reference?: string | null;
+          periode_fin: string;
+          created_at?: string;
+        };
+        Update: {
+          montant?: number;
+          mode?: string;
+          reference?: string | null;
+          periode_fin?: string;
         };
       };
     };

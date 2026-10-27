@@ -4,6 +4,7 @@ import { getAppBaseUrl, isApresHeureLimite, isSupabaseConfigured, todayDakar } f
 import { isDateValide, joursOuvres, lundiDeLaSemaine } from "@/lib/dates";
 import { getRhCompanyId } from "@/lib/rh-session";
 import { getCommandesDuJour, lienRestaurant } from "@/lib/cloture";
+import { etatAbonnement } from "@/lib/abonnement";
 import { RhDashboardClient } from "./rh-dashboard-client";
 
 export const dynamic = "force-dynamic";
@@ -12,14 +13,15 @@ export const dynamic = "force-dynamic";
 const HEURE_ALERTE_TRAITEUR = "11:30:00";
 
 interface PageProps {
-  searchParams: Promise<{ semaine?: string }>;
+  searchParams: Promise<{ semaine?: string; bienvenue?: string }>;
 }
 
 export default async function RhDashboardPage({ searchParams }: PageProps) {
   const isDemo = !isSupabaseConfigured();
   const appBaseUrl = getAppBaseUrl();
   const todayDate = todayDakar();
-  const { semaine } = await searchParams;
+  const { semaine, bienvenue } = await searchParams;
+  const numeroWave = process.env.WAVE_NUMERO_PAIEMENT || null;
   const semaineLundi = lundiDeLaSemaine(isDateValide(semaine) ? semaine : todayDate);
   const jours = joursOuvres(semaineLundi);
 
@@ -31,6 +33,12 @@ export default async function RhDashboardPage({ searchParams }: PageProps) {
     heure_ouverture_vote: "08:00:00",
     heure_limite_vote: "11:10:00",
     trial_ends_at: null,
+    responsable_nom: "Awa Fall",
+    email_contact: "rh@pilote-thies.sn",
+    telephone_contact: "+221770000099",
+    plan: "pro" as const,
+    statut_abonnement: "active" as const,
+    abonnement_fin: null,
   };
 
   const demoRestaurants = [
@@ -171,6 +179,9 @@ export default async function RhDashboardPage({ searchParams }: PageProps) {
         clotures={[]}
         restaurantsEnRetard={[]}
         votesClos={isApresHeureLimite(company.heure_limite_vote)}
+        abonnement={etatAbonnement(company, todayDate)}
+        numeroWave={numeroWave}
+        bienvenue={false}
         appBaseUrl={appBaseUrl}
         isDemo
       />
@@ -186,7 +197,9 @@ export default async function RhDashboardPage({ searchParams }: PageProps) {
 
   const { data: rawComp, error: compError } = await supabase
     .from("companies")
-    .select("id, nom, slug, heure_ouverture_vote, heure_limite_vote, trial_ends_at")
+    .select(
+      "id, nom, slug, heure_ouverture_vote, heure_limite_vote, trial_ends_at, responsable_nom, email_contact, telephone_contact, plan, statut_abonnement, abonnement_fin"
+    )
     .eq("id", companyId)
     .maybeSingle();
 
@@ -256,6 +269,9 @@ export default async function RhDashboardPage({ searchParams }: PageProps) {
       clotures={clotures}
       restaurantsEnRetard={restaurantsEnRetard}
       votesClos={isApresHeureLimite(comp.heure_limite_vote)}
+      abonnement={etatAbonnement(comp, todayDate)}
+      numeroWave={numeroWave}
+      bienvenue={bienvenue === "1"}
       appBaseUrl={appBaseUrl}
       isDemo={false}
     />

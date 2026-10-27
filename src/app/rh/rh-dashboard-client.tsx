@@ -24,6 +24,10 @@ import {
   Link2,
   Megaphone,
   Lock,
+  History,
+  BarChart3,
+  Settings,
+  PartyPopper,
 } from "lucide-react";
 import { buildMessageMenuDuJour, buildRecap } from "@/lib/recap";
 import {
@@ -38,6 +42,11 @@ import { MenusSemaine, type PlatSemaine } from "./menus-semaine";
 import { ImportEmployesModal } from "./import-employes-modal";
 import { RecapRestaurant, type ClotureInfo, type RestaurantInfo } from "./recap-restaurant";
 import { RestaurantsPanel } from "./restaurants-panel";
+import { HistoriquePanel } from "./historique-panel";
+import { StatistiquesPanel } from "./statistiques-panel";
+import { ParametresPanel } from "./parametres-panel";
+import type { EtatAbonnement } from "@/lib/abonnement";
+import type { PlanId } from "@/types/database";
 
 interface Employe {
   id: string;
@@ -79,6 +88,10 @@ interface RhDashboardClientProps {
     heure_ouverture_vote: string;
     heure_limite_vote: string;
     trial_ends_at: string | null;
+    responsable_nom?: string | null;
+    email_contact?: string | null;
+    telephone_contact?: string | null;
+    plan?: PlanId | null;
   };
   initialEmployes: Employe[];
   initialPlats: Plat[];
@@ -91,6 +104,10 @@ interface RhDashboardClientProps {
   restaurantsEnRetard: string[];
   /** Heure limite de vote atteinte (calculé côté serveur, heure de Dakar) */
   votesClos: boolean;
+  abonnement: EtatAbonnement;
+  numeroWave: string | null;
+  /** Première connexion juste après l'inscription */
+  bienvenue: boolean;
   appBaseUrl: string;
   isDemo: boolean;
 }
@@ -109,11 +126,16 @@ export function RhDashboardClient({
   clotures,
   restaurantsEnRetard,
   votesClos,
+  abonnement,
+  numeroWave,
+  bienvenue,
   appBaseUrl,
   isDemo,
 }: RhDashboardClientProps) {
   const router = useRouter();
-  const [activeTab, setActiveTab] = useState<"live" | "menus" | "restaurants" | "employes">("live");
+  const [activeTab, setActiveTab] = useState<
+    "live" | "menus" | "restaurants" | "employes" | "historique" | "stats" | "parametres"
+  >("live");
   const [employes, setEmployes] = useState<Employe[]>(initialEmployes);
   const plats = initialPlats; // plats d'aujourd'hui, pour la saisie manuelle des votes
   const [commandes, setCommandes] = useState<CommandeItem[]>(initialCommandes);
@@ -145,9 +167,13 @@ export function RhDashboardClient({
     return () => clearInterval(interval);
   }, [isDemo, activeTab, router]);
 
-  const joursEssaiRestants = company.trial_ends_at
-    ? Math.ceil((new Date(company.trial_ends_at).getTime() - Date.now()) / 86_400_000)
-    : null;
+  // Bandeau d'abonnement : essai, retard de paiement ou suspension de l'envoi aux restaurants
+  const texteAbonnement =
+    abonnement.etat === "essai"
+      ? `Essai gratuit : ${abonnement.joursRestants} jour(s) restant(s)`
+      : abonnement.etat === "actif"
+        ? null
+        : abonnement.libelle;
 
   // Statistiques calculées en temps réel
   const totalEmployes = employes.length;
@@ -357,6 +383,9 @@ export function RhDashboardClient({
     { id: "menus", label: "Menus Semaine", icone: Utensils },
     { id: "restaurants", label: "Restaurants", icone: Store, compteur: restaurants.filter((r) => r.is_active).length },
     { id: "employes", label: "Collaborateurs", icone: Users, compteur: totalEmployes },
+    { id: "historique", label: "Historique & Factures", icone: History },
+    { id: "stats", label: "Statistiques", icone: BarChart3 },
+    { id: "parametres", label: "Paramètres", icone: Settings },
   ];
 
   return (
@@ -376,14 +405,20 @@ export function RhDashboardClient({
               </div>
               <p className="text-xs text-neutral-500 mt-1">
                 Commandes de {company.heure_ouverture_vote.slice(0, 5)} à {company.heure_limite_vote.slice(0, 5)}
-                {joursEssaiRestants !== null && (
+                {texteAbonnement && (
                   <>
                     {" "}•{" "}
-                    <span className={joursEssaiRestants <= 3 ? "text-red-600 font-semibold" : ""}>
-                      {joursEssaiRestants > 0
-                        ? `Essai gratuit : ${joursEssaiRestants} jour(s) restant(s)`
-                        : "Essai gratuit terminé"}
-                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setActiveTab("parametres")}
+                      className={`hover:underline ${
+                        abonnement.etat !== "essai" || (abonnement.joursRestants ?? 99) <= 3
+                          ? "text-red-600 font-semibold"
+                          : ""
+                      }`}
+                    >
+                      {texteAbonnement}
+                    </button>
                   </>
                 )}
               </p>
@@ -445,6 +480,31 @@ export function RhDashboardClient({
         {isDemo && (
           <div className="mb-4 p-3 bg-amber-50 border border-amber-200 text-amber-900 rounded-2xl text-xs">
             Mode démo : Supabase n&apos;est pas connecté, les modifications ne sont pas enregistrées.
+          </div>
+        )}
+
+        {bienvenue && (
+          <div className="mb-4 p-4 bg-emerald-50 border border-emerald-200 text-emerald-900 rounded-2xl text-xs space-y-1">
+            <p className="font-bold flex items-center gap-1.5">
+              <PartyPopper className="w-4 h-4" />
+              Bienvenue sur Cantine Pro ! Votre essai gratuit de 14 jours commence.
+            </p>
+            <p>
+              Identifiant de connexion : <strong>{company.slug}</strong> (ou votre e-mail). Pour démarrer :
+              ajoutez vos restaurants, importez vos collaborateurs, puis publiez les menus de la semaine.
+            </p>
+          </div>
+        )}
+
+        {abonnement.envoiBloque && (
+          <div className="mb-4 p-3 bg-red-50 border border-red-200 text-red-800 rounded-2xl text-xs flex items-center justify-between gap-2">
+            <span className="flex items-center gap-2">
+              <AlertCircle className="w-4 h-4 shrink-0" />
+              {abonnement.libelle} : l&apos;envoi des commandes aux restaurants est suspendu jusqu&apos;au règlement.
+            </span>
+            <button onClick={() => setActiveTab("parametres")} className="font-bold underline shrink-0">
+              Régler
+            </button>
           </div>
         )}
 
@@ -1117,6 +1177,13 @@ export function RhDashboardClient({
               </div>
             </div>
           </div>
+        )}
+        {activeTab === "historique" && <HistoriquePanel moisInitial={todayDate.slice(0, 7)} isDemo={isDemo} />}
+
+        {activeTab === "stats" && <StatistiquesPanel moisInitial={todayDate.slice(0, 7)} isDemo={isDemo} />}
+
+        {activeTab === "parametres" && (
+          <ParametresPanel company={company} abonnement={abonnement} numeroWave={numeroWave} isDemo={isDemo} />
         )}
       </main>
 

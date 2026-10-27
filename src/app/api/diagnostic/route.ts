@@ -29,6 +29,8 @@ export async function GET() {
     SUPABASE_SERVICE_ROLE_KEY: etat("SUPABASE_SERVICE_ROLE_KEY"),
     RH_SESSION_SECRET: etat("RH_SESSION_SECRET"),
     NEXT_PUBLIC_APP_URL: etat("NEXT_PUBLIC_APP_URL"),
+    SUPERADMIN_CODE: etat("SUPERADMIN_CODE"),
+    WAVE_NUMERO_PAIEMENT: etat("WAVE_NUMERO_PAIEMENT"),
   };
 
   let connexionSupabase: string;

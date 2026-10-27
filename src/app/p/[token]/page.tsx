@@ -1,3 +1,4 @@
+import type { Metadata } from "next";
 import { createClient } from "@/lib/supabase/server";
 import { VoteClient } from "./vote-client";
 import { notFound } from "next/navigation";
@@ -106,6 +107,15 @@ async function submitVoteAction(
   } catch (err: any) {
     return { success: false, message: err.message || "Erreur serveur." };
   }
+}
+
+// Manifeste propre au salarié : installée, l'application rouvre directement sa page de commande
+export async function generateMetadata({ params }: PageProps): Promise<Metadata> {
+  const { token } = await params;
+  return {
+    manifest: `/p/${encodeURIComponent(token)}/manifest.webmanifest`,
+    appleWebApp: { capable: true, title: "Cantine Pro", statusBarStyle: "default" },
+  };
 }
 
 export default async function EmployeVotePage({ params }: PageProps) {
