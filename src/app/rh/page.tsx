@@ -1,7 +1,7 @@
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { getAppBaseUrl, isApresHeureLimite, isSupabaseConfigured, todayDakar } from "@/lib/config";
-import { isDateValide, joursOuvres, lundiDeLaSemaine } from "@/lib/dates";
+import { ajouterJours, isDateValide, lundiDeLaSemaine } from "@/lib/dates";
 import { getRhCompanyId } from "@/lib/rh-session";
 import { getCommandesDuJour, lienRestaurant } from "@/lib/cloture";
 import { etatAbonnement } from "@/lib/abonnement";
@@ -23,7 +23,6 @@ export default async function RhDashboardPage({ searchParams }: PageProps) {
   const { semaine, bienvenue } = await searchParams;
   const numeroWave = process.env.WAVE_NUMERO_PAIEMENT || null;
   const semaineLundi = lundiDeLaSemaine(isDateValide(semaine) ? semaine : todayDate);
-  const jours = joursOuvres(semaineLundi);
 
   // Données de démonstration (mode sans Supabase)
   const company = {
@@ -39,6 +38,7 @@ export default async function RhDashboardPage({ searchParams }: PageProps) {
     plan: "pro" as const,
     statut_abonnement: "active" as const,
     abonnement_fin: null,
+    jours_travail: [1, 2, 3, 4, 5],
   };
 
   const demoRestaurants = [
@@ -198,7 +198,7 @@ export default async function RhDashboardPage({ searchParams }: PageProps) {
   const { data: rawComp, error: compError } = await supabase
     .from("companies")
     .select(
-      "id, nom, slug, heure_ouverture_vote, heure_limite_vote, trial_ends_at, responsable_nom, email_contact, telephone_contact, plan, statut_abonnement, abonnement_fin"
+      "id, nom, slug, heure_ouverture_vote, heure_limite_vote, trial_ends_at, responsable_nom, email_contact, telephone_contact, plan, statut_abonnement, abonnement_fin, jours_travail"
     )
     .eq("id", companyId)
     .maybeSingle();
@@ -231,8 +231,8 @@ export default async function RhDashboardPage({ searchParams }: PageProps) {
       .from("menus_du_jour")
       .select("id, date, titre, description, prix_unitaire, is_available, restaurant_id")
       .eq("company_id", comp.id)
-      .gte("date", jours[0])
-      .lte("date", jours[4])
+      .gte("date", semaineLundi)
+      .lte("date", ajouterJours(semaineLundi, 6))
       .order("created_at"),
     getCommandesDuJour(supabase, comp.id, todayDate),
     supabase

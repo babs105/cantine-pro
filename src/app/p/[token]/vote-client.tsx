@@ -38,6 +38,10 @@ interface VoteClientProps {
   secondesAvantOuverture: number;
   dateAujourdhuiStr: string; // "26 Octobre 2026"
   isVerrouille: boolean;
+  /** Aujourd'hui n'est pas un jour de travail de l'entreprise */
+  jourSansService?: boolean;
+  /** Nom du prochain jour de service (ex : « lundi ») */
+  prochainService?: string | null;
   secondesRestantes: number; // calculé côté serveur (heure de Dakar), indépendant de l'horloge du téléphone
   platsDisponibles: Plat[];
   commandeExistante: CommandeVote | null;
@@ -72,6 +76,8 @@ export function VoteClient({
   secondesAvantOuverture,
   dateAujourdhuiStr,
   isVerrouille: verrouilleInitial,
+  jourSansService = false,
+  prochainService = null,
   secondesRestantes,
   platsDisponibles,
   commandeExistante,
@@ -101,9 +107,9 @@ export function VoteClient({
       document.removeEventListener("visibilitychange", onVisible);
     };
   }, [verrouilleInitial, secondesRestantes, secondesAvantOuverture]);
-  const isVerrouille = verrouilleInitial || restant <= 0;
+  const isVerrouille = !jourSansService && (verrouilleInitial || restant <= 0);
   const pasEncoreOuvert = !isVerrouille && avantOuverture > 0;
-  const voteImpossible = isVerrouille || pasEncoreOuvert;
+  const voteImpossible = jourSansService || isVerrouille || pasEncoreOuvert;
   const formattedHeureOuverture = heureOuverture.slice(0, 5).replace(":", "h");
 
   // Plats regroupés par restaurant, dans l'ordre du menu
@@ -237,7 +243,14 @@ export function VoteClient({
             </span>
           </div>
 
-          {pasEncoreOuvert && (
+          {jourSansService && (
+            <div className="mt-3 text-center text-xs font-bold py-2 rounded-xl bg-neutral-100 text-neutral-700">
+              🏖️ Pas de service cantine aujourd&apos;hui
+              {prochainService ? ` — prochain service ${prochainService}` : ""}
+            </div>
+          )}
+
+          {!jourSansService && pasEncoreOuvert && (
             <div className="mt-3 text-center text-xs font-bold py-2 rounded-xl bg-blue-50 text-blue-800">
               🕗 Les commandes ouvrent à {formattedHeureOuverture} (dans {formatTempsRestant(avantOuverture)})
             </div>
@@ -347,7 +360,9 @@ export function VoteClient({
               <div className="bg-white p-8 rounded-3xl text-center border border-neutral-100">
                 <Utensils className="w-8 h-8 text-neutral-300 mx-auto mb-2" />
                 <p className="text-xs text-neutral-500">
-                  Le menu du jour n&apos;est pas encore publié par le responsable.
+                  {jourSansService
+                    ? "Pas de service cantine aujourd'hui. Revenez le prochain jour de travail."
+                    : "Le menu du jour n'est pas encore publié par le responsable."}
                 </p>
               </div>
             ) : (

@@ -227,6 +227,10 @@ CREATE TABLE IF NOT EXISTS public.paiements (
 
 CREATE INDEX IF NOT EXISTS idx_paiements_company ON public.paiements(company_id);
 
+-- Jours de service de l'entreprise (1 = lundi … 7 = dimanche) : grille des menus, duplication, commandes
+ALTER TABLE public.companies
+    ADD COLUMN IF NOT EXISTS jours_travail SMALLINT[] NOT NULL DEFAULT '{1,2,3,4,5}';
+
 -- 8. SÉCURITÉ : RLS ACTIVÉE SANS POLITIQUE
 -- Toutes les lectures/écritures passent par le serveur Next.js (clé service_role).
 -- La clé anon publique ne donne donc accès à aucune donnée (tokens employés inclus).

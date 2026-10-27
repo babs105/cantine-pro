@@ -56,9 +56,28 @@ export function lundiDeLaSemaine(date: string): string {
   return ajouterJours(date, jour === 0 ? -6 : 1 - jour);
 }
 
-/** Les 5 jours ouvrés (lundi → vendredi) d'une semaine */
-export function joursOuvres(lundi: string): string[] {
-  return [0, 1, 2, 3, 4].map((i) => ajouterJours(lundi, i));
+/** Jours de service par défaut : lundi → vendredi (1 = lundi … 7 = dimanche, norme ISO) */
+export const JOURS_TRAVAIL_DEFAUT = [1, 2, 3, 4, 5];
+
+export const NOMS_JOURS = ["Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi", "Samedi", "Dimanche"];
+
+/** Jours de travail valides, triés et sans doublon ; lundi → vendredi si la valeur est vide ou invalide */
+export function normaliserJoursTravail(valeur: unknown): number[] {
+  const jours = Array.isArray(valeur)
+    ? Array.from(new Set(valeur.map(Number).filter((j) => Number.isInteger(j) && j >= 1 && j <= 7))).sort((a, b) => a - b)
+    : [];
+  return jours.length > 0 ? jours : JOURS_TRAVAIL_DEFAUT;
+}
+
+/** Jour ISO d'une date YYYY-MM-DD : 1 = lundi … 7 = dimanche */
+export function jourIso(date: string): number {
+  const jour = new Date(`${date}T12:00:00Z`).getUTCDay();
+  return jour === 0 ? 7 : jour;
+}
+
+/** Les jours de travail d'une semaine (par défaut lundi → vendredi) */
+export function joursOuvres(lundi: string, joursTravail: number[] = JOURS_TRAVAIL_DEFAUT): string[] {
+  return normaliserJoursTravail(joursTravail).map((j) => ajouterJours(lundi, j - 1));
 }
 
 export function isDateValide(date: string | null | undefined): date is string {

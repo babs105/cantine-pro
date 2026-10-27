@@ -4,7 +4,7 @@ import { useEffect, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { ChevronLeft, ChevronRight, CopyPlus, Plus, ToggleLeft, ToggleRight, Trash2 } from "lucide-react";
 import { formatFCFA } from "@/lib/utils";
-import { ajouterJours, formatJourCourt, joursOuvres } from "@/lib/dates";
+import { ajouterJours, formatJourCourt, joursOuvres, normaliserJoursTravail } from "@/lib/dates";
 import {
   addMenuPlatAction,
   dupliquerSemaineAction,
@@ -26,6 +26,8 @@ interface MenusSemaineProps {
   platsSemaine: PlatSemaine[];
   semaineLundi: string;
   todayDate: string;
+  /** Jours de service de l'entreprise (1 = lundi … 7 = dimanche) */
+  joursTravail?: number[] | null;
   restaurants: Array<{ id: string; nom: string }>;
   isDemo: boolean;
   onError: (message: string | null) => void;
@@ -39,12 +41,22 @@ const SUGGESTIONS = [
   { label: "Salade", titre: "Salade Complète Végétarienne", prix: 1500, desc: "Œuf dur, maïs, crudités" },
 ];
 
-export function MenusSemaine({ platsSemaine, semaineLundi, todayDate, restaurants, isDemo, onError }: MenusSemaineProps) {
+export function MenusSemaine({
+  platsSemaine,
+  semaineLundi,
+  todayDate,
+  joursTravail: joursTravailBruts,
+  restaurants,
+  isDemo,
+  onError,
+}: MenusSemaineProps) {
   const router = useRouter();
   const [plats, setPlats] = useState<PlatSemaine[]>(platsSemaine);
   const [isPending, startTransition] = useTransition();
 
-  const jours = joursOuvres(semaineLundi);
+  const joursTravail = normaliserJoursTravail(joursTravailBruts);
+  const cleJours = joursTravail.join(",");
+  const jours = joursOuvres(semaineLundi, joursTravail);
   const joursModifiables = jours.filter((j) => j >= todayDate);
 
   const [jourCible, setJourCible] = useState<string>(joursModifiables[0] || jours[0]);
@@ -60,9 +72,9 @@ export function MenusSemaine({ platsSemaine, semaineLundi, todayDate, restaurant
 
   useEffect(() => setPlats(platsSemaine), [platsSemaine]);
   useEffect(() => {
-    const modifiables = joursOuvres(semaineLundi).filter((j) => j >= todayDate);
+    const modifiables = joursOuvres(semaineLundi, cleJours.split(",").map(Number)).filter((j) => j >= todayDate);
     setJourCible(modifiables[0] || semaineLundi);
-  }, [semaineLundi, todayDate]);
+  }, [semaineLundi, todayDate, cleJours]);
 
   const changerSemaine = (decalage: number) => {
     router.replace(`/rh?semaine=${ajouterJours(semaineLundi, decalage * 7)}`, { scroll: false });
@@ -135,7 +147,7 @@ export function MenusSemaine({ platsSemaine, semaineLundi, todayDate, restaurant
             <ChevronLeft className="w-4 h-4" />
           </button>
           <h2 className="text-base font-extrabold text-neutral-900">
-            Semaine du {formatJourCourt(jours[0])} au {formatJourCourt(jours[4])}
+            Semaine du {formatJourCourt(jours[0])} au {formatJourCourt(jours[jours.length - 1])}
           </h2>
           <button
             type="button"
@@ -268,7 +280,7 @@ export function MenusSemaine({ platsSemaine, semaineLundi, todayDate, restaurant
           )}
         </div>
 
-        {/* Grille Lundi → Vendredi */}
+        {/* Grille des jours de travail de la semaine */}
         <div className="lg:col-span-2 space-y-3">
           {jours.map((jour) => {
             const platsDuJour = plats.filter((p) => p.date === jour);

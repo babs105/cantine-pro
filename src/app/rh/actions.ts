@@ -3,7 +3,7 @@
 import { createClient } from "@/lib/supabase/server";
 import { revalidatePath } from "next/cache";
 import { generateToken, isSupabaseConfigured, todayDakar } from "@/lib/config";
-import { ajouterJours, isDateValide, joursOuvres, lundiDeLaSemaine } from "@/lib/dates";
+import { ajouterJours, isDateValide, joursOuvres, lundiDeLaSemaine, normaliserJoursTravail } from "@/lib/dates";
 import { getRhCompanyId } from "@/lib/rh-session";
 import { lignesVersEmployes, parseCsv, parseFichierEmployes, type LigneEmploye } from "@/lib/excel";
 import { cloturerEntreprise, rafraichirRecapCloture } from "@/lib/cloture";
@@ -298,16 +298,18 @@ export async function dupliquerSemaineAction(lundiCible: string): Promise<{
 
   const lundi = lundiDeLaSemaine(lundiCible);
   const today = todayDakar();
-  const joursCibles = joursOuvres(lundi);
-  const joursSource = joursOuvres(ajouterJours(lundi, -7));
 
   const supabase = await createClient();
+  const { data: comp } = await supabase.from("companies").select("jours_travail").eq("id", companyId).single();
+  // Seuls les jours de travail de l'entreprise sont recopiés
+  const joursCibles = new Set(joursOuvres(lundi, normaliserJoursTravail((comp as any)?.jours_travail)));
+
   const { data: platsExistants } = await supabase
     .from("menus_du_jour")
     .select("date, titre, description, prix_unitaire, restaurant_id")
     .eq("company_id", companyId)
-    .gte("date", joursSource[0])
-    .lte("date", joursCibles[4]);
+    .gte("date", ajouterJours(lundi, -7))
+    .lte("date", ajouterJours(lundi, 6));
 
   const tous = (platsExistants || []) as any[];
   const joursDejaRemplis = new Set(tous.filter((p) => p.date >= lundi).map((p) => p.date));
@@ -315,7 +317,7 @@ export async function dupliquerSemaineAction(lundiCible: string): Promise<{
   const aInserer = tous
     .filter((p) => p.date < lundi)
     .map((p) => ({ ...p, date: ajouterJours(p.date, 7) }))
-    .filter((p) => p.date >= today && !joursDejaRemplis.has(p.date))
+    .filter((p) => joursCibles.has(p.date) && p.date >= today && !joursDejaRemplis.has(p.date))
     .map((p) => ({
       company_id: companyId,
       date: p.date,

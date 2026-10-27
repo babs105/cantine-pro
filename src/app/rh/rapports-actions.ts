@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { createClient } from "@/lib/supabase/server";
 import { isSupabaseConfigured } from "@/lib/config";
-import { isDateValide } from "@/lib/dates";
+import { isDateValide, normaliserJoursTravail } from "@/lib/dates";
 import { getRhCompanyId, hashRhCode, verifyRhCode } from "@/lib/rh-session";
 import { getLignesFacturation, periodeMois, regrouperParPlat, type LigneFacturation } from "@/lib/facturation";
 
@@ -232,6 +232,8 @@ export interface ParametresEntreprise {
   responsable: string;
   email: string;
   telephone: string;
+  /** Jours de service, 1 = lundi … 7 = dimanche */
+  joursTravail: number[];
 }
 
 const HEURE = /^([01]\d|2[0-3]):[0-5]\d$/;
@@ -247,6 +249,9 @@ export async function modifierParametresAction(p: ParametresEntreprise): Promise
   }
   if (p.heureOuverture >= p.heureLimite) {
     return { success: false, message: "L'heure d'ouverture doit être avant l'heure de fin des commandes." };
+  }
+  if (!Array.isArray(p.joursTravail) || p.joursTravail.length === 0) {
+    return { success: false, message: "Choisissez au moins un jour de travail." };
   }
   const email = p.email.trim().toLowerCase();
   if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return { success: false, message: "Adresse e-mail invalide." };
@@ -269,6 +274,7 @@ export async function modifierParametresAction(p: ParametresEntreprise): Promise
       responsable_nom: p.responsable.trim() || null,
       email_contact: email || null,
       telephone_contact: p.telephone.trim() || null,
+      jours_travail: normaliserJoursTravail(p.joursTravail),
     })
     .eq("id", ctx.companyId);
   if (error) return { success: false, message: error.message };

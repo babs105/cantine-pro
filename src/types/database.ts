@@ -41,6 +41,7 @@ export interface Database {
           plan: PlanId;
           statut_abonnement: StatutAbonnement;
           abonnement_fin: string | null;
+          jours_travail: number[];
           created_at: string;
         };
         Insert: {
@@ -63,6 +64,7 @@ export interface Database {
           plan?: PlanId;
           statut_abonnement?: StatutAbonnement;
           abonnement_fin?: string | null;
+          jours_travail?: number[];
           created_at?: string;
         };
         Update: {
@@ -85,6 +87,7 @@ export interface Database {
           plan?: PlanId;
           statut_abonnement?: StatutAbonnement;
           abonnement_fin?: string | null;
+          jours_travail?: number[];
           created_at?: string;
         };
       };

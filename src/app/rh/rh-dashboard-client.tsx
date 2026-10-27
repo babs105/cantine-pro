@@ -92,6 +92,7 @@ interface RhDashboardClientProps {
     email_contact?: string | null;
     telephone_contact?: string | null;
     plan?: PlanId | null;
+    jours_travail?: number[] | null;
   };
   initialEmployes: Employe[];
   initialPlats: Plat[];
@@ -951,6 +952,7 @@ export function RhDashboardClient({
             platsSemaine={platsSemaine}
             semaineLundi={semaineLundi}
             todayDate={todayDate}
+            joursTravail={company.jours_travail}
             restaurants={restaurants.filter((r) => r.is_active)}
             isDemo={isDemo}
             onError={setActionError}

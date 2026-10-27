@@ -119,7 +119,7 @@ Variables d'environnement : voir [`.env.local.example`](./.env.local.example).
 * **Compte à rebours** sur la PWA employé, verrouillage automatique à l'heure limite, heure d'enregistrement du choix.
 * **Export Excel paie** (`/rh/export?mois=AAAA-MM&format=xlsx`) : onglets *Paie par service*, *Récap services*, *Facture traiteur*, *Détail jour par jour*.
 
-* **Onglet Paramètres** : heures d'ouverture et de fin des commandes, coordonnées, changement du code RH, état de l'abonnement.
+* **Onglet Paramètres** : heures d'ouverture et de fin des commandes, **jours de travail** (lundi → dimanche, par défaut lundi → vendredi : la grille des menus, la duplication de semaine et les commandes des salariés les suivent), coordonnées, changement du code RH, état de l'abonnement.
 * **Onglet Historique & Factures** : historique jour par jour (détail par collaborateur), **facture PDF du mois** (`/rh/facture?mois=AAAA-MM` : synthèse, une facture par restaurant avec zone signature et cachet, ventilation par service), exports Excel et CSV.
 * **Onglet Statistiques (DG / DAF)** : dépense du mois, évolution sur 6 mois, coût moyen, plats les plus commandés, taux de participation par service.
 * **PWA installable** : bannière « Ajouter à l'écran d'accueil » (bouton sur Android, mode d'emploi sur iPhone) ; l'icône rouvre directement la page du salarié. **Hors-ligne** : un choix fait sans réseau est gardé dans le téléphone et envoyé au retour de la connexion (refusé par le serveur si l'heure limite est passée entre-temps).

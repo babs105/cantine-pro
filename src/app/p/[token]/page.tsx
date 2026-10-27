@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { createClient } from "@/lib/supabase/server";
 import { VoteClient } from "./vote-client";
 import { notFound } from "next/navigation";
+import { NOMS_JOURS, jourIso, normaliserJoursTravail } from "@/lib/dates";
 import { revalidatePath } from "next/cache";
 import { isApresHeureLimite, isSupabaseConfigured, secondesAvantHeure, TIMEZONE, todayDakar } from "@/lib/config";
 
@@ -31,7 +32,7 @@ async function submitVoteAction(
     // 1. Trouver l'employé et l'entreprise via le token
     const { data: rawEmploye, error: empError } = await supabase
       .from("employes")
-      .select("id, company_id, companies(heure_ouverture_vote, heure_limite_vote)")
+      .select("id, company_id, companies(heure_ouverture_vote, heure_limite_vote, jours_travail)")
       .eq("token", token)
       .eq("is_active", true)
       .single();
@@ -45,6 +46,11 @@ async function submitVoteAction(
     const companyData: any = employe.companies;
     const heureLimite = companyData?.heure_limite_vote || "11:10:00";
     const heureOuverture = companyData?.heure_ouverture_vote || "08:00:00";
+
+    // Pas de commande les jours sans service (jours de travail de l'entreprise)
+    if (!normaliserJoursTravail(companyData?.jours_travail).includes(jourIso(todayDakar()))) {
+      return { success: false, message: "Pas de service cantine aujourd'hui." };
+    }
 
     if (!isApresHeureLimite(heureOuverture)) {
       return {
@@ -125,6 +131,7 @@ export default async function EmployeVotePage({ params }: PageProps) {
   let employeNom = "Moussa Ndiaye";
   let companyNom = "Pilote Thiès Innovation";
   let heureLimite = "11:10:00";
+  let joursTravail = normaliserJoursTravail(null);
   let heureOuverture = "08:00:00";
   let platsDisponibles = [
     {
@@ -160,7 +167,7 @@ export default async function EmployeVotePage({ params }: PageProps) {
     // 1. Récupérer l'employé
     const { data: rawEmp, error: empError } = await supabase
       .from("employes")
-      .select("id, nom, company_id, companies(nom, heure_ouverture_vote, heure_limite_vote)")
+      .select("id, nom, company_id, companies(nom, heure_ouverture_vote, heure_limite_vote, jours_travail)")
       .eq("token", token)
       .eq("is_active", true)
       .single();
@@ -176,6 +183,7 @@ export default async function EmployeVotePage({ params }: PageProps) {
     companyNom = comp?.nom || "Entreprise Pilote";
     heureLimite = comp?.heure_limite_vote || "11:10:00";
     heureOuverture = comp?.heure_ouverture_vote || "08:00:00";
+    joursTravail = normaliserJoursTravail(comp?.jours_travail);
 
     const todayDate = todayDakar();
 
@@ -221,6 +229,12 @@ export default async function EmployeVotePage({ params }: PageProps) {
     }
   }
 
+  // Jour sans service : la page l'indique avec le prochain jour de travail
+  const jourActuel = jourIso(todayDakar());
+  const jourSansService = !joursTravail.includes(jourActuel);
+  const prochainJour = [1, 2, 3, 4, 5, 6, 7].map((n) => ((jourActuel - 1 + n) % 7) + 1).find((j) => joursTravail.includes(j));
+  const prochainService = jourSansService && prochainJour ? NOMS_JOURS[prochainJour - 1].toLowerCase() : null;
+
   // Vérification si l'heure limite est dépassée
   const now = new Date();
   const isVerrouille = isApresHeureLimite(heureLimite, now);
@@ -245,6 +259,8 @@ export default async function EmployeVotePage({ params }: PageProps) {
       secondesAvantOuverture={secondesAvantOuverture}
       dateAujourdhuiStr={dateAujourdhuiStr}
       isVerrouille={isVerrouille}
+      jourSansService={jourSansService}
+      prochainService={prochainService}
       secondesRestantes={secondesRestantes}
       platsDisponibles={platsDisponibles}
       commandeExistante={commandeExistante}

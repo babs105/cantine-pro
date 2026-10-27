@@ -3,6 +3,7 @@
 import { useState, useTransition } from "react";
 import { Check, Clock, CreditCard, KeyRound, Settings } from "lucide-react";
 import { PLANS, type EtatAbonnement } from "@/lib/abonnement";
+import { NOMS_JOURS, normaliserJoursTravail } from "@/lib/dates";
 import type { PlanId } from "@/types/database";
 import { changerCodeRhAction, modifierParametresAction } from "./rapports-actions";
 
@@ -16,6 +17,7 @@ interface ParametresPanelProps {
     email_contact?: string | null;
     telephone_contact?: string | null;
     plan?: PlanId | null;
+    jours_travail?: number[] | null;
   };
   abonnement: EtatAbonnement;
   /** Numéro Wave de Cantine Pro pour le règlement (variable WAVE_NUMERO_PAIEMENT) */
@@ -37,6 +39,9 @@ export function ParametresPanel({ company, abonnement, numeroWave, isDemo }: Par
   const [message, setMessage] = useState<{ ok: boolean; texte: string } | null>(null);
   const [messageCode, setMessageCode] = useState<{ ok: boolean; texte: string } | null>(null);
   const plan = PLANS[company.plan || "pro"];
+  const [joursTravail, setJoursTravail] = useState<number[]>(normaliserJoursTravail(company.jours_travail));
+  const basculerJour = (j: number) =>
+    setJoursTravail((prev) => (prev.includes(j) ? prev.filter((x) => x !== j) : [...prev, j].sort((a, b) => a - b)));
 
   const enregistrer = (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -49,6 +54,7 @@ export function ParametresPanel({ company, abonnement, numeroWave, isDemo }: Par
         responsable: String(f.get("responsable") || ""),
         email: String(f.get("email") || ""),
         telephone: String(f.get("telephone") || ""),
+        joursTravail,
       });
       setMessage(res.success ? { ok: true, texte: "Paramètres enregistrés." } : { ok: false, texte: res.message || "Erreur." });
     });
@@ -125,6 +131,33 @@ export function ParametresPanel({ company, abonnement, numeroWave, isDemo }: Par
               className={champClasse}
             />
           </label>
+          <div className="space-y-1 sm:col-span-2">
+            <span className="block text-xs font-bold text-neutral-700">Jours de travail (service cantine)</span>
+            <div className="flex flex-wrap gap-1.5">
+              {NOMS_JOURS.map((nom, i) => {
+                const jour = i + 1;
+                const actif = joursTravail.includes(jour);
+                return (
+                  <button
+                    key={jour}
+                    type="button"
+                    aria-pressed={actif}
+                    onClick={() => basculerJour(jour)}
+                    className={`px-3 py-1.5 rounded-xl text-xs font-bold border transition ${
+                      actif
+                        ? "bg-orange-600 border-orange-600 text-white"
+                        : "bg-white border-neutral-200 text-neutral-500 hover:border-orange-300"
+                    }`}
+                  >
+                    {nom.slice(0, 3)}
+                  </button>
+                );
+              })}
+            </div>
+            <p className="text-[11px] text-neutral-500">
+              Les menus, la duplication de semaine et les commandes des salariés suivent ces jours.
+            </p>
+          </div>
           <label className="space-y-1">
             <span className="block text-xs font-bold text-neutral-700">Responsable</span>
             <input name="responsable" defaultValue={company.responsable_nom || ""} className={champClasse} />
@@ -147,7 +180,7 @@ export function ParametresPanel({ company, abonnement, numeroWave, isDemo }: Par
         <div className="flex items-center gap-3">
           <button
             type="submit"
-            disabled={isPending || isDemo}
+            disabled={isPending || isDemo || joursTravail.length === 0}
             className="px-4 py-2.5 bg-orange-600 hover:bg-orange-700 active:scale-98 disabled:opacity-50 text-white font-bold text-xs rounded-xl transition"
           >
             Enregistrer
