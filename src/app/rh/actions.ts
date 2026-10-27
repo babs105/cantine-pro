@@ -734,12 +734,15 @@ export async function envoyerRelanceDernierRappelAction(): Promise<{ success: bo
 }
 
 /**
- * Envoi en masse des liens magiques : génère un message WhatsApp contenant le lien de chaque
- * collaborateur actif (sans filtre sur la commande du jour). Le RH valide l'envoi dans le groupe.
+ * Récupère la liste des collaborateurs avec leurs liens WhatsApp individuels
+ * pour envoi privé (un message par collaborateur).
  */
-export async function envoyerLiensMagiquesAction(): Promise<{ success: boolean; message?: string; url?: string }> {
+export async function getLiensMagiquesAction(): Promise<{ success: boolean; message?: string; employes?: Array<{ id: string; nom: string; telephone: string | null; url: string }> }> {
   if (!isSupabaseConfigured()) {
-    return { success: true, url: "https://wa.me/?text=Demo" };
+    return { success: true, employes: [
+      { id: "demo-1", nom: "Moussa Ndiaye", telephone: "+221771112233", url: "https://wa.me/221771112233?text=Demo" },
+      { id: "demo-2", nom: "Aminata Sow", telephone: "+221772223344", url: "https://wa.me/221772223344?text=Demo" },
+    ]};
   }
 
   const companyId = await getRhCompanyId();
@@ -749,7 +752,7 @@ export async function envoyerLiensMagiquesAction(): Promise<{ success: boolean; 
   const { data: company } = await supabase
     .from("companies")
     .select("nom, slug, heure_limite_vote")
-    .eq("id",companyId)
+    .eq("id", companyId)
     .single();
 
   if (!company) return { success: false, message: "Entreprise introuvable." };
@@ -770,14 +773,13 @@ export async function envoyerLiensMagiquesAction(): Promise<{ success: boolean; 
   const appBaseUrl = getAppBaseUrl();
   const heureLimite = (comp.heure_limite_vote || "11:10:00").slice(0, 5).replace(":", "h");
 
-  let msg = `🍽️ *VOS LIENS CANTINE PRO — ${String(comp.nom).toUpperCase()}*\n\n`;
-  msg += `Choisissez votre plat avant *${heureLimite}* :\n\n`;
-  for (const emp of employes as any[]) {
+  const employesAvecUrl = (employes as any[]).map((emp) => {
     const lien = `${appBaseUrl}/p/${emp.token}`;
-    msg += `• ${emp.nom} : ${lien}\n`;
-  }
-  msg += `\n👉 Chaque lien est personnel et ne nécessite aucun mot de passe.`;
+    const tel = emp.telephone?.replace(/\D/g, "") || "";
+    const msg = `Bonjour ${emp.nom},\n\nVoici ton lien personnel pour commander ton déjeuner sur Cantine Pro (avant ${heureLimite}) :\n${lien}\n\nCe lien est unique et ne nécessite aucun mot de passe.`;
+    const url = tel ? `https://wa.me/${tel}?text=${encodeURIComponent(msg)}` : "";
+    return { id: emp.id, nom: emp.nom, telephone: emp.telephone, url };
+  });
 
-  const url = `https://wa.me/?text=${encodeURIComponent(msg)}`;
-  return { success: true, url, message: `${employes.length} lien(s) prêt(s)` };
+  return { success: true, employes: employesAvecUrl };
 }

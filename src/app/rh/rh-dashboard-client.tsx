@@ -38,7 +38,7 @@ import {
   modifierCommandeRhAction,
   modifierServiceEmployeAction,
   envoyerRelanceDernierRappelAction,
-  envoyerLiensMagiquesAction,
+  getLiensMagiquesAction,
 } from "./actions";
 import { logoutRhAction } from "./login/actions";
 import { MenusSemaine, type PlatSemaine } from "./menus-semaine";
@@ -151,6 +151,8 @@ export function RhDashboardClient({
   const [newTel, setNewTel] = useState("");
   const [newService, setNewService] = useState("");
   const [showCsvModal, setShowCsvModal] = useState(false);
+  const [showEnvoiLiensModal, setShowEnvoiLiensModal] = useState(false);
+  const [liensMagiques, setLiensMagiques] = useState<Array<{ id: string; nom: string; telephone: string | null; url: string }>>([]);
   const [editingVote, setEditingVote] = useState<string | null>(null);
   const [filtreStatut, setFiltreStatut] = useState<StatutVote | "tous">("tous");
   const [recherche, setRecherche] = useState("");
@@ -161,6 +163,16 @@ export function RhDashboardClient({
   // Les données serveur (rafraîchies) font foi
   useEffect(() => setEmployes(initialEmployes), [initialEmployes]);
   useEffect(() => setCommandes(initialCommandes), [initialCommandes]);
+
+  // Charger les liens magiques quand la modale s'ouvre
+  useEffect(() => {
+    if (showEnvoiLiensModal && !isDemo) {
+      getLiensMagiquesAction().then((res) => {
+        if (res.success && res.employes) setLiensMagiques(res.employes);
+        else if (res.message) setActionError(res.message);
+      });
+    }
+  }, [showEnvoiLiensModal, isDemo]);
 
   // Suivi live : rafraîchissement automatique des votes (Jour 6)
   useEffect(() => {
@@ -1067,17 +1079,8 @@ export function RhDashboardClient({
                 {!isDemo && (
                   <button
                     type="button"
-                    disabled={isPending}
-                    onClick={async () => {
-                      const res = await envoyerLiensMagiquesAction();
-                      if (res.success && res.url) {
-                        window.open(res.url, "_blank");
-                        if (res.message) setActionInfo(res.message);
-                      } else {
-                        setActionError(res.message || "Impossible d'envoyer les liens.");
-                      }
-                    }}
-                    className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white font-bold text-xs rounded-xl transition flex items-center gap-2"
+                    onClick={() => setShowEnvoiLiensModal(true)}
+                    className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-xl transition flex items-center gap-2"
                   >
                     <Send className="w-4 h-4" />
                     Envoyer les liens ({employes.length})
@@ -1085,6 +1088,56 @@ export function RhDashboardClient({
                 )}
               </div>
             </div>
+
+            {/* MODAL ENVOI LIENS MAGIQUES INDIVIDUELS */}
+            {showEnvoiLiensModal && (
+              <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4" onClick={() => setShowEnvoiLiensModal(false)}>
+                <div className="bg-white rounded-3xl shadow-xl max-w-lg w-full max-h-[80vh] overflow-hidden" onClick={(e) => e.stopPropagation()}>
+                  <div className="p-5 border-b border-neutral-100 flex items-center justify-between">
+                    <h3 className="font-extrabold text-neutral-900">Envoyer les liens magiques</h3>
+                    <button onClick={() => setShowEnvoiLiensModal(false)} className="text-neutral-400 hover:text-neutral-700 text-2xl leading-none">✕</button>
+                  </div>
+                  <div className="p-3 bg-emerald-50 border-b border-emerald-100 text-xs text-emerald-800">
+                    Un message privé par collaborateur. Cliquez sur « Envoyer » pour ouvrir WhatsApp avec son lien personnel.
+                  </div>
+                  <div className="max-h-96 overflow-y-auto p-4 space-y-3">
+                    {liensMagiques.length === 0 ? (
+                      <p className="text-center text-neutral-500 py-8">Chargement...</p>
+                    ) : (
+                      liensMagiques.map((emp) => (
+                        <div key={emp.id} className="bg-white border border-neutral-200 rounded-2xl p-4 space-y-3">
+                          <div className="flex items-center justify-between">
+                            <span className="font-semibold text-neutral-900">{emp.nom}</span>
+                            <span className="text-xs text-neutral-500">{emp.telephone || "Pas de téléphone"}</span>
+                          </div>
+                          {emp.url ? (
+                            <a
+                              href={emp.url}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="w-full px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-xl transition flex items-center justify-center gap-2"
+                            >
+                              <Send className="w-4 h-4" />
+                              Envoyer WhatsApp
+                            </a>
+                          ) : (
+                            <button className="w-full px-4 py-2.5 bg-neutral-200 text-neutral-500 font-bold text-xs rounded-xl cursor-not-allowed flex items-center justify-center gap-2">
+                              <Send className="w-4 h-4" />
+                              Pas de numéro WhatsApp
+                            </button>
+                          )}
+                        </div>
+                      ))
+                    )}
+                  </div>
+                  <div className="p-4 border-t border-neutral-100 flex justify-end">
+                    <button onClick={() => setShowEnvoiLiensModal(false)} className="px-4 py-2 bg-neutral-100 hover:bg-neutral-200 text-neutral-700 font-semibold text-xs rounded-xl transition">
+                      Fermer
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
 
             {/* Formulaire Ajout Rapide Collaborateur */}
             <form
