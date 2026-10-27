@@ -732,3 +732,52 @@ export async function envoyerRelanceDernierRappelAction(): Promise<{ success: bo
   const url = `https://wa.me/?text=${encodeURIComponent(message)}`;
   return { success: true, url, message: `${aRelancer.length} collaborateur(s) concerné(s)` };
 }
+
+/**
+ * Envoi en masse des liens magiques : génère un message WhatsApp contenant le lien de chaque
+ * collaborateur actif (sans filtre sur la commande du jour). Le RH valide l'envoi dans le groupe.
+ */
+export async function envoyerLiensMagiquesAction(): Promise<{ success: boolean; message?: string; url?: string }> {
+  if (!isSupabaseConfigured()) {
+    return { success: true, url: "https://wa.me/?text=Demo" };
+  }
+
+  const companyId = await getRhCompanyId();
+  if (!companyId) return { success: false, message: SESSION_EXPIREE };
+
+  const supabase = await createClient();
+  const { data: company } = await supabase
+    .from("companies")
+    .select("nom, slug, heure_limite_vote")
+    .eq("id",companyId)
+    .single();
+
+  if (!company) return { success: false, message: "Entreprise introuvable." };
+
+  const { data: employes, error } = await supabase
+    .from("employes")
+    .select("id, nom, telephone, token")
+    .eq("company_id", companyId)
+    .eq("is_active", true)
+    .order("nom");
+
+  if (error) return { success: false, message: error.message };
+  if (!employes || employes.length === 0) {
+    return { success: false, message: "Aucun collaborateur actif." };
+  }
+
+  const comp: any = company;
+  const appBaseUrl = getAppBaseUrl();
+  const heureLimite = (comp.heure_limite_vote || "11:10:00").slice(0, 5).replace(":", "h");
+
+  let msg = `🍽️ *VOS LIENS CANTINE PRO — ${String(comp.nom).toUpperCase()}*\n\n`;
+  msg += `Choisissez votre plat avant *${heureLimite}* :\n\n`;
+  for (const emp of employes as any[]) {
+    const lien = `${appBaseUrl}/p/${emp.token}`;
+    msg += `• ${emp.nom} : ${lien}\n`;
+  }
+  msg += `\n👉 Chaque lien est personnel et ne nécessite aucun mot de passe.`;
+
+  const url = `https://wa.me/?text=${encodeURIComponent(msg)}`;
+  return { success: true, url, message: `${employes.length} lien(s) prêt(s)` };
+}

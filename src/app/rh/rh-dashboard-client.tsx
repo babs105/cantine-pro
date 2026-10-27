@@ -38,6 +38,7 @@ import {
   modifierCommandeRhAction,
   modifierServiceEmployeAction,
   envoyerRelanceDernierRappelAction,
+  envoyerLiensMagiquesAction,
 } from "./actions";
 import { logoutRhAction } from "./login/actions";
 import { MenusSemaine, type PlatSemaine } from "./menus-semaine";
@@ -1063,6 +1064,25 @@ export function RhDashboardClient({
                   <FileSpreadsheet className="w-4 h-4" />
                   Importer Excel / CSV
                 </button>
+                {!isDemo && (
+                  <button
+                    type="button"
+                    disabled={isPending}
+                    onClick={async () => {
+                      const res = await envoyerLiensMagiquesAction();
+                      if (res.success && res.url) {
+                        window.open(res.url, "_blank");
+                        if (res.message) setActionInfo(res.message);
+                      } else {
+                        setActionError(res.message || "Impossible d'envoyer les liens.");
+                      }
+                    }}
+                    className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white font-bold text-xs rounded-xl transition flex items-center gap-2"
+                  >
+                    <Send className="w-4 h-4" />
+                    Envoyer les liens ({employes.length})
+                  </button>
+                )}
               </div>
             </div>
 
