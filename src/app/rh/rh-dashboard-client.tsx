@@ -112,7 +112,6 @@ interface RhDashboardClientProps {
   /** Première connexion juste après l'inscription */
   bienvenue: boolean;
   appBaseUrl: string;
-  isDemo: boolean;
 }
 
 const REFRESH_INTERVAL_MS = 20_000;
@@ -133,7 +132,6 @@ export function RhDashboardClient({
   numeroWave,
   bienvenue,
   appBaseUrl,
-  isDemo,
 }: RhDashboardClientProps) {
   const router = useRouter();
   const [activeTab, setActiveTab] = useState<
@@ -163,12 +161,12 @@ export function RhDashboardClient({
 
   // Suivi live : rafraîchissement automatique des votes (Jour 6)
   useEffect(() => {
-    if (isDemo || activeTab !== "live") return;
+    if (activeTab !== "live") return;
     const interval = setInterval(() => {
       if (document.visibilityState === "visible") router.refresh();
     }, REFRESH_INTERVAL_MS);
     return () => clearInterval(interval);
-  }, [isDemo, activeTab, router]);
+  }, [activeTab, router]);
 
   // Bandeau d'abonnement : essai, retard de paiement ou suspension de l'envoi aux restaurants
   const texteAbonnement =
@@ -346,36 +344,6 @@ export function RhDashboardClient({
 
   const [moisExport, setMoisExport] = useState(moisCourant);
 
-  // Export CSV Comptable Express (Jour 7)
-  const exportComptableCSV = () => {
-    const headers = ["Date", "Entreprise", "Employé", "Téléphone", "Statut Commande", "Plat Choisi", "Montant (FCFA)"];
-    const rows = employes.map((emp) => {
-      const cmd = commandes.find((c) => c.employe_id === emp.id);
-      const statut = cmd ? cmd.statut : "en_attente";
-      const plat = cmd?.plat_titre || "-";
-      const montant = statut === "choisi" ? cmd?.prix ?? 0 : 0;
-      return [
-        dateStr,
-        `"${company.nom}"`,
-        `"${emp.nom}"`,
-        `"${emp.telephone || ""}"`,
-        statut,
-        `"${plat}"`,
-        montant,
-      ].join(";");
-    });
-
-    const csvContent = "\uFEFF" + [headers.join(";"), ...rows].join("\r\n");
-    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.setAttribute("href", url);
-    link.setAttribute("download", `cantine-pro-${company.slug}-${new Date().toISOString().split("T")[0]}.csv`);
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-  };
-
   const onglets: Array<{
     id: typeof activeTab;
     label: string;
@@ -427,17 +395,15 @@ export function RhDashboardClient({
               </p>
             </div>
 
-            {!isDemo && (
-              <form action={logoutRhAction} className="shrink-0">
-                <button
-                  type="submit"
-                  className="px-3 py-2 rounded-xl text-xs font-semibold text-neutral-600 hover:text-neutral-900 hover:bg-neutral-100 transition flex items-center gap-1.5"
-                >
-                  <LogOut className="w-4 h-4" />
-                  <span className="hidden sm:inline">Déconnexion</span>
-                </button>
-              </form>
-            )}
+            <form action={logoutRhAction} className="shrink-0">
+              <button
+                type="submit"
+                className="px-3 py-2 rounded-xl text-xs font-semibold text-neutral-600 hover:text-neutral-900 hover:bg-neutral-100 transition flex items-center gap-1.5"
+              >
+                <LogOut className="w-4 h-4" />
+                <span className="hidden sm:inline">Déconnexion</span>
+              </button>
+            </form>
           </div>
 
           {/* Onglets Navigation : une seule ligne, défilable sur téléphone */}
@@ -480,11 +446,6 @@ export function RhDashboardClient({
       </header>
 
       <main className="max-w-7xl mx-auto px-4 py-6">
-        {isDemo && (
-          <div className="mb-4 p-3 bg-amber-50 border border-amber-200 text-amber-900 rounded-2xl text-xs">
-            Mode démo : Supabase n&apos;est pas connecté, les modifications ne sont pas enregistrées.
-          </div>
-        )}
 
         {bienvenue && (
           <div className="mb-4 p-4 bg-emerald-50 border border-emerald-200 text-emerald-900 rounded-2xl text-xs space-y-1">
@@ -616,16 +577,14 @@ export function RhDashboardClient({
                     {messageMenuDuJour.replace(/\*/g, "")}
                   </pre>
                 )}
-                {!isDemo && (
-                  <div className="flex items-center gap-2 text-[11px] text-neutral-500">
-                    <RefreshCw className="w-3.5 h-3.5 animate-spin [animation-duration:3s]" />
-                    2. Commandes ouvertes de {company.heure_ouverture_vote.slice(0, 5)} à{" "}
-                    {company.heure_limite_vote.slice(0, 5)} — actualisation toutes les 20 secondes
-                  </div>
-                )}
+                <div className="flex items-center gap-2 text-[11px] text-neutral-500">
+                  <RefreshCw className="w-3.5 h-3.5 animate-spin [animation-duration:3s]" />
+                  2. Commandes ouvertes de {company.heure_ouverture_vote.slice(0, 5)} à{" "}
+                  {company.heure_limite_vote.slice(0, 5)} — actualisation toutes les 20 secondes
+                </div>
 
                 {/* RELANCE 10H30 — visible seulement si des gens n'ont pas commandé */}
-                {countEnAttente > 0 && !isDemo && (
+                {countEnAttente > 0 && (
                   <div className="pt-2 border-t border-orange-100">
                     <button
                       type="button"
@@ -663,7 +622,7 @@ export function RhDashboardClient({
                     ? `🔒 Commandes clôturées à ${company.heure_limite_vote.slice(0, 5)}. Clôturez la journée pour figer les récaps, puis envoyez-les aux restaurants.`
                     : "✅ Journée clôturée : envoyez chaque récap à son restaurant avec le bouton « Envoyer le récap »."}
                 </span>
-                {restaurantsNonClotures.length > 0 && !isDemo && (
+                {restaurantsNonClotures.length > 0 && (
                   <button
                     type="button"
                     disabled={isPending}
@@ -737,42 +696,30 @@ export function RhDashboardClient({
                   Commandes par restaurant
                 </h2>
                 <div className="flex flex-wrap items-center gap-2">
-                  {isDemo ? (
-                    <button
-                      onClick={exportComptableCSV}
-                      className="px-3.5 py-2 bg-neutral-100 hover:bg-neutral-200 active:scale-98 text-neutral-700 font-semibold text-xs rounded-xl transition flex items-center gap-1.5"
+                  <a
+                    href="/rh/export"
+                    className="px-3.5 py-2 bg-neutral-100 hover:bg-neutral-200 active:scale-98 text-neutral-700 font-semibold text-xs rounded-xl transition flex items-center gap-1.5"
+                  >
+                    <Download className="w-4 h-4" />
+                    Facture du jour
+                  </a>
+                  <div className="flex items-center bg-neutral-100 rounded-xl">
+                    <input
+                      type="month"
+                      value={moisExport}
+                      max={moisCourant}
+                      onChange={(e) => setMoisExport(e.target.value || moisCourant)}
+                      className="bg-transparent text-xs pl-2.5 py-2 w-[7.5rem] focus:outline-none"
+                      title="Mois à exporter"
+                    />
+                    <a
+                      href={`/rh/export?mois=${moisExport}&format=xlsx`}
+                      className="px-3 py-2 hover:bg-neutral-200 active:scale-98 text-neutral-700 font-semibold text-xs rounded-r-xl transition flex items-center gap-1.5"
                     >
-                      <Download className="w-4 h-4" />
-                      Export CSV
-                    </button>
-                  ) : (
-                    <>
-                      <a
-                        href="/rh/export"
-                        className="px-3.5 py-2 bg-neutral-100 hover:bg-neutral-200 active:scale-98 text-neutral-700 font-semibold text-xs rounded-xl transition flex items-center gap-1.5"
-                      >
-                        <Download className="w-4 h-4" />
-                        Facture du jour
-                      </a>
-                      <div className="flex items-center bg-neutral-100 rounded-xl">
-                        <input
-                          type="month"
-                          value={moisExport}
-                          max={moisCourant}
-                          onChange={(e) => setMoisExport(e.target.value || moisCourant)}
-                          className="bg-transparent text-xs pl-2.5 py-2 w-[7.5rem] focus:outline-none"
-                          title="Mois à exporter"
-                        />
-                        <a
-                          href={`/rh/export?mois=${moisExport}&format=xlsx`}
-                          className="px-3 py-2 hover:bg-neutral-200 active:scale-98 text-neutral-700 font-semibold text-xs rounded-r-xl transition flex items-center gap-1.5"
-                        >
-                          <FileSpreadsheet className="w-4 h-4 text-emerald-600" />
-                          Paie Excel
-                        </a>
-                      </div>
-                    </>
-                  )}
+                      <FileSpreadsheet className="w-4 h-4 text-emerald-600" />
+                      Paie Excel
+                    </a>
+                  </div>
                 </div>
               </div>
 
@@ -790,7 +737,7 @@ export function RhDashboardClient({
                     cloture={clotures.find((c) => c.restaurant_id === r.id) || null}
                     companyNom={company.nom}
                     dateStr={dateStr}
-                    peutEnvoyer={isDemo || clotures.some((c) => c.restaurant_id === r.id)}
+                    peutEnvoyer={clotures.some((c) => c.restaurant_id === r.id)}
                   />
                 ))
               )}
@@ -979,7 +926,6 @@ export function RhDashboardClient({
             todayDate={todayDate}
             joursTravail={company.jours_travail}
             restaurants={restaurants.filter((r) => r.is_active)}
-            isDemo={isDemo}
             onError={setActionError}
           />
         )}
@@ -1209,12 +1155,12 @@ export function RhDashboardClient({
             </div>
           </div>
         )}
-        {activeTab === "historique" && <HistoriquePanel moisInitial={todayDate.slice(0, 7)} isDemo={isDemo} />}
+        {activeTab === "historique" && <HistoriquePanel moisInitial={todayDate.slice(0, 7)} />}
 
-        {activeTab === "stats" && <StatistiquesPanel moisInitial={todayDate.slice(0, 7)} isDemo={isDemo} />}
+        {activeTab === "stats" && <StatistiquesPanel moisInitial={todayDate.slice(0, 7)} />}
 
         {activeTab === "parametres" && (
-          <ParametresPanel company={company} abonnement={abonnement} numeroWave={numeroWave} isDemo={isDemo} />
+          <ParametresPanel company={company} abonnement={abonnement} numeroWave={numeroWave} />
         )}
       </main>
 

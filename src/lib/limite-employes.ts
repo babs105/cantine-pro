@@ -1,8 +1,8 @@
 import "server-only";
-import { createClient } from "@/lib/supabase/server";
+import type { SupabaseServeur } from "@/lib/supabase/server";
 import { PLANS, isPlanId } from "@/lib/abonnement";
 
-type Supabase = Awaited<ReturnType<typeof createClient>>;
+type Supabase = SupabaseServeur;
 
 /** Places restantes sur l'offre de l'entreprise (Starter 30, Pro 100, Business 300 salariés actifs) */
 export async function placesRestantes(

@@ -231,9 +231,9 @@ CREATE INDEX IF NOT EXISTS idx_paiements_company ON public.paiements(company_id)
 ALTER TABLE public.companies
     ADD COLUMN IF NOT EXISTS jours_travail SMALLINT[] NOT NULL DEFAULT '{1,2,3,4,5}';
 
--- 8. SÉCURITÉ : RLS ACTIVÉE SANS POLITIQUE
--- Toutes les lectures/écritures passent par le serveur Next.js (clé service_role).
--- La clé anon publique ne donne donc accès à aucune donnée (tokens employés inclus).
+-- 8. SÉCURITÉ : RLS ACTIVÉE SUR TOUTES LES TABLES
+-- Les politiques (section 9) n'ouvrent l'accès qu'aux requêtes portant un JWT signé par le serveur
+-- Next.js. La clé anon seule ne lit aucune table (tokens employés inclus).
 ALTER TABLE public.companies ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.employes ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.menus_du_jour ENABLE ROW LEVEL SECURITY;
@@ -243,7 +243,162 @@ ALTER TABLE public.restaurants ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.paiements ENABLE ROW LEVEL SECURITY;
 ALTER VIEW public.vue_recapitulatif_traiteur SET (security_invoker = true);
 
--- 9. JEU DE DONNÉES DE TEST / DÉMARRAGE (ENTREPRISES PILOTES THIÈS)
+-- 9. POLITIQUES RLS : PATTERN HYBRIDE « TOKEN URL -> JWT COURT »
+-- 1) Le serveur échange l'identifiant reçu (code RH, token salarié, token restaurant, slug du portail)
+--    via une fonction SECURITY DEFINER ci-dessous, appelée avec la clé anon.
+-- 2) Il signe un JWT ES256 de quelques minutes (clé privée importée dans Supabase > JWT Keys) contenant :
+--    role = authenticated, role_app (rh | salarie | restaurant | portail), company_id,
+--    et employe_id ou restaurant_id selon le cas.
+-- 3) Les politiques ci-dessous filtrent chaque table sur ces claims.
+-- La console SuperAdmin, le cron et l'inscription d'une entreprise gardent la clé service_role
+-- (accès multi-entreprises par nature) : elle contourne la RLS.
+
+-- Lecture des claims du JWT de la requête
+CREATE OR REPLACE FUNCTION public.jwt_role_app() RETURNS TEXT
+LANGUAGE sql STABLE AS $$ SELECT auth.jwt() ->> 'role_app' $$;
+
+CREATE OR REPLACE FUNCTION public.jwt_company_id() RETURNS UUID
+LANGUAGE sql STABLE AS $$ SELECT NULLIF(auth.jwt() ->> 'company_id', '')::uuid $$;
+
+CREATE OR REPLACE FUNCTION public.jwt_employe_id() RETURNS UUID
+LANGUAGE sql STABLE AS $$ SELECT NULLIF(auth.jwt() ->> 'employe_id', '')::uuid $$;
+
+CREATE OR REPLACE FUNCTION public.jwt_restaurant_id() RETURNS UUID
+LANGUAGE sql STABLE AS $$ SELECT NULLIF(auth.jwt() ->> 'restaurant_id', '')::uuid $$;
+
+-- Fonctions d'échange (seul accès possible avec la clé anon, ne renvoient que des identifiants)
+CREATE OR REPLACE FUNCTION public.echanger_acces_rh(p_identifiant TEXT, p_code_hash TEXT)
+RETURNS UUID
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public AS $$
+    SELECT c.id
+    FROM public.companies c
+    WHERE CASE WHEN position('@' IN p_identifiant) > 0
+               THEN c.email_contact = p_identifiant
+               ELSE c.slug = p_identifiant END
+      AND c.is_active
+      AND c.rh_code_hash IS NOT NULL
+      AND lower(c.rh_code_hash) = lower(p_code_hash)
+    LIMIT 1
+$$;
+
+CREATE OR REPLACE FUNCTION public.echanger_jeton_salarie(p_token TEXT)
+RETURNS TABLE (employe_id UUID, company_id UUID)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public AS $$
+    SELECT e.id, e.company_id FROM public.employes e
+    WHERE e.token = p_token AND e.is_active
+    LIMIT 1
+$$;
+
+CREATE OR REPLACE FUNCTION public.echanger_jeton_restaurant(p_token TEXT)
+RETURNS TABLE (restaurant_id UUID, company_id UUID)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public AS $$
+    SELECT r.id, r.company_id FROM public.restaurants r
+    WHERE r.token = p_token
+    LIMIT 1
+$$;
+
+CREATE OR REPLACE FUNCTION public.echanger_slug_portail(p_slug TEXT)
+RETURNS UUID
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public AS $$
+    SELECT c.id FROM public.companies c
+    WHERE c.slug = p_slug AND c.is_active
+    LIMIT 1
+$$;
+
+REVOKE EXECUTE ON FUNCTION public.echanger_acces_rh(TEXT, TEXT) FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION public.echanger_jeton_salarie(TEXT) FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION public.echanger_jeton_restaurant(TEXT) FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION public.echanger_slug_portail(TEXT) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.echanger_acces_rh(TEXT, TEXT) TO anon, authenticated, service_role;
+GRANT EXECUTE ON FUNCTION public.echanger_jeton_salarie(TEXT) TO anon, authenticated, service_role;
+GRANT EXECUTE ON FUNCTION public.echanger_jeton_restaurant(TEXT) TO anon, authenticated, service_role;
+GRANT EXECUTE ON FUNCTION public.echanger_slug_portail(TEXT) TO anon, authenticated, service_role;
+
+-- companies
+DROP POLICY IF EXISTS rh_lit_son_entreprise ON public.companies;
+CREATE POLICY rh_lit_son_entreprise ON public.companies FOR SELECT TO authenticated
+    USING (id = public.jwt_company_id());
+DROP POLICY IF EXISTS rh_modifie_son_entreprise ON public.companies;
+CREATE POLICY rh_modifie_son_entreprise ON public.companies FOR UPDATE TO authenticated
+    USING (public.jwt_role_app() = 'rh' AND id = public.jwt_company_id())
+    WITH CHECK (public.jwt_role_app() = 'rh' AND id = public.jwt_company_id());
+
+-- employes
+DROP POLICY IF EXISTS rh_gere_ses_salaries ON public.employes;
+CREATE POLICY rh_gere_ses_salaries ON public.employes FOR ALL TO authenticated
+    USING (public.jwt_role_app() = 'rh' AND company_id = public.jwt_company_id())
+    WITH CHECK (public.jwt_role_app() = 'rh' AND company_id = public.jwt_company_id());
+DROP POLICY IF EXISTS salarie_lit_sa_fiche ON public.employes;
+CREATE POLICY salarie_lit_sa_fiche ON public.employes FOR SELECT TO authenticated
+    USING (public.jwt_role_app() = 'salarie' AND id = public.jwt_employe_id());
+DROP POLICY IF EXISTS portail_lit_les_salaries ON public.employes;
+CREATE POLICY portail_lit_les_salaries ON public.employes FOR SELECT TO authenticated
+    USING (public.jwt_role_app() = 'portail' AND company_id = public.jwt_company_id());
+DROP POLICY IF EXISTS portail_inscrit_un_salarie ON public.employes;
+CREATE POLICY portail_inscrit_un_salarie ON public.employes FOR INSERT TO authenticated
+    WITH CHECK (public.jwt_role_app() = 'portail' AND company_id = public.jwt_company_id());
+
+-- restaurants
+DROP POLICY IF EXISTS rh_gere_ses_restaurants ON public.restaurants;
+CREATE POLICY rh_gere_ses_restaurants ON public.restaurants FOR ALL TO authenticated
+    USING (public.jwt_role_app() = 'rh' AND company_id = public.jwt_company_id())
+    WITH CHECK (public.jwt_role_app() = 'rh' AND company_id = public.jwt_company_id());
+DROP POLICY IF EXISTS salarie_lit_les_restaurants ON public.restaurants;
+CREATE POLICY salarie_lit_les_restaurants ON public.restaurants FOR SELECT TO authenticated
+    USING (public.jwt_role_app() = 'salarie' AND company_id = public.jwt_company_id());
+DROP POLICY IF EXISTS restaurant_lit_sa_fiche ON public.restaurants;
+CREATE POLICY restaurant_lit_sa_fiche ON public.restaurants FOR SELECT TO authenticated
+    USING (public.jwt_role_app() = 'restaurant' AND id = public.jwt_restaurant_id());
+
+-- menus_du_jour
+DROP POLICY IF EXISTS rh_gere_ses_menus ON public.menus_du_jour;
+CREATE POLICY rh_gere_ses_menus ON public.menus_du_jour FOR ALL TO authenticated
+    USING (public.jwt_role_app() = 'rh' AND company_id = public.jwt_company_id())
+    WITH CHECK (public.jwt_role_app() = 'rh' AND company_id = public.jwt_company_id());
+DROP POLICY IF EXISTS salarie_et_restaurant_lisent_les_menus ON public.menus_du_jour;
+CREATE POLICY salarie_et_restaurant_lisent_les_menus ON public.menus_du_jour FOR SELECT TO authenticated
+    USING (public.jwt_role_app() IN ('salarie', 'restaurant') AND company_id = public.jwt_company_id());
+
+-- commandes
+DROP POLICY IF EXISTS rh_gere_les_commandes ON public.commandes;
+CREATE POLICY rh_gere_les_commandes ON public.commandes FOR ALL TO authenticated
+    USING (public.jwt_role_app() = 'rh' AND company_id = public.jwt_company_id())
+    WITH CHECK (public.jwt_role_app() = 'rh' AND company_id = public.jwt_company_id());
+DROP POLICY IF EXISTS salarie_lit_sa_commande ON public.commandes;
+CREATE POLICY salarie_lit_sa_commande ON public.commandes FOR SELECT TO authenticated
+    USING (public.jwt_role_app() = 'salarie' AND employe_id = public.jwt_employe_id());
+DROP POLICY IF EXISTS salarie_passe_sa_commande ON public.commandes;
+CREATE POLICY salarie_passe_sa_commande ON public.commandes FOR INSERT TO authenticated
+    WITH CHECK (public.jwt_role_app() = 'salarie' AND employe_id = public.jwt_employe_id()
+                AND company_id = public.jwt_company_id());
+DROP POLICY IF EXISTS salarie_modifie_sa_commande ON public.commandes;
+CREATE POLICY salarie_modifie_sa_commande ON public.commandes FOR UPDATE TO authenticated
+    USING (public.jwt_role_app() = 'salarie' AND employe_id = public.jwt_employe_id())
+    WITH CHECK (public.jwt_role_app() = 'salarie' AND employe_id = public.jwt_employe_id()
+                AND company_id = public.jwt_company_id());
+DROP POLICY IF EXISTS restaurant_lit_les_commandes ON public.commandes;
+CREATE POLICY restaurant_lit_les_commandes ON public.commandes FOR SELECT TO authenticated
+    USING (public.jwt_role_app() = 'restaurant' AND company_id = public.jwt_company_id());
+
+-- clotures
+DROP POLICY IF EXISTS rh_gere_les_clotures ON public.clotures;
+CREATE POLICY rh_gere_les_clotures ON public.clotures FOR ALL TO authenticated
+    USING (public.jwt_role_app() = 'rh' AND company_id = public.jwt_company_id())
+    WITH CHECK (public.jwt_role_app() = 'rh' AND company_id = public.jwt_company_id());
+DROP POLICY IF EXISTS restaurant_lit_ses_clotures ON public.clotures;
+CREATE POLICY restaurant_lit_ses_clotures ON public.clotures FOR SELECT TO authenticated
+    USING (public.jwt_role_app() = 'restaurant' AND restaurant_id = public.jwt_restaurant_id());
+DROP POLICY IF EXISTS restaurant_confirme_ses_clotures ON public.clotures;
+CREATE POLICY restaurant_confirme_ses_clotures ON public.clotures FOR UPDATE TO authenticated
+    USING (public.jwt_role_app() = 'restaurant' AND restaurant_id = public.jwt_restaurant_id())
+    WITH CHECK (public.jwt_role_app() = 'restaurant' AND restaurant_id = public.jwt_restaurant_id());
+
+-- paiements (écriture réservée à la console SuperAdmin, clé service_role)
+DROP POLICY IF EXISTS rh_lit_ses_paiements ON public.paiements;
+CREATE POLICY rh_lit_ses_paiements ON public.paiements FOR SELECT TO authenticated
+    USING (public.jwt_role_app() = 'rh' AND company_id = public.jwt_company_id());
+
+-- 10. JEU DE DONNÉES DE TEST / DÉMARRAGE (ENTREPRISES PILOTES THIÈS)
 DO $$
 DECLARE
     v_comp_id UUID;

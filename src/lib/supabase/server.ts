@@ -1,19 +1,113 @@
 import "server-only";
-import { createClient as createSupabaseClient } from "@supabase/supabase-js";
+import { createServerClient } from "@supabase/ssr";
 import { Database } from "@/types/database";
+import { getRhCompanyId, hashRhCode } from "@/lib/rh-session";
+import { signerJetonSupabase, type ClaimsCantine } from "./jeton";
 
 /**
- * Client Supabase côté serveur avec la clé service_role.
- * La RLS est activée sans politique : la clé anon publique ne lit rien,
- * toutes les requêtes passent par le serveur et sont filtrées par token / entreprise.
+ * Clients Supabase côté serveur avec la clé anon : la RLS s'applique à chaque requête.
+ *
+ * Pattern hybride : l'identifiant reçu (cookie RH, token salarié ou restaurant dans l'URL, slug du portail)
+ * est d'abord échangé contre des identifiants par une fonction SQL SECURITY DEFINER, puis le serveur
+ * signe un JWT court dont les claims (role_app, company_id, employe_id, restaurant_id) filtrent les tables.
+ * Le JWT ne quitte jamais le serveur. La clé service_role est réservée à ./admin.ts.
  */
-export async function createClient() {
-  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-  if (!serviceKey) {
-    throw new Error("SUPABASE_SERVICE_ROLE_KEY manquante dans l'environnement.");
-  }
 
-  return createSupabaseClient<Database>(process.env.NEXT_PUBLIC_SUPABASE_URL!, serviceKey, {
-    auth: { persistSession: false, autoRefreshToken: false },
+function configSupabase(): { url: string; cleAnon: string } {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const cleAnon = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  if (!url || url === "https://votre-projet.supabase.co") {
+    throw new Error("NEXT_PUBLIC_SUPABASE_URL manquante ou non remplacée dans l'environnement.");
+  }
+  if (!cleAnon || cleAnon === "votre-cle-anon-publique") {
+    throw new Error("NEXT_PUBLIC_SUPABASE_ANON_KEY manquante ou non remplacée dans l'environnement.");
+  }
+  return { url, cleAnon };
+}
+
+function serverClient(jeton?: string) {
+  const { url, cleAnon } = configSupabase();
+  return createServerClient<Database>(url, cleAnon, {
+    // Pas de session Supabase Auth : l'identité vient du JWT signé par le serveur
+    cookies: { getAll: () => [], setAll: () => {} },
+    auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
+    global: jeton ? { headers: { Authorization: `Bearer ${jeton}` } } : undefined,
   });
+}
+
+export type SupabaseServeur = ReturnType<typeof serverClient>;
+
+/** Client portant les claims donnés (sans vérification : réservé aux identifiants déjà échangés) */
+export function createClientAvecClaims(claims: ClaimsCantine): SupabaseServeur {
+  return serverClient(signerJetonSupabase(claims));
+}
+
+/** Client RH de l'entreprise connectée (cookie de session RH déjà vérifié par getRhCompanyId) */
+export function createClientRh(companyId: string): SupabaseServeur {
+  return createClientAvecClaims({ role_app: "rh", company_id: companyId });
+}
+
+/** Client RH à partir du cookie de session, ou null si le RH n'est pas connecté */
+export async function createClientRhSession(): Promise<{ companyId: string; supabase: SupabaseServeur } | null> {
+  const companyId = await getRhCompanyId();
+  if (!companyId) return null;
+  return { companyId, supabase: createClientRh(companyId) };
+}
+
+/** Appelle une fonction d'échange SECURITY DEFINER avec la clé anon (le type Database ne décrit pas les fonctions) */
+async function appelerEchange<T>(fonction: string, args: Record<string, string>): Promise<T | null> {
+  const { data, error } = await (serverClient() as any).rpc(fonction, args);
+  if (error) throw new Error(error.message);
+  return (data ?? null) as T | null;
+}
+
+/** Échange identifiant + code RH contre l'id de l'entreprise, ou null si incorrect */
+export async function echangerAccesRh(identifiant: string, code: string): Promise<string | null> {
+  return appelerEchange<string>("echanger_acces_rh", { p_identifiant: identifiant, p_code_hash: hashRhCode(code) });
+}
+
+/** Échange le token du lien magique salarié contre un client limité à ce salarié */
+export async function echangerJetonSalarie(
+  token: string
+): Promise<{ employeId: string; companyId: string; supabase: SupabaseServeur } | null> {
+  const lignes = await appelerEchange<Array<{ employe_id: string; company_id: string }>>("echanger_jeton_salarie", {
+    p_token: token,
+  });
+  const ligne = lignes?.[0];
+  if (!ligne) return null;
+  return {
+    employeId: ligne.employe_id,
+    companyId: ligne.company_id,
+    supabase: createClientAvecClaims({ role_app: "salarie", company_id: ligne.company_id, employe_id: ligne.employe_id }),
+  };
+}
+
+/** Échange le token du lien restaurant contre un client limité à ce restaurant */
+export async function echangerJetonRestaurant(
+  token: string
+): Promise<{ restaurantId: string; companyId: string; supabase: SupabaseServeur } | null> {
+  const lignes = await appelerEchange<Array<{ restaurant_id: string; company_id: string }>>(
+    "echanger_jeton_restaurant",
+    { p_token: token }
+  );
+  const ligne = lignes?.[0];
+  if (!ligne) return null;
+  return {
+    restaurantId: ligne.restaurant_id,
+    companyId: ligne.company_id,
+    supabase: createClientAvecClaims({
+      role_app: "restaurant",
+      company_id: ligne.company_id,
+      restaurant_id: ligne.restaurant_id,
+    }),
+  };
+}
+
+/** Échange le slug du portail entreprise contre un client limité au portail de cette entreprise */
+export async function echangerSlugPortail(
+  slug: string
+): Promise<{ companyId: string; supabase: SupabaseServeur } | null> {
+  const companyId = await appelerEchange<string>("echanger_slug_portail", { p_slug: slug });
+  if (!companyId) return null;
+  return { companyId, supabase: createClientAvecClaims({ role_app: "portail", company_id: companyId }) };
 }

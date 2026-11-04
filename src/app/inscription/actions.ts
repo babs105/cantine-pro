@@ -1,8 +1,7 @@
 "use server";
 
 import { redirect } from "next/navigation";
-import { createClient } from "@/lib/supabase/server";
-import { isSupabaseConfigured } from "@/lib/config";
+import { createAdminClient } from "@/lib/supabase/admin";
 import { createRhSession, hashRhCode } from "@/lib/rh-session";
 import { DUREE_ESSAI_JOURS, isPlanId } from "@/lib/abonnement";
 
@@ -45,9 +44,6 @@ export async function inscriptionEntrepriseAction(
   // Champ piège invisible : rempli uniquement par les robots
   if (String(formData.get("site_web") || "")) return { error: "Inscription refusée.", champs };
 
-  if (!isSupabaseConfigured()) {
-    return { error: "Mode démo : l'inscription nécessite la connexion à Supabase.", champs };
-  }
   if (champs.nom.length < 2) return { error: "Indiquez le nom de l'entreprise.", champs };
   if (champs.responsable.length < 2) return { error: "Indiquez le nom du responsable.", champs };
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(champs.email)) return { error: "Adresse e-mail invalide.", champs };
@@ -56,7 +52,7 @@ export async function inscriptionEntrepriseAction(
   if (code.trim().length < 8) return { error: "Le code d'accès doit contenir au moins 8 caractères.", champs };
   if (code !== confirmation) return { error: "Les deux codes d'accès ne correspondent pas.", champs };
 
-  const supabase = await createClient();
+  const supabase = createAdminClient();
 
   const { data: dejaInscrite } = await supabase
     .from("companies")

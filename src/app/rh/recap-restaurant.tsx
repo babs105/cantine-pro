@@ -32,7 +32,7 @@ interface RecapRestaurantProps {
   cloture: ClotureInfo | null;
   companyNom: string;
   dateStr: string;
-  /** Vrai une fois la journée clôturée (ou en démo) : l'envoi du récap au restaurant est alors possible */
+  /** Vrai une fois la journée clôturée : l'envoi du récap au restaurant est alors possible */
   peutEnvoyer: boolean;
 }
 

@@ -7,7 +7,6 @@ import { historiqueJourAction, historiqueMoisAction, type DetailJour, type JourH
 
 interface HistoriquePanelProps {
   moisInitial: string;
-  isDemo: boolean;
 }
 
 const fcfa = (n: number) => `${n.toLocaleString("fr-FR")} F`;
@@ -24,7 +23,7 @@ function heure(iso: string): string {
   );
 }
 
-export function HistoriquePanel({ moisInitial, isDemo }: HistoriquePanelProps) {
+export function HistoriquePanel({ moisInitial }: HistoriquePanelProps) {
   const [mois, setMois] = useState(moisInitial);
   const [jours, setJours] = useState<JourHistorique[] | null>(null);
   const [jourOuvert, setJourOuvert] = useState<string | null>(null);
@@ -33,7 +32,6 @@ export function HistoriquePanel({ moisInitial, isDemo }: HistoriquePanelProps) {
   const [isPending, startTransition] = useTransition();
 
   useEffect(() => {
-    if (isDemo) return;
     setJourOuvert(null);
     startTransition(async () => {
       const res = await historiqueMoisAction(mois);
@@ -45,7 +43,7 @@ export function HistoriquePanel({ moisInitial, isDemo }: HistoriquePanelProps) {
         setErreur(res.message);
       }
     });
-  }, [mois, isDemo]);
+  }, [mois]);
 
   const ouvrirJour = (date: string) => {
     if (jourOuvert === date) {
@@ -134,9 +132,8 @@ export function HistoriquePanel({ moisInitial, isDemo }: HistoriquePanelProps) {
           Historique jour par jour
         </h2>
 
-        {isDemo && <p className="text-xs text-neutral-500">Disponible une fois Supabase connecté.</p>}
         {erreur && <p className="text-xs text-red-600">{erreur}</p>}
-        {!isDemo && jours === null && <p className="text-xs text-neutral-400">Chargement…</p>}
+        {jours === null && <p className="text-xs text-neutral-400">Chargement…</p>}
         {jours && jours.length === 0 && !erreur && (
           <p className="text-xs text-neutral-500">Aucune commande sur ce mois.</p>
         )}

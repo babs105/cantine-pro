@@ -2,8 +2,8 @@
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
-import { createClient } from "@/lib/supabase/server";
-import { isSupabaseConfigured, todayDakar } from "@/lib/config";
+import { createAdminClient } from "@/lib/supabase/admin";
+import { todayDakar } from "@/lib/config";
 import { createAdminSession, destroyAdminSession, isAdmin, verifyAdminCode } from "@/lib/admin-session";
 import { isPlanId } from "@/lib/abonnement";
 import type { StatutAbonnement } from "@/types/database";
@@ -26,8 +26,7 @@ export async function logoutAdminAction(): Promise<void> {
 
 async function contexteAdmin() {
   if (!(await isAdmin())) return { erreur: "Session SuperAdmin expirée." } as const;
-  if (!isSupabaseConfigured()) return { erreur: "Supabase non connecté." } as const;
-  return { supabase: await createClient() } as const;
+  return { supabase: createAdminClient() } as const;
 }
 
 export async function modifierAbonnementAction(

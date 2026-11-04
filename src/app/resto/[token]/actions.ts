@@ -1,8 +1,8 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { createClient } from "@/lib/supabase/server";
-import { isSupabaseConfigured, todayDakar } from "@/lib/config";
+import { echangerJetonRestaurant } from "@/lib/supabase/server";
+import { todayDakar } from "@/lib/config";
 
 /**
  * Validation 1-clic du traiteur : marque la clôture du jour comme confirmée
@@ -10,25 +10,15 @@ import { isSupabaseConfigured, todayDakar } from "@/lib/config";
 export async function confirmerPreparationAction(
   token: string
 ): Promise<{ success: boolean; message?: string; confirmeAt?: string }> {
-  if (!isSupabaseConfigured()) {
-    return { success: true, confirmeAt: new Date().toISOString() };
-  }
-
-  const supabase = await createClient();
-  const { data: resto } = await supabase
-    .from("restaurants")
-    .select("id")
-    .eq("token", token)
-    .maybeSingle();
-
-  if (!resto) {
+  const acces = await echangerJetonRestaurant(token);
+  if (!acces) {
     return { success: false, message: "Lien restaurant invalide." };
   }
 
   const confirmeAt = new Date().toISOString();
-  const { data, error } = await (supabase.from("clotures") as any)
+  const { data, error } = await (acces.supabase.from("clotures") as any)
     .update({ confirme_at: confirmeAt, confirme_par: "restaurant" })
-    .eq("restaurant_id", (resto as any).id)
+    .eq("restaurant_id", acces.restaurantId)
     .eq("date", todayDakar())
     .select("id");
 

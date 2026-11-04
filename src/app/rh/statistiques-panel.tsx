@@ -6,7 +6,6 @@ import { statistiquesAction, type Statistiques } from "./rapports-actions";
 
 interface StatistiquesPanelProps {
   moisInitial: string;
-  isDemo: boolean;
 }
 
 const fcfa = (n: number) => `${n.toLocaleString("fr-FR")} FCFA`;
@@ -20,7 +19,7 @@ function libelleMois(mois: string, court = false): string {
 }
 
 /** Vue DG / DAF : dépenses du mois, évolution sur 6 mois, participation par service */
-export function StatistiquesPanel({ moisInitial, isDemo }: StatistiquesPanelProps) {
+export function StatistiquesPanel({ moisInitial }: StatistiquesPanelProps) {
   const [mois, setMois] = useState(moisInitial);
   const [stats, setStats] = useState<Statistiques | null>(null);
   const [erreur, setErreur] = useState<string | null>(null);
@@ -28,7 +27,6 @@ export function StatistiquesPanel({ moisInitial, isDemo }: StatistiquesPanelProp
   const [isPending, startTransition] = useTransition();
 
   useEffect(() => {
-    if (isDemo) return;
     startTransition(async () => {
       const res = await statistiquesAction(mois);
       if (res.success) {
@@ -38,15 +36,7 @@ export function StatistiquesPanel({ moisInitial, isDemo }: StatistiquesPanelProp
         setErreur(res.message);
       }
     });
-  }, [mois, isDemo]);
-
-  if (isDemo) {
-    return (
-      <div className="bg-white rounded-3xl p-6 border border-neutral-200 text-xs text-neutral-500">
-        Statistiques disponibles une fois Supabase connecté.
-      </div>
-    );
-  }
+  }, [mois]);
 
   const maxMontant = Math.max(1, ...(stats?.evolution || []).map((e) => e.montant));
 

@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import ExcelJS from "exceljs";
-import { createClient } from "@/lib/supabase/server";
-import { isSupabaseConfigured, todayDakar } from "@/lib/config";
+import { createClientRh } from "@/lib/supabase/server";
+import { todayDakar } from "@/lib/config";
 import { getRhCompanyId } from "@/lib/rh-session";
 import { STATUTS, getLignesFacturation, periodeMois, type LigneFacturation } from "@/lib/facturation";
 
@@ -181,10 +181,6 @@ async function construireXlsx(lignes: Ligne[], companyNom: string, libelle: stri
  * - /rh/export?mois=2026-10&format=xlsx   : classeur Excel paie par service + facture par restaurant
  */
 export async function GET(request: Request) {
-  if (!isSupabaseConfigured()) {
-    return NextResponse.json({ error: "Export disponible une fois Supabase connecté." }, { status: 400 });
-  }
-
   const companyId = await getRhCompanyId();
   if (!companyId) {
     return NextResponse.json({ error: "Non autorisé" }, { status: 401 });
@@ -208,7 +204,7 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: "Paramètre date ou mois invalide" }, { status: 400 });
   }
 
-  const supabase = await createClient();
+  const supabase = createClientRh(companyId);
   const { data: comp } = await supabase.from("companies").select("nom, slug").eq("id", companyId).single();
   let lignes: Ligne[];
   try {

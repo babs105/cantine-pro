@@ -22,7 +22,6 @@ interface ParametresPanelProps {
   abonnement: EtatAbonnement;
   /** Numéro Wave de Cantine Pro pour le règlement (variable WAVE_NUMERO_PAIEMENT) */
   numeroWave: string | null;
-  isDemo: boolean;
 }
 
 const champClasse =
@@ -34,7 +33,7 @@ function formatDate(date: string): string {
   );
 }
 
-export function ParametresPanel({ company, abonnement, numeroWave, isDemo }: ParametresPanelProps) {
+export function ParametresPanel({ company, abonnement, numeroWave }: ParametresPanelProps) {
   const [isPending, startTransition] = useTransition();
   const [message, setMessage] = useState<{ ok: boolean; texte: string } | null>(null);
   const [messageCode, setMessageCode] = useState<{ ok: boolean; texte: string } | null>(null);
@@ -180,7 +179,7 @@ export function ParametresPanel({ company, abonnement, numeroWave, isDemo }: Par
         <div className="flex items-center gap-3">
           <button
             type="submit"
-            disabled={isPending || isDemo || joursTravail.length === 0}
+            disabled={isPending || joursTravail.length === 0}
             className="px-4 py-2.5 bg-orange-600 hover:bg-orange-700 active:scale-98 disabled:opacity-50 text-white font-bold text-xs rounded-xl transition"
           >
             Enregistrer
@@ -257,7 +256,7 @@ export function ParametresPanel({ company, abonnement, numeroWave, isDemo }: Par
           />
           <button
             type="submit"
-            disabled={isPending || isDemo}
+            disabled={isPending}
             className="w-full py-2.5 bg-neutral-900 hover:bg-neutral-800 disabled:opacity-50 text-white font-bold text-xs rounded-xl transition"
           >
             Changer le code

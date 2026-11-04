@@ -1,7 +1,7 @@
 import "server-only";
-import { createClient } from "@/lib/supabase/server";
+import type { SupabaseServeur } from "@/lib/supabase/server";
 
-type Supabase = Awaited<ReturnType<typeof createClient>>;
+type Supabase = SupabaseServeur;
 
 export { STATUTS_LIBELLES as STATUTS } from "@/lib/libelles";
 

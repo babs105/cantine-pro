@@ -1,8 +1,8 @@
 "use server";
 
-import { createClient } from "@/lib/supabase/server";
+import { createClientRh } from "@/lib/supabase/server";
 import { revalidatePath } from "next/cache";
-import { generateToken, isSupabaseConfigured, todayDakar, getAppBaseUrl } from "@/lib/config";
+import { generateToken, todayDakar, getAppBaseUrl } from "@/lib/config";
 import { ajouterJours, isDateValide, joursOuvres, lundiDeLaSemaine, normaliserJoursTravail } from "@/lib/dates";
 import { getRhCompanyId } from "@/lib/rh-session";
 import { lignesVersEmployes, parseCsv, parseFichierEmployes, type LigneEmploye } from "@/lib/excel";
@@ -35,25 +35,11 @@ export async function addEmployeAction(
   telephone?: string,
   service?: string
 ): Promise<{ success: boolean; message?: string; employe?: any }> {
-  if (!isSupabaseConfigured()) {
-    return {
-      success: true,
-      employe: {
-        id: "mock-" + Date.now(),
-        nom,
-        telephone: normaliserTelephone(telephone),
-        service: service?.trim() || SERVICE_DEFAUT,
-        token: "token-" + Math.random().toString(36).substring(2, 10),
-        is_active: true,
-      },
-    };
-  }
-
   const companyId = await getRhCompanyId();
   if (!companyId) return { success: false, message: SESSION_EXPIREE };
 
   try {
-    const supabase = await createClient();
+    const supabase = createClientRh(companyId);
     const places = await placesRestantes(supabase, companyId);
     if (places.restantes < 1) return { success: false, message: places.message };
 
@@ -115,19 +101,11 @@ export async function importEmployesAction(
     is_active: true,
   });
 
-  if (!isSupabaseConfigured()) {
-    return {
-      success: true,
-      ignores: 0,
-      employes: lignes.map((r, i) => ({ id: "imported-" + Date.now() + "-" + i, ...versEmploye(r) })),
-    };
-  }
-
   const companyId = await getRhCompanyId();
   if (!companyId) return { success: false, message: SESSION_EXPIREE };
 
   try {
-    const supabase = await createClient();
+    const supabase = createClientRh(companyId);
     const { data: existants } = await supabase
       .from("employes")
       .select("nom")
@@ -174,12 +152,10 @@ export async function modifierServiceEmployeAction(
   employeId: string,
   service: string
 ): Promise<{ success: boolean }> {
-  if (!isSupabaseConfigured()) return { success: true };
-
   const companyId = await getRhCompanyId();
   if (!companyId) return { success: false };
 
-  const supabase = await createClient();
+  const supabase = createClientRh(companyId);
   const { error } = await (supabase.from("employes") as any)
     .update({ service: service.trim().slice(0, 60) || SERVICE_DEFAUT })
     .eq("id", employeId)
@@ -193,12 +169,10 @@ export async function modifierServiceEmployeAction(
  * Désactivation d'un employé (départ, doublon) : son lien magique ne fonctionne plus
  */
 export async function desactiverEmployeAction(employeId: string): Promise<{ success: boolean }> {
-  if (!isSupabaseConfigured()) return { success: true };
-
   const companyId = await getRhCompanyId();
   if (!companyId) return { success: false };
 
-  const supabase = await createClient();
+  const supabase = createClientRh(companyId);
   const { error } = await (supabase.from("employes") as any)
     .update({ is_active: false })
     .eq("id", employeId)
@@ -224,26 +198,11 @@ export async function addMenuPlatAction(
     return { success: false, message: "Impossible de modifier le menu d'un jour passé." };
   }
 
-  if (!isSupabaseConfigured()) {
-    return {
-      success: true,
-      plat: {
-        id: "plat-mock-" + Date.now(),
-        titre,
-        description: description || null,
-        prix_unitaire: prixUnitaire,
-        is_available: true,
-        date: targetDate,
-        restaurant_id: restaurantId || null,
-      },
-    };
-  }
-
   const companyId = await getRhCompanyId();
   if (!companyId) return { success: false, message: SESSION_EXPIREE };
 
   try {
-    const supabase = await createClient();
+    const supabase = createClientRh(companyId);
     const { data: resto } = await supabase
       .from("restaurants")
       .select("id")
@@ -288,9 +247,6 @@ export async function dupliquerSemaineAction(lundiCible: string): Promise<{
   message?: string;
   plats?: any[];
 }> {
-  if (!isSupabaseConfigured()) {
-    return { success: false, message: "Disponible une fois Supabase connecté." };
-  }
   if (!isDateValide(lundiCible)) return { success: false, message: "Semaine invalide." };
 
   const companyId = await getRhCompanyId();
@@ -299,7 +255,7 @@ export async function dupliquerSemaineAction(lundiCible: string): Promise<{
   const lundi = lundiDeLaSemaine(lundiCible);
   const today = todayDakar();
 
-  const supabase = await createClient();
+  const supabase = createClientRh(companyId);
   const { data: comp } = await supabase.from("companies").select("jours_travail").eq("id", companyId).single();
   // Seuls les jours de travail de l'entreprise sont recopiés
   const joursCibles = new Set(joursOuvres(lundi, normaliserJoursTravail((comp as any)?.jours_travail)));
@@ -351,12 +307,10 @@ export async function dupliquerSemaineAction(lundiCible: string): Promise<{
  * Suppression d'un plat sans commande (sinon : le désactiver)
  */
 export async function supprimerPlatAction(platId: string): Promise<{ success: boolean; message?: string }> {
-  if (!isSupabaseConfigured()) return { success: true };
-
   const companyId = await getRhCompanyId();
   if (!companyId) return { success: false, message: SESSION_EXPIREE };
 
-  const supabase = await createClient();
+  const supabase = createClientRh(companyId);
   const { count } = await supabase
     .from("commandes")
     .select("id", { count: "exact", head: true })
@@ -384,12 +338,10 @@ export async function modifierCommandeRhAction(
   statut: "choisi" | "absent" | "ne_mange_pas" | "en_attente",
   platId: string | null
 ): Promise<{ success: boolean; message?: string; aRenvoyer?: string[] }> {
-  if (!isSupabaseConfigured()) return { success: true };
-
   const companyId = await getRhCompanyId();
   if (!companyId) return { success: false, message: SESSION_EXPIREE };
 
-  const supabase = await createClient();
+  const supabase = createClientRh(companyId);
   const today = todayDakar();
 
   const { data: emp } = await supabase
@@ -476,15 +428,11 @@ export async function togglePlatDisponibiliteAction(
   platId: string,
   isAvailable: boolean
 ): Promise<{ success: boolean }> {
-  if (!isSupabaseConfigured()) {
-    return { success: true };
-  }
-
   const companyId = await getRhCompanyId();
   if (!companyId) return { success: false };
 
   try {
-    const supabase = await createClient();
+    const supabase = createClientRh(companyId);
     const { error } = await (supabase.from("menus_du_jour") as any)
       .update({ is_available: isAvailable })
       .eq("id", platId)
@@ -509,24 +457,10 @@ export async function addRestaurantAction(
   if (nomPropre.length < 2) return { success: false, message: "Renseignez le nom du restaurant." };
   const heure = /^\d{2}:\d{2}/.test(heureLivraison || "") ? heureLivraison!.slice(0, 5) : "12:30";
 
-  if (!isSupabaseConfigured()) {
-    return {
-      success: true,
-      restaurant: {
-        id: "resto-mock-" + Date.now(),
-        nom: nomPropre,
-        telephone_whatsapp: normaliserTelephone(telephone),
-        heure_livraison: `${heure}:00`,
-        token: "token-demo-resto",
-        is_active: true,
-      },
-    };
-  }
-
   const companyId = await getRhCompanyId();
   if (!companyId) return { success: false, message: SESSION_EXPIREE };
 
-  const supabase = await createClient();
+  const supabase = createClientRh(companyId);
   const { data, error } = await (supabase.from("restaurants") as any)
     .insert({
       company_id: companyId,
@@ -551,8 +485,6 @@ export async function modifierRestaurantAction(
   restaurantId: string,
   champs: { nom?: string; telephone?: string; heureLivraison?: string; isActive?: boolean }
 ): Promise<{ success: boolean; message?: string }> {
-  if (!isSupabaseConfigured()) return { success: true };
-
   const companyId = await getRhCompanyId();
   if (!companyId) return { success: false, message: SESSION_EXPIREE };
 
@@ -564,7 +496,7 @@ export async function modifierRestaurantAction(
   }
   if (champs.isActive !== undefined) update.is_active = champs.isActive;
 
-  const supabase = await createClient();
+  const supabase = createClientRh(companyId);
   const { error } = await (supabase.from("restaurants") as any)
     .update(update)
     .eq("id", restaurantId)
@@ -580,14 +512,10 @@ export async function modifierRestaurantAction(
  * Peut être relancée (ex : restaurant ajouté après coup) sans toucher aux récaps déjà envoyés.
  */
 export async function cloturerJourneeAction(): Promise<{ success: boolean; message?: string }> {
-  if (!isSupabaseConfigured()) {
-    return { success: false, message: "Disponible une fois Supabase connecté." };
-  }
-
   const companyId = await getRhCompanyId();
   if (!companyId) return { success: false, message: SESSION_EXPIREE };
 
-  const supabase = await createClient();
+  const supabase = createClientRh(companyId);
   const { data: company } = await supabase.from("companies").select("*").eq("id", companyId).single();
   if (!company) return { success: false, message: "Entreprise introuvable." };
 
@@ -625,12 +553,10 @@ export async function cloturerJourneeAction(): Promise<{ success: boolean; messa
  * Le RH vient d'ouvrir WhatsApp pour envoyer le récap à un restaurant : on note l'heure d'envoi
  */
 export async function marquerRecapEnvoyeAction(restaurantId: string): Promise<{ success: boolean }> {
-  if (!isSupabaseConfigured()) return { success: true };
-
   const companyId = await getRhCompanyId();
   if (!companyId) return { success: false };
 
-  const supabase = await createClient();
+  const supabase = createClientRh(companyId);
   const { error } = await (supabase.from("clotures") as any)
     .update({ envoi_statut: "envoye", envoi_erreur: null, envoye_at: new Date().toISOString() })
     .eq("company_id", companyId)
@@ -648,12 +574,10 @@ export async function marquerRecapEnvoyeAction(restaurantId: string): Promise<{ 
 export async function confirmerParTelephoneAction(
   restaurantId: string
 ): Promise<{ success: boolean; message?: string }> {
-  if (!isSupabaseConfigured()) return { success: true };
-
   const companyId = await getRhCompanyId();
   if (!companyId) return { success: false, message: SESSION_EXPIREE };
 
-  const supabase = await createClient();
+  const supabase = createClientRh(companyId);
   const { data, error } = await (supabase.from("clotures") as any)
     .update({ confirme_at: new Date().toISOString(), confirme_par: "rh" })
     .eq("company_id", companyId)
@@ -676,14 +600,10 @@ export async function confirmerParTelephoneAction(
  * ciblant les collaborateurs qui n'ont pas encore commandé.
  */
 export async function envoyerRelanceDernierRappelAction(): Promise<{ success: boolean; message?: string; url?: string }> {
-  if (!isSupabaseConfigured()) {
-    return { success: true, url: "https://wa.me/?text=Demo" };
-  }
-
   const companyId = await getRhCompanyId();
   if (!companyId) return { success: false, message: SESSION_EXPIREE };
 
-  const supabase = await createClient();
+  const supabase = createClientRh(companyId);
   const { data: company } = await supabase
     .from("companies")
     .select("nom, slug, heure_limite_vote")

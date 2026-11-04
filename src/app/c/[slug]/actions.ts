@@ -1,8 +1,8 @@
 "use server";
 
 import { placesRestantes } from "@/lib/limite-employes";
-import { createClient } from "@/lib/supabase/server";
-import { generateToken, isSupabaseConfigured } from "@/lib/config";
+import { echangerSlugPortail } from "@/lib/supabase/server";
+import { generateToken } from "@/lib/config";
 
 /**
  * Auto-inscription d'un nouvel employé depuis le lien global de l'entreprise (/c/[slug])
@@ -17,34 +17,21 @@ export async function inscriptionEmployeAction(
     return { success: false, message: "Renseignez votre prénom et nom." };
   }
 
-  if (!isSupabaseConfigured()) {
-    return {
-      success: true,
-      employe: { id: "mock-" + Date.now(), nom: nomPropre, token: "token-demo-moussa" },
-    };
-  }
-
   try {
-    const supabase = await createClient();
-    const { data: comp } = await supabase
-      .from("companies")
-      .select("id")
-      .eq("slug", slug)
-      .eq("is_active", true)
-      .maybeSingle();
-
-    if (!comp) {
+    const acces = await echangerSlugPortail(slug);
+    if (!acces) {
       return { success: false, message: "Entreprise introuvable." };
     }
+    const { supabase, companyId } = acces;
 
-    const places = await placesRestantes(supabase, (comp as any).id);
+    const places = await placesRestantes(supabase, companyId);
     if (places.restantes < 1) {
       return { success: false, message: "Inscription impossible : le nombre maximum de salariés est atteint. Contactez votre RH." };
     }
 
     const { data, error } = await (supabase.from("employes") as any)
       .insert({
-        company_id: (comp as any).id,
+        company_id: companyId,
         nom: nomPropre,
         telephone: telephone?.trim().slice(0, 20) || null,
         token: generateToken(),

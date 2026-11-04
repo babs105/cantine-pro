@@ -1,6 +1,6 @@
 import { redirect } from "next/navigation";
-import { createClient } from "@/lib/supabase/server";
-import { isSupabaseConfigured, todayDakar } from "@/lib/config";
+import { createAdminClient } from "@/lib/supabase/admin";
+import { todayDakar } from "@/lib/config";
 import { isAdmin } from "@/lib/admin-session";
 import { PLANS, etatAbonnement, isPlanId } from "@/lib/abonnement";
 import { AdminClient, type EntrepriseAdmin } from "./admin-client";
@@ -10,11 +10,8 @@ export const metadata = { title: "SuperAdmin — Cantine Pro", robots: { index: 
 
 export default async function AdminPage() {
   if (!(await isAdmin())) redirect("/admin/login");
-  if (!isSupabaseConfigured()) {
-    return <p className="p-8 text-sm">Supabase non connecté.</p>;
-  }
 
-  const supabase = await createClient();
+  const supabase = createAdminClient();
   const today = todayDakar();
   const debutMois = `${today.slice(0, 7)}-01`;
 

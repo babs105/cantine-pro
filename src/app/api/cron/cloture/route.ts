@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
-import { createClient } from "@/lib/supabase/server";
-import { isApresHeureLimite, isSupabaseConfigured, todayDakar } from "@/lib/config";
+import { createAdminClient } from "@/lib/supabase/admin";
+import { isApresHeureLimite, todayDakar } from "@/lib/config";
 import { cloturerEntreprise } from "@/lib/cloture";
 import { etatAbonnement } from "@/lib/abonnement";
 
@@ -18,24 +18,8 @@ export async function GET(request: Request) {
 
   const today = todayDakar();
 
-  if (!isSupabaseConfigured()) {
-    return NextResponse.json({
-      status: "simulation",
-      message: "Clôture 11h10 simulée avec succès (Supabase non connecté)",
-      date: today,
-      sample_summary: {
-        company: "Pilote Thiès Innovation",
-        total_repas: 30,
-        breakdown: [
-          { plat: "Thiéboudienne Rouge Penda Mbaye", quantite: 18 },
-          { plat: "Yassa Poulet au Feu de Bois", quantite: 12 },
-        ],
-      },
-    });
-  }
-
   try {
-    const supabase = await createClient();
+    const supabase = createAdminClient();
     const { data: companies, error } = await supabase
       .from("companies")
       .select("*")

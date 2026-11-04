@@ -1,10 +1,10 @@
 import type { Metadata } from "next";
-import { createClient } from "@/lib/supabase/server";
+import { echangerJetonSalarie } from "@/lib/supabase/server";
 import { VoteClient } from "./vote-client";
 import { notFound } from "next/navigation";
 import { NOMS_JOURS, jourIso, normaliserJoursTravail } from "@/lib/dates";
 import { revalidatePath } from "next/cache";
-import { isApresHeureLimite, isSupabaseConfigured, secondesAvantHeure, TIMEZONE, todayDakar } from "@/lib/config";
+import { isApresHeureLimite, secondesAvantHeure, TIMEZONE, todayDakar } from "@/lib/config";
 
 export const dynamic = "force-dynamic";
 
@@ -21,20 +21,18 @@ async function submitVoteAction(
   "use server";
 
 
-  if (!isSupabaseConfigured()) {
-    // Mode Démo / Mock local si Supabase non encore connecté
-    return { success: true, enregistreAt: new Date().toISOString() };
-  }
-
   try {
-    const supabase = await createClient();
+    // 1. Échanger le token contre un JWT court limité à ce salarié (politiques RLS)
+    const acces = await echangerJetonSalarie(token);
+    if (!acces) {
+      return { success: false, message: "Employé introuvable ou inactif." };
+    }
+    const { supabase } = acces;
 
-    // 1. Trouver l'employé et l'entreprise via le token
     const { data: rawEmploye, error: empError } = await supabase
       .from("employes")
       .select("id, company_id, companies(heure_ouverture_vote, heure_limite_vote, jours_travail)")
-      .eq("token", token)
-      .eq("is_active", true)
+      .eq("id", acces.employeId)
       .single();
 
     const employe: any = rawEmploye;
@@ -127,106 +125,81 @@ export async function generateMetadata({ params }: PageProps): Promise<Metadata>
 export default async function EmployeVotePage({ params }: PageProps) {
   const { token } = await params;
 
+  let commandeExistante: {
+    id: string;
+    plat_id: string | null;
+    statut: "choisi" | "absent" | "ne_mange_pas";
+    plat_titre?: string;
+    enregistre_at?: string;
+  } | null = null;
 
-  let employeNom = "Moussa Ndiaye";
-  let companyNom = "Pilote Thiès Innovation";
-  let heureLimite = "11:10:00";
-  let joursTravail = normaliserJoursTravail(null);
-  let heureOuverture = "08:00:00";
-  let platsDisponibles = [
-    {
-      id: "demo-plat-1",
-      restaurant_nom: "Chez Fatou Traiteur Thiès",
-      titre: "Thiéboudienne Rouge Penda Mbaye",
-      description: "Riz rouge au mérou, légumes locaux et beignets de niébé",
-      prix_unitaire: 1500,
-      is_available: true,
-    },
-    {
-      id: "demo-plat-2",
-      restaurant_nom: "Chez Fatou Traiteur Thiès",
-      titre: "Yassa Poulet au Feu de Bois",
-      description: "Poulet mariné au citron vert et oignons caramélisés avec riz blanc",
-      prix_unitaire: 1500,
-      is_available: true,
-    },
-    {
-      id: "demo-plat-3",
-      restaurant_nom: "Restaurant Le Teranga",
-      titre: "Soupou Kandia (Sauce Gombo)",
-      description: "Riz blanc parfumé avec sauce gombo fraîche et poisson fumé",
-      prix_unitaire: 1700,
-      is_available: true,
-    },
-  ];
-  let commandeExistante = null;
+  // 1. Échanger le token du lien magique contre un JWT court limité à ce salarié
+  const acces = await echangerJetonSalarie(token);
+  if (!acces) {
+    notFound();
+  }
+  const { supabase } = acces;
 
-  if (isSupabaseConfigured()) {
-    const supabase = await createClient();
+  const { data: rawEmp, error: empError } = await supabase
+    .from("employes")
+    .select("id, nom, company_id, companies(nom, heure_ouverture_vote, heure_limite_vote, jours_travail)")
+    .eq("id", acces.employeId)
+    .single();
 
-    // 1. Récupérer l'employé
-    const { data: rawEmp, error: empError } = await supabase
-      .from("employes")
-      .select("id, nom, company_id, companies(nom, heure_ouverture_vote, heure_limite_vote, jours_travail)")
-      .eq("token", token)
-      .eq("is_active", true)
-      .single();
+  const employe: any = rawEmp;
 
-    const employe: any = rawEmp;
+  if (empError || !employe) {
+    notFound();
+  }
 
-    if (empError || !employe) {
-      notFound();
-    }
+  const employeNom = employe.nom;
+  const comp: any = employe.companies;
+  const companyNom = comp?.nom || "Entreprise Pilote";
+  const heureLimite = comp?.heure_limite_vote || "11:10:00";
+  const heureOuverture = comp?.heure_ouverture_vote || "08:00:00";
+  const joursTravail = normaliserJoursTravail(comp?.jours_travail);
 
-    employeNom = employe.nom;
-    const comp: any = employe.companies;
-    companyNom = comp?.nom || "Entreprise Pilote";
-    heureLimite = comp?.heure_limite_vote || "11:10:00";
-    heureOuverture = comp?.heure_ouverture_vote || "08:00:00";
-    joursTravail = normaliserJoursTravail(comp?.jours_travail);
+  const todayDate = todayDakar();
 
-    const todayDate = todayDakar();
+  // 2. Plats du jour disponibles
+  const { data: plats } = await supabase
+    .from("menus_du_jour")
+    .select("id, titre, description, prix_unitaire, is_available, created_at, restaurants(nom, is_active)")
+    .eq("company_id", employe.company_id)
+    .eq("date", todayDate)
+    .eq("is_available", true);
 
-    // 2. Plats du jour disponibles
-    const { data: plats } = await supabase
-      .from("menus_du_jour")
-      .select("id, titre, description, prix_unitaire, is_available, created_at, restaurants(nom, is_active)")
-      .eq("company_id", employe.company_id)
-      .eq("date", todayDate)
-      .eq("is_available", true);
+  // Sans menu publié, l'employé voit "menu pas encore publié"
+  const platsDisponibles = ((plats || []) as any[])
+    .filter((p) => p.restaurants?.is_active !== false)
+    .map((p) => ({
+      id: p.id,
+      titre: p.titre,
+      description: p.description,
+      prix_unitaire: p.prix_unitaire,
+      is_available: p.is_available,
+      restaurant_nom: p.restaurants?.nom || "Restaurant",
+    }));
 
-    // Pas de repli sur les plats de démo : sans menu publié, l'employé voit "menu pas encore publié"
-    platsDisponibles = ((plats || []) as any[])
-      .filter((p) => p.restaurants?.is_active !== false)
-      .map((p) => ({
-        id: p.id,
-        titre: p.titre,
-        description: p.description,
-        prix_unitaire: p.prix_unitaire,
-        is_available: p.is_available,
-        restaurant_nom: p.restaurants?.nom || "Restaurant",
-      }));
+  // 3. Commande existante pour aujourd'hui
+  const { data: rawCmd } = await supabase
+    .from("commandes")
+    .select("id, plat_id, statut, updated_at, menus_du_jour(titre)")
+    .eq("employe_id", employe.id)
+    .eq("date", todayDate)
+    .maybeSingle();
 
-    // 3. Commande existante pour aujourd'hui
-    const { data: rawCmd } = await supabase
-      .from("commandes")
-      .select("id, plat_id, statut, updated_at, menus_du_jour(titre)")
-      .eq("employe_id", employe.id)
-      .eq("date", todayDate)
-      .maybeSingle();
+  const cmd: any = rawCmd;
 
-    const cmd: any = rawCmd;
-
-    if (cmd) {
-      const menuData: any = cmd.menus_du_jour;
-      commandeExistante = {
-        id: cmd.id,
-        plat_id: cmd.plat_id,
-        statut: cmd.statut as "choisi" | "absent" | "ne_mange_pas",
-        plat_titre: menuData?.titre || undefined,
-        enregistre_at: cmd.updated_at || undefined,
-      };
-    }
+  if (cmd) {
+    const menuData: any = cmd.menus_du_jour;
+    commandeExistante = {
+      id: cmd.id,
+      plat_id: cmd.plat_id,
+      statut: cmd.statut as "choisi" | "absent" | "ne_mange_pas",
+      plat_titre: menuData?.titre || undefined,
+      enregistre_at: cmd.updated_at || undefined,
+    };
   }
 
   // Jour sans service : la page l'indique avec le prochain jour de travail

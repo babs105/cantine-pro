@@ -1,6 +1,6 @@
 import { redirect } from "next/navigation";
-import { createClient } from "@/lib/supabase/server";
-import { getAppBaseUrl, isApresHeureLimite, isSupabaseConfigured, todayDakar } from "@/lib/config";
+import { createClientRh } from "@/lib/supabase/server";
+import { getAppBaseUrl, isApresHeureLimite, todayDakar } from "@/lib/config";
 import { ajouterJours, isDateValide, lundiDeLaSemaine } from "@/lib/dates";
 import { getRhCompanyId } from "@/lib/rh-session";
 import { getCommandesDuJour, lienRestaurant } from "@/lib/cloture";
@@ -17,183 +17,18 @@ interface PageProps {
 }
 
 export default async function RhDashboardPage({ searchParams }: PageProps) {
-  const isDemo = !isSupabaseConfigured();
   const appBaseUrl = getAppBaseUrl();
   const todayDate = todayDakar();
   const { semaine, bienvenue } = await searchParams;
   const numeroWave = process.env.WAVE_NUMERO_PAIEMENT || null;
   const semaineLundi = lundiDeLaSemaine(isDateValide(semaine) ? semaine : todayDate);
 
-  // Données de démonstration (mode sans Supabase)
-  const company = {
-    id: "demo-company-thies",
-    nom: "Pilote Thiès Innovation",
-    slug: "pilote-thies",
-    heure_ouverture_vote: "08:00:00",
-    heure_limite_vote: "11:10:00",
-    trial_ends_at: null,
-    responsable_nom: "Awa Fall",
-    email_contact: "rh@pilote-thies.sn",
-    telephone_contact: "+221770000099",
-    plan: "pro" as const,
-    statut_abonnement: "active" as const,
-    abonnement_fin: null,
-    jours_travail: [1, 2, 3, 4, 5],
-  };
-
-  const demoRestaurants = [
-    {
-      id: "demo-resto-1",
-      nom: "Chez Fatou Traiteur Thiès",
-      telephone_whatsapp: "+221770000000",
-      heure_livraison: "12:30:00",
-      token: "token-demo-traiteur",
-      is_active: true,
-      lien: `${appBaseUrl}/resto/token-demo-traiteur`,
-    },
-    {
-      id: "demo-resto-2",
-      nom: "Restaurant Le Teranga",
-      telephone_whatsapp: "+221770000001",
-      heure_livraison: "12:45:00",
-      token: "token-demo-teranga",
-      is_active: true,
-      lien: `${appBaseUrl}/resto/token-demo-teranga`,
-    },
-  ];
-
-  const initialEmployes = [
-    {
-      id: "demo-emp-1",
-      nom: "Moussa Ndiaye",
-      telephone: "+221771112233",
-      token: "token-demo-moussa",
-      service: "Production",
-      is_active: true,
-    },
-    {
-      id: "demo-emp-2",
-      nom: "Aminata Sow",
-      telephone: "+221772223344",
-      token: "token-demo-aminata",
-      service: "Administration",
-      is_active: true,
-    },
-    {
-      id: "demo-emp-3",
-      nom: "Cheikh Diop",
-      telephone: "+221773334455",
-      token: "token-demo-cheikh",
-      service: "Production",
-      is_active: true,
-    },
-    {
-      id: "demo-emp-4",
-      nom: "Fatou Bintou Fall",
-      telephone: "+221774445566",
-      token: "token-demo-fatou",
-      service: "Commercial",
-      is_active: true,
-    },
-    {
-      id: "demo-emp-5",
-      nom: "Ousmane Kane",
-      telephone: "+221775556677",
-      token: "token-demo-ousmane",
-      service: "Production",
-      is_active: true,
-    },
-  ];
-
-  const initialPlats = [
-    {
-      id: "demo-plat-1",
-      restaurant_id: "demo-resto-1",
-      titre: "Thiéboudienne Rouge Penda Mbaye",
-      description: "Riz rouge au poisson avec légumes et beignets de niébé",
-      prix_unitaire: 1500,
-      is_available: true,
-      date: todayDate,
-    },
-    {
-      id: "demo-plat-2",
-      restaurant_id: "demo-resto-1",
-      titre: "Yassa Poulet au Feu de Bois",
-      description: "Poulet mariné citron et oignons caramélisés avec riz blanc",
-      prix_unitaire: 1500,
-      is_available: true,
-      date: todayDate,
-    },
-    {
-      id: "demo-plat-3",
-      restaurant_id: "demo-resto-2",
-      titre: "Soupou Kandia (Sauce Gombo)",
-      description: "Riz blanc parfumé avec sauce gombo et poisson fumé",
-      prix_unitaire: 1700,
-      is_available: true,
-      date: todayDate,
-    },
-  ];
-
-  const initialCommandes = [
-    {
-      employe_id: "demo-emp-1",
-      employe_nom: "Moussa Ndiaye",
-      telephone: "+221771112233",
-      statut: "choisi" as const,
-      plat_titre: "Thiéboudienne Rouge Penda Mbaye",
-      prix: 1500,
-      plat_id: "demo-plat-1",
-      restaurant_id: "demo-resto-1",
-    },
-    {
-      employe_id: "demo-emp-2",
-      employe_nom: "Aminata Sow",
-      telephone: "+221772223344",
-      statut: "choisi" as const,
-      plat_titre: "Yassa Poulet au Feu de Bois",
-      prix: 1500,
-      plat_id: "demo-plat-2",
-      restaurant_id: "demo-resto-1",
-    },
-    {
-      employe_id: "demo-emp-3",
-      employe_nom: "Cheikh Diop",
-      telephone: "+221773334455",
-      statut: "absent" as const,
-    },
-    // emp-4 et emp-5 sont "en_attente"
-  ];
-
-  if (isDemo) {
-    return (
-      <RhDashboardClient
-        company={company}
-        initialEmployes={initialEmployes}
-        initialPlats={initialPlats}
-        platsSemaine={initialPlats}
-        semaineLundi={semaineLundi}
-        todayDate={todayDate}
-        initialCommandes={initialCommandes}
-        restaurants={demoRestaurants}
-        clotures={[]}
-        restaurantsEnRetard={[]}
-        votesClos={isApresHeureLimite(company.heure_limite_vote)}
-        abonnement={etatAbonnement(company, todayDate)}
-        numeroWave={numeroWave}
-        bienvenue={false}
-        appBaseUrl={appBaseUrl}
-        isDemo
-      />
-    );
-  }
-
   const companyId = await getRhCompanyId();
   if (!companyId) {
     redirect("/rh/login");
   }
 
-  const supabase = await createClient();
+  const supabase = createClientRh(companyId);
 
   const { data: rawComp, error: compError } = await supabase
     .from("companies")
@@ -273,7 +108,6 @@ export default async function RhDashboardPage({ searchParams }: PageProps) {
       numeroWave={numeroWave}
       bienvenue={bienvenue === "1"}
       appBaseUrl={appBaseUrl}
-      isDemo={false}
     />
   );
 }

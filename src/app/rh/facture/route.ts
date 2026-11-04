@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
-import { createClient } from "@/lib/supabase/server";
-import { isSupabaseConfigured, todayDakar } from "@/lib/config";
+import { createClientRh } from "@/lib/supabase/server";
+import { todayDakar } from "@/lib/config";
 import { getRhCompanyId } from "@/lib/rh-session";
 import { getLignesFacturation, periodeMois } from "@/lib/facturation";
 import { genererFacturePdf } from "@/lib/facture-pdf";
@@ -9,9 +9,6 @@ export const dynamic = "force-dynamic";
 
 /** Relevé mensuel PDF : /rh/facture?mois=2026-10 */
 export async function GET(request: Request) {
-  if (!isSupabaseConfigured()) {
-    return NextResponse.json({ error: "Facture disponible une fois Supabase connecté." }, { status: 400 });
-  }
   const companyId = await getRhCompanyId();
   if (!companyId) return NextResponse.json({ error: "Non autorisé" }, { status: 401 });
 
@@ -19,7 +16,7 @@ export async function GET(request: Request) {
   const periode = periodeMois(mois);
   if (!periode) return NextResponse.json({ error: "Paramètre mois invalide" }, { status: 400 });
 
-  const supabase = await createClient();
+  const supabase = createClientRh(companyId);
   const { data: comp } = await supabase
     .from("companies")
     .select("nom, slug, responsable_nom, email_contact, telephone_contact")

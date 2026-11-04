@@ -1,22 +1,19 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { createClient } from "@/lib/supabase/server";
-import { isSupabaseConfigured } from "@/lib/config";
+import { createClientRh } from "@/lib/supabase/server";
 import { isDateValide, normaliserJoursTravail } from "@/lib/dates";
 import { getRhCompanyId, hashRhCode, verifyRhCode } from "@/lib/rh-session";
 import { getLignesFacturation, periodeMois, regrouperParPlat, type LigneFacturation } from "@/lib/facturation";
 
 const SESSION_EXPIREE = "Session RH expirée, reconnectez-vous.";
-const MODE_DEMO = "Disponible une fois Supabase connecté.";
 
 type Resultat<T> = { success: true; data: T } | { success: false; message: string };
 
 async function contexte() {
-  if (!isSupabaseConfigured()) return { erreur: MODE_DEMO } as const;
   const companyId = await getRhCompanyId();
   if (!companyId) return { erreur: SESSION_EXPIREE } as const;
-  return { companyId, supabase: await createClient() } as const;
+  return { companyId, supabase: createClientRh(companyId) } as const;
 }
 
 function moisPrecedents(mois: string, n: number): string[] {

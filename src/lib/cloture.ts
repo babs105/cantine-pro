@@ -1,11 +1,11 @@
 import "server-only";
-import { createClient } from "@/lib/supabase/server";
+import type { SupabaseServeur } from "@/lib/supabase/server";
 import { getAppBaseUrl } from "@/lib/config";
 import { buildMessageTraiteur, buildRecap, recapUneLigne, totalRepas } from "@/lib/recap";
 import { envoyerWhatsApp } from "@/lib/whatsapp";
 import type { Database, RecapLigne } from "@/types/database";
 
-type Supabase = Awaited<ReturnType<typeof createClient>>;
+type Supabase = SupabaseServeur;
 type Company = Database["public"]["Tables"]["companies"]["Row"];
 type Restaurant = Database["public"]["Tables"]["restaurants"]["Row"];
 type Cloture = Database["public"]["Tables"]["clotures"]["Row"];

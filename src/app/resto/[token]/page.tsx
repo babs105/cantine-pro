@@ -1,7 +1,7 @@
 import { notFound } from "next/navigation";
 import { Utensils, MapPin, ShieldCheck } from "lucide-react";
-import { createClient } from "@/lib/supabase/server";
-import { isSupabaseConfigured, todayDakar } from "@/lib/config";
+import { echangerJetonRestaurant } from "@/lib/supabase/server";
+import { todayDakar } from "@/lib/config";
 import { formatDateLongue, getCommandesDuJour } from "@/lib/cloture";
 import { buildRecap, formatHeure } from "@/lib/recap";
 import { ConfirmButton } from "./confirm-button";
@@ -17,56 +17,51 @@ export default async function TraiteurValidationPage({ params }: RestoPageProps)
   const today = todayDakar();
   const dateStr = formatDateLongue(today);
 
-  // Données de démonstration pour le traiteur
-  let traiteurNom = "Chez Fatou Traiteur Thiès";
-  let companyNom = "Pilote Thiès Innovation";
-  let heureLivraison: string | null = "12:30:00";
-  let recap = [
-    { plat_titre: "Thiéboudienne Rouge Penda Mbaye", quantite: 18, prix_unitaire: 1500 },
-    { plat_titre: "Yassa Poulet au Feu de Bois", quantite: 12, prix_unitaire: 1500 },
-    { plat_titre: "Soupou Kandia (Sauce Gombo)", quantite: 4, prix_unitaire: 1700 },
-  ];
-  let isCloture = true;
+  // Le token du lien est échangé contre un JWT court limité à ce restaurant (politiques RLS)
+  const acces = await echangerJetonRestaurant(token);
+  if (!acces) {
+    notFound();
+  }
+  const { supabase } = acces;
+
+  const { data: rawResto } = await supabase
+    .from("restaurants")
+    .select("id, nom, heure_livraison, company_id, companies(nom)")
+    .eq("id", acces.restaurantId)
+    .maybeSingle();
+
+  const resto: any = rawResto;
+  if (!resto) {
+    notFound();
+  }
+
+  const traiteurNom: string = resto.nom;
+  const companyNom: string = resto.companies?.nom || "Entreprise";
+  const heureLivraison: string | null = resto.heure_livraison;
+  let recap: Array<{ plat_titre: string; quantite: number; prix_unitaire: number }>;
+  let isCloture: boolean;
   let confirmeAt: string | null = null;
   let confirmeParRh = false;
 
-  if (isSupabaseConfigured()) {
-    const supabase = await createClient();
-    const { data: rawResto } = await supabase
-      .from("restaurants")
-      .select("id, nom, heure_livraison, company_id, companies(nom)")
-      .eq("token", token)
-      .maybeSingle();
+  const { data: rawCloture } = await supabase
+    .from("clotures")
+    .select("recap, confirme_at, confirme_par")
+    .eq("restaurant_id", resto.id)
+    .eq("date", today)
+    .maybeSingle();
 
-    const resto: any = rawResto;
-    if (!resto) {
-      notFound();
-    }
-
-    traiteurNom = resto.nom;
-    companyNom = resto.companies?.nom || "Entreprise";
-    heureLivraison = resto.heure_livraison;
-
-    const { data: rawCloture } = await supabase
-      .from("clotures")
-      .select("recap, confirme_at, confirme_par")
-      .eq("restaurant_id", resto.id)
-      .eq("date", today)
-      .maybeSingle();
-
-    const cloture: any = rawCloture;
-    if (cloture) {
-      // Récapitulatif figé à la clôture : c'est ce qui a été envoyé au restaurant
-      recap = cloture.recap;
-      confirmeAt = cloture.confirme_at;
-      confirmeParRh = cloture.confirme_par === "rh";
-      isCloture = true;
-    } else {
-      // Avant la clôture : aperçu des votes en cours, limité aux plats de ce restaurant
-      const commandes = await getCommandesDuJour(supabase, resto.company_id, today);
-      recap = buildRecap(commandes.filter((c) => c.restaurant_id === resto.id));
-      isCloture = false;
-    }
+  const cloture: any = rawCloture;
+  if (cloture) {
+    // Récapitulatif figé à la clôture : c'est ce qui a été envoyé au restaurant
+    recap = cloture.recap;
+    confirmeAt = cloture.confirme_at;
+    confirmeParRh = cloture.confirme_par === "rh";
+    isCloture = true;
+  } else {
+    // Avant la clôture : aperçu des commandes en cours, limité aux plats de ce restaurant
+    const commandes = await getCommandesDuJour(supabase, resto.company_id, today);
+    recap = buildRecap(commandes.filter((c) => c.restaurant_id === resto.id));
+    isCloture = false;
   }
 
   const totalPlats = recap.reduce((acc, curr) => acc + curr.quantite, 0);

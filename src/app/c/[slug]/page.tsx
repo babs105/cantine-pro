@@ -1,7 +1,6 @@
-import { createClient } from "@/lib/supabase/server";
+import { echangerSlugPortail } from "@/lib/supabase/server";
 import { notFound } from "next/navigation";
 import { EnterprisePortalClient } from "./portal-client";
-import { isSupabaseConfigured } from "@/lib/config";
 
 export const dynamic = "force-dynamic";
 
@@ -11,50 +10,31 @@ interface PageProps {
 
 export default async function CompanyPortalPage({ params }: PageProps) {
   const { slug } = await params;
+  // Le slug du portail est échangé contre un JWT court limité au portail de cette entreprise
+  const acces = await echangerSlugPortail(slug);
+  if (!acces) {
+    notFound();
+  }
+  const { supabase } = acces;
 
-  // Données par défaut pour démonstration / pilote immédiat
-  let company = {
-    id: "demo-company-thies",
-    nom: "Pilote Thiès Innovation",
-    slug: slug || "pilote-thies",
-    heure_limite_vote: "11:10:00",
-  };
+  const { data: rawComp } = await supabase
+    .from("companies")
+    .select("id, nom, slug, heure_limite_vote")
+    .eq("id", acces.companyId)
+    .maybeSingle();
 
-  let employes = [
-    { id: "demo-emp-1", nom: "Moussa Ndiaye", token: "token-demo-moussa" },
-    { id: "demo-emp-2", nom: "Aminata Sow", token: "token-demo-aminata" },
-    { id: "demo-emp-3", nom: "Cheikh Diop", token: "token-demo-cheikh" },
-    { id: "demo-emp-4", nom: "Fatou Bintou Fall", token: "token-demo-fatou" },
-    { id: "demo-emp-5", nom: "Ousmane Kane", token: "token-demo-ousmane" },
-  ];
+  const comp: any = rawComp;
 
-  if (isSupabaseConfigured()) {
-    const supabase = await createClient();
-
-    const { data: rawComp } = await supabase
-      .from("companies")
-      .select("id, nom, slug, heure_limite_vote")
-      .eq("slug", slug)
-      .eq("is_active", true)
-      .maybeSingle();
-
-    const comp: any = rawComp;
-
-    if (!comp) {
-      notFound();
-    }
-
-    company = comp;
-
-    const { data: emps } = await supabase
-      .from("employes")
-      .select("id, nom, token")
-      .eq("company_id", comp.id)
-      .eq("is_active", true)
-      .order("nom");
-
-    employes = emps || [];
+  if (!comp) {
+    notFound();
   }
 
-  return <EnterprisePortalClient company={company} employes={employes} />;
+  const { data: emps } = await supabase
+    .from("employes")
+    .select("id, nom, token")
+    .eq("company_id", comp.id)
+    .eq("is_active", true)
+    .order("nom");
+
+  return <EnterprisePortalClient company={comp} employes={emps || []} />;
 }

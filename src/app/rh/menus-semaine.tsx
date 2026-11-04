@@ -29,7 +29,6 @@ interface MenusSemaineProps {
   /** Jours de service de l'entreprise (1 = lundi … 7 = dimanche) */
   joursTravail?: number[] | null;
   restaurants: Array<{ id: string; nom: string }>;
-  isDemo: boolean;
   onError: (message: string | null) => void;
 }
 
@@ -47,7 +46,6 @@ export function MenusSemaine({
   todayDate,
   joursTravail: joursTravailBruts,
   restaurants,
-  isDemo,
   onError,
 }: MenusSemaineProps) {
   const router = useRouter();
@@ -159,7 +157,7 @@ export function MenusSemaine({
           </button>
         </div>
 
-        {!isDemo && joursModifiables.length > 0 && (
+        {joursModifiables.length > 0 && (
           <button
             type="button"
             disabled={isPending}

@@ -10,7 +10,6 @@ import {
   Timer,
   Utensils,
 } from "lucide-react";
-import { isSupabaseConfigured } from "@/lib/config";
 import { PLANS, PLAN_IDS } from "@/lib/abonnement";
 import { RetourApplication } from "./retour-application";
 
@@ -49,8 +48,6 @@ const AVANTAGES = [
 ];
 
 export default function HomePage() {
-  const isDemo = !isSupabaseConfigured();
-
   return (
     <div className="min-h-screen bg-white text-neutral-900">
       <RetourApplication />
@@ -264,27 +261,6 @@ export default function HomePage() {
           </div>
         </section>
 
-        {isDemo && (
-          <section className="max-w-6xl mx-auto px-4 pb-12">
-            <div className="bg-orange-50 border border-orange-200 rounded-3xl p-5 text-xs space-y-2">
-              <p className="font-bold text-orange-800">Mode démo — accès directs aux interfaces :</p>
-              <div className="flex flex-wrap gap-2">
-                <Link href="/rh" className="px-3 py-2 bg-white rounded-xl border font-semibold">
-                  Espace RH
-                </Link>
-                <Link href="/c/pilote-thies" className="px-3 py-2 bg-white rounded-xl border font-semibold">
-                  Portail entreprise
-                </Link>
-                <Link href="/p/token-demo-moussa" className="px-3 py-2 bg-white rounded-xl border font-semibold">
-                  Page salarié
-                </Link>
-                <Link href="/resto/token-demo-traiteur" className="px-3 py-2 bg-white rounded-xl border font-semibold">
-                  Page restaurant
-                </Link>
-              </div>
-            </div>
-          </section>
-        )}
       </main>
 
       <footer className="border-t border-neutral-100">
