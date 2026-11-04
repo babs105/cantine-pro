@@ -1,0 +1,94 @@
+# Cantine Pro
+
+Application de commande de repas d'entreprise pour le Sénégal (pilotes Thiès et Dakar).
+Les salariés commandent sur leur téléphone via un lien magique, le RH clôture la journée et
+envoie un récap WhatsApp à chaque restaurant, le restaurant confirme, seuls les repas confirmés sont facturés.
+
+Répondre et écrire en **français** : messages, commentaires de code, libellés d'interface, commits.
+
+## Stack
+
+- Next.js 15 (App Router, Server Actions), React 19, TypeScript, Tailwind CSS 3, lucide-react
+- Supabase (PostgreSQL) via le server client de `@supabase/ssr` (`createServerClient`), RLS avec politiques par claims JWT
+- exceljs (import salariés, export paie), pdf-lib (factures PDF)
+- Hébergé sur Vercel ; push sur `main` = déploiement en production
+
+## Commandes
+
+- `npm run dev` : serveur de dev (ou preview `cantine-pro`, port 3124). Il n'y a plus de mode démo : l'app exige les clés Supabase de `.env.local` et lit la vraie base.
+- `npx tsc --noEmit` : vérification des types (~4 s)
+- `npm run build` : à lancer avant tout push, c'est ce que Vercel exécute
+- Pas de tests automatisés dans le projet.
+
+## Carte du code
+
+- `src/app/<route>/page.tsx` : composant **serveur** qui lit Supabase et passe les données en props
+- `src/app/<route>/*-client.tsx` : composant **client** (`"use client"`) avec l'état et les clics
+- `src/app/<route>/actions.ts` : Server Actions (`"use server"`) appelées depuis le client
+- `src/app/**/route.ts` : téléchargements et API (`/rh/export`, `/rh/facture`, `/api/cron/cloture`, `/api/diagnostic`)
+- `src/lib/` : logique partagée (`dates.ts`, `cloture.ts`, `recap.ts`, `whatsapp.ts`, `abonnement.ts`, `rh-session.ts`, ...)
+- `src/types/database.ts` : types des tables Supabase
+- `supabase/schema.sql` : schéma complet et **idempotent** (relancé en entier dans l'éditeur SQL Supabase)
+
+Espaces : `/rh` (Espace RH, 7 onglets dans `rh-dashboard-client.tsx`), `/p/[token]` (salarié, PWA),
+`/resto/[token]` (restaurant), `/c/[slug]` (portail entreprise), `/admin` (SuperAdmin), `/inscription`.
+
+## Règles du code
+
+### Accès à Supabase : RLS + JWT hybride (`src/lib/supabase/`)
+Aucune requête ne passe par la clé service_role, sauf exceptions ci-dessous. Pattern « token URL → JWT court » :
+l'identifiant reçu est échangé par une fonction SQL `SECURITY DEFINER` (`echanger_*`), puis le serveur signe un JWT
+de 5 min en ES256 (clé privée `SUPABASE_JWT_PRIVATE_KEY`, importée comme clé de signature dans Supabase) dont les claims `role_app` / `company_id` / `employe_id` / `restaurant_id`
+filtrent chaque table via les politiques de `supabase/schema.sql` (section 9). Le JWT ne quitte jamais le serveur.
+
+| Qui | Client |
+|---|---|
+| RH (cookie de session) | `createClientRh(companyId)` après `getRhCompanyId()` |
+| Connexion RH | `echangerAccesRh(identifiant, code)` |
+| Salarié `/p/[token]` | `echangerJetonSalarie(token)` → `{ supabase, employeId, companyId }` |
+| Restaurant `/resto/[token]` | `echangerJetonRestaurant(token)` |
+| Portail `/c/[slug]` | `echangerSlugPortail(slug)` |
+| SuperAdmin, cron, inscription, diagnostic | `createAdminClient()` (`admin.ts`, service_role, contourne la RLS) |
+
+Ne jamais utiliser `createAdminClient()` ailleurs. Le client navigateur (`client.ts`) ne lit rien : pas de politique pour `anon`.
+
+### Server Actions (sécurité)
+Toute action RH suit ce modèle, dans cet ordre :
+1. `const companyId = await getRhCompanyId(); if (!companyId) return { success: false, message: SESSION_EXPIREE }`
+2. `const supabase = createClientRh(companyId);` puis requêtes **filtrées** par `.eq("company_id", companyId)` en plus de la RLS
+3. `revalidatePath("/rh")` après une écriture
+4. Retour `{ success: boolean; message?: string }`, message en français lisible par un RH
+
+### Base de données
+- Nouvelle colonne ou table : ajouter un bloc `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` (ou `CREATE TABLE IF NOT EXISTS`) dans `supabase/schema.sql`, après le dernier bloc de migration et avant la section `ENABLE ROW LEVEL SECURITY` ; jamais modifier les blocs existants (skill `/migration-schema`). Puis mettre à jour `src/types/database.ts`.
+- Nouvelle table : activer la RLS et écrire ses politiques (section 9 de `schema.sql`), sinon les clients JWT n'y verront rien.
+- Nouvel accès d'un rôle (salarié, restaurant, portail) à une table : ajouter la politique correspondante.
+- Le schéma est appliqué à la main par l'utilisateur dans Supabase : lui rappeler de le relancer.
+
+### Dates et heures
+Fuseau `Africa/Dakar`. Utiliser `todayDakar()`, `nowDakarTime()`, `isApresHeureLimite()` de `src/lib/dates.ts` / `config.ts`, jamais `new Date()` brut pour une date métier.
+
+### Interface
+- Mobile d'abord : la page salarié doit rester légère (réseau 3G/4G).
+- Couleur de marque orange (`orange-500`, `#f97316`), icônes lucide-react, `cn()` de `lib/utils.ts`.
+- Mise à jour optimiste : modifier l'état local puis appeler l'action dans `startTransition`.
+- Les envois WhatsApp sont des liens `wa.me` ouverts par le RH (mode manuel du pilote).
+
+### Vocabulaire métier
+« commande » (pas « vote », même si des noms de colonnes gardent `vote`), « Espace RH » (pas « cockpit »),
+« restaurant » (pas « traiteur » dans l'interface), « collaborateur » ou « salarié ».
+
+## Git
+
+- Messages au format `type: description en français` (`feat:`, `fix:`, `refactor:`, `style:`, `docs:`).
+- Ne jamais committer `.env.local`, ni `tsconfig.tsbuildinfo`.
+- Ne pas pousser sur `main` sans accord explicite : c'est un déploiement en production.
+- Ne jamais lire ni afficher le contenu de `.env.local`. Pour vérifier la config en production : `/api/diagnostic`.
+
+## Vérifier un changement
+
+1. `npx tsc --noEmit` (un hook le lance automatiquement en fin de tour si des fichiers .ts/.tsx ont changé)
+2. Si l'interface change : ouvrir la preview `cantine-pro` et vérifier l'écran concerné, sans créer ni modifier de données réelles sans l'accord de l'utilisateur
+3. Avant un push : `npm run build`
+
+Les skills du projet (`.claude/skills/`) décrivent les tâches courantes : `/nouvelle-action`, `/migration-schema`, `/verifier`.
