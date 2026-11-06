@@ -10,22 +10,15 @@ import { cloturerEntreprise, rafraichirRecapCloture } from "@/lib/cloture";
 import { placesRestantes } from "@/lib/limite-employes";
 import { etatAbonnement } from "@/lib/abonnement";
 import { isApresHeureLimite } from "@/lib/dates";
+import { normaliserTelephone } from "@/lib/telephone";
 
 const CHAMPS_EMPLOYE = "id, nom, telephone, service, token, is_active";
-const CHAMPS_PLAT = "id, date, titre, description, prix_unitaire, is_available, restaurant_id";
-const CHAMPS_RESTAURANT = "id, nom, telephone_whatsapp, heure_livraison, token, is_active";
+const CHAMPS_PLAT = "id, date, titre, description, prix_unitaire, is_available, restaurant_id, ajoute_par";
+const CHAMPS_RESTAURANT = "id, nom, telephone_whatsapp, heure_livraison, token, is_active, compte_id";
 const SERVICE_DEFAUT = "Général";
 
 const SESSION_EXPIREE = "Session RH expirée, reconnectez-vous.";
 
-function normaliserTelephone(telephone?: string): string | null {
-  const t = telephone?.replace(/[^\d+]/g, "");
-  if (!t) return null;
-  // Numéro local sénégalais à 9 chiffres (77 123 45 67) -> +221
-  if (/^\d{9}$/.test(t)) return `+221${t}`;
-  if (t.startsWith("00")) return `+${t.slice(2)}`;
-  return t.startsWith("+") ? t : `+${t}`;
-}
 
 /**
  * Ajout d'un nouvel employé
@@ -473,6 +466,41 @@ export async function addRestaurantAction(
     .single();
 
   if (error) return { success: false, message: error.message };
+
+  revalidatePath("/rh");
+  return { success: true, restaurant: data };
+}
+
+/**
+ * Ajout d'un restaurant inscrit sur Cantine Pro grâce à son code partenaire :
+ * il retrouve l'entreprise dans son espace restaurant (commandes, carte, historique).
+ */
+export async function rattacherRestaurantParCodeAction(
+  code: string,
+  heureLivraison?: string
+): Promise<{ success: boolean; message?: string; restaurant?: any }> {
+  const codePropre = code.trim().toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 16);
+  if (codePropre.length < 6) return { success: false, message: "Saisissez le code partenaire communiqué par le restaurant." };
+  const heure = /^\d{2}:\d{2}/.test(heureLivraison || "") ? heureLivraison!.slice(0, 5) : "12:30";
+
+  const companyId = await getRhCompanyId();
+  if (!companyId) return { success: false, message: SESSION_EXPIREE };
+
+  const supabase = createClientRh(companyId);
+  // Fonction SECURITY DEFINER : vérifie le rôle RH et crée (ou réactive) le partenariat pour cette entreprise
+  const { data: restaurantId, error } = await (supabase as any).rpc("rattacher_compte_restaurant", {
+    p_code: codePropre,
+    p_heure_livraison: heure,
+  });
+  if (error) return { success: false, message: "Impossible d'ajouter ce restaurant." };
+  if (!restaurantId) return { success: false, message: "Code partenaire inconnu : vérifiez-le auprès du restaurant." };
+
+  const { data } = await supabase
+    .from("restaurants")
+    .select(CHAMPS_RESTAURANT)
+    .eq("id", restaurantId)
+    .eq("company_id", companyId)
+    .maybeSingle();
 
   revalidatePath("/rh");
   return { success: true, restaurant: data };

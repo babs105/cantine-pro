@@ -40,7 +40,7 @@ export default function RhLoginPage() {
               required
               autoCapitalize="none"
               autoCorrect="off"
-              placeholder="ex: pilote-thies ou rh@entreprise.sn"
+              placeholder="ex: mon-entreprise ou rh@entreprise.sn"
               className="w-full text-xs px-3 py-2.5 rounded-xl border border-neutral-200 focus:outline-none focus:ring-2 focus:ring-orange-500"
             />
           </div>
@@ -70,6 +70,17 @@ export default function RhLoginPage() {
           Pas encore de compte ?{" "}
           <Link href="/inscription" className="font-bold text-orange-600 hover:underline">
             Essai gratuit 14 jours
+          </Link>
+        </p>
+        <p className="text-center text-xs text-neutral-500">
+          Vous êtes un restaurant ?{" "}
+          <Link href="/resto/login" className="font-bold text-neutral-800 hover:underline">
+            Espace restaurant
+          </Link>
+        </p>
+        <p className="text-center">
+          <Link href="/" className="text-[11px] text-neutral-400 hover:text-neutral-700">
+            ← Retour à l&apos;accueil
           </Link>
         </p>
       </div>

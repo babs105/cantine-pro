@@ -48,7 +48,15 @@ export default async function RhDashboardPage({ searchParams }: PageProps) {
     redirect("/rh/login");
   }
 
-  const [{ data: emps }, { data: dishes }, { data: weekDishes }, commandes, { data: rawClotures }, { data: restos }] =
+  const [
+    { data: emps },
+    { data: dishes },
+    { data: weekDishes },
+    commandes,
+    { data: rawClotures },
+    { data: restos },
+    { data: rawCartes },
+  ] =
     await Promise.all([
     supabase
       .from("employes")
@@ -58,13 +66,13 @@ export default async function RhDashboardPage({ searchParams }: PageProps) {
       .order("nom"),
     supabase
       .from("menus_du_jour")
-      .select("id, date, titre, description, prix_unitaire, is_available, restaurant_id")
+      .select("id, date, titre, description, prix_unitaire, is_available, restaurant_id, ajoute_par")
       .eq("company_id", comp.id)
       .eq("date", todayDate)
       .order("created_at"),
     supabase
       .from("menus_du_jour")
-      .select("id, date, titre, description, prix_unitaire, is_available, restaurant_id")
+      .select("id, date, titre, description, prix_unitaire, is_available, restaurant_id, ajoute_par")
       .eq("company_id", comp.id)
       .gte("date", semaineLundi)
       .lte("date", ajouterJours(semaineLundi, 6))
@@ -77,8 +85,15 @@ export default async function RhDashboardPage({ searchParams }: PageProps) {
       .eq("date", todayDate),
     supabase
       .from("restaurants")
-      .select("id, nom, telephone_whatsapp, heure_livraison, token, is_active")
+      .select("id, nom, telephone_whatsapp, heure_livraison, token, is_active, compte_id")
       .eq("company_id", comp.id)
+      .order("created_at"),
+    // Cartes saisies par les restaurants depuis leur lien : le RH y pioche ses menus du jour
+    supabase
+      .from("plats_restaurant")
+      .select("id, restaurant_id, titre, description, prix_unitaire")
+      .eq("company_id", comp.id)
+      .eq("is_active", true)
       .order("created_at"),
   ]);
 
@@ -97,6 +112,7 @@ export default async function RhDashboardPage({ searchParams }: PageProps) {
       initialEmployes={(emps as any[]) || []}
       initialPlats={(dishes as any[]) || []}
       platsSemaine={(weekDishes as any[]) || []}
+      cartesRestaurants={(rawCartes as any[]) || []}
       semaineLundi={semaineLundi}
       todayDate={todayDate}
       initialCommandes={commandes}

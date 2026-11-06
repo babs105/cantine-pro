@@ -12,18 +12,21 @@
    * Moins de 106 Ko de First Load JS pour une fluidité absolue même sur réseau mobile 3G/4G Orange ou Free Sénégal.
    * Choix d'un plat en 1 clic ou options *"Absent(e)"* / *"Ne mange pas"*.
    * Persistance automatique dans le smartphone (`localStorage`).
-   * Votes ouverts de **08h00 à 11h10**, verrouillage automatique.
+   * Commandes ouvertes de **08h00 à 11h10** (heures réglables par entreprise), verrouillage automatique.
 
 2. **Espace RH (`/rh`) :**
    * **Suivi Live 11h :** Compteurs temps réel (Total repas, En attente, Absents, Taux de participation).
    * **Clôture après 11h10 :** Totaux exacts par plat, un récapitulatif par restaurant envoyé par le RH.
-   * **Générateur WhatsApp Traiteur :** Message récapitulatif prêt à envoyer en 1 clic à votre traiteur.
+   * **Récap WhatsApp par restaurant :** message récapitulatif prêt à envoyer en 1 clic à chaque restaurant.
    * **Gestionnaire de Menus :** Ajout de plats avec raccourcis sénégalais (Thiéboudienne, Yassa, Mafé, Soupou Kandia).
    * **Gestion des Collaborateurs :** Import en masse CSV (`Nom, Téléphone`), bouton direct de partage WhatsApp.
-   * **Export Comptable :** Téléchargement CSV pour la facturation et le suivi de consommation.
+   * **Export comptable :** Excel paie, CSV et facture PDF du mois.
 
-3. **Passerelle Traiteur (`/resto/[token]`) :**
-   * Écran ultra-épuré pour que chaque restaurant confirme d'un clic la commande reçue à 11h10.
+3. **Espace restaurant :**
+   * **Lien restaurant (`/resto/[token]`)** : écran ultra-épuré pour qu'un restaurant confirme d'un clic la commande reçue d'une entreprise.
+   * **Compte restaurant (`/resto`)** : un restaurant s'inscrit sur `/resto/inscription`, se connecte sur `/resto/login`
+     (numéro WhatsApp + code) et sert plusieurs entreprises : carte de plats, menus de la semaine, confirmations, facturation.
+   * Le RH relie un compte restaurant à son entreprise avec le **code partenaire** que le restaurant lui communique.
 
 ---
 
@@ -32,7 +35,9 @@
 * **Framework :** Next.js 15 (App Router, Server Actions, React 19)
 * **Styling :** Tailwind CSS
 * **Icônes :** Lucide React
-* **Base de données & Auth :** Supabase (PostgreSQL + RLS + Vues en temps réel)
+* **Base de données :** Supabase (PostgreSQL + RLS). Pas de Supabase Auth : le serveur signe des JWT courts (ES256)
+  dont les claims filtrent chaque table ; ils ne quittent jamais le serveur.
+* **Documents :** exceljs (import salariés, export paie), pdf-lib (factures PDF)
 * **Déploiement :** Vercel
 
 ---
@@ -46,10 +51,13 @@ cd "cantine Pro"
 # 2. Installer les dépendances
 npm install
 
-# 3. Lancer le serveur de développement
+# 3. Configurer l'environnement (voir « Initialisation Supabase » ci-dessous)
+cp .env.local.example .env.local
+
+# 4. Lancer le serveur de développement
 npm run dev
 
-# 4. Ouvrir dans le navigateur
+# 5. Ouvrir dans le navigateur
 # http://localhost:3000
 ```
 
@@ -59,15 +67,26 @@ npm run dev
 
 1. Créez un projet sur [Supabase](https://supabase.com).
 2. Ouvrez l'éditeur SQL et collez le contenu de [`supabase/schema.sql`](./supabase/schema.sql).
-3. Cliquez sur **Run** pour créer les tables (`companies`, `employes`, `menus_du_jour`, `commandes`) et la vue d'agrégation.
-4. Renseignez vos clés dans votre fichier `.env.local` :
+3. Cliquez sur **Run** : le script est idempotent et crée ou met à jour les tables (`companies`, `employes`, `menus_du_jour`,
+   `commandes`, `restaurants`, `plats_restaurant`, `comptes_restaurant`, `clotures`, `paiements`), la vue d'agrégation,
+   les fonctions d'échange et toutes les politiques RLS. Relancez-le en entier après chaque mise à jour du code.
+   Il ne contient **aucune** donnée de démonstration.
+4. Générez la clé de signature des JWT et importez-la dans Supabase (**Project Settings > JWT Keys**) :
+   `npx supabase gen signing-key --algorithm ES256`.
+5. Renseignez `.env.local` (modèle complet et commentaires dans [`.env.local.example`](./.env.local.example)) :
 
-```env
-NEXT_PUBLIC_SUPABASE_URL=https://votre-id.supabase.co
-NEXT_PUBLIC_SUPABASE_ANON_KEY=votre-cle-anon
-SUPABASE_SERVICE_ROLE_KEY=votre-cle-service-role
-NEXT_PUBLIC_APP_URL=http://localhost:3000
-```
+| Variable | Obligatoire | Rôle |
+|---|---|---|
+| `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY` | oui | Connexion à Supabase (la clé anon seule ne lit aucune table) |
+| `SUPABASE_JWT_PRIVATE_KEY` | oui | Clé privée ES256 (JWK) qui signe les JWT courts |
+| `SUPABASE_SERVICE_ROLE_KEY` | oui | Réservée à `/admin`, au cron, aux inscriptions et au diagnostic |
+| `RH_SESSION_SECRET` | oui | Signature des cookies de session RH et restaurant (`openssl rand -hex 32`) |
+| `NEXT_PUBLIC_APP_URL` | oui | URL publique utilisée dans les liens envoyés |
+| `SUPERADMIN_CODE` | pour `/admin` | Code de la console SuperAdmin (12 caractères min.) |
+| `CRON_SECRET` | en production | Protège `/api/cron/cloture` |
+| `WAVE_NUMERO_PAIEMENT`, `WHATSAPP_*` | non | Paiement Wave affiché, envoi WhatsApp automatique |
+
+En production, `/api/diagnostic` indique pour chaque variable si elle est présente (sans afficher sa valeur).
 
 ---
 
@@ -87,7 +106,6 @@ RETURNING id;
 Le RH se connecte sur `/rh/login` avec le slug + le code, puis ajoute ses restaurants partenaires
 dans l'onglet **Restaurants** (nom, WhatsApp, heure de livraison). Chaque restaurant a son propre lien
 de confirmation `/resto/<token>`.
-Base de démo : slug `pilote-thies`, code `pilote-thies-2026` (à changer avant le go-live).
 
 ## ⏰ Principe de fonctionnement (mode manuel du pilote)
 
@@ -108,7 +126,6 @@ Pour le pilote, **rien n'est envoyé automatiquement** : le RH déclenche chaque
 > `"crons": [{ "path": "/api/cron/cloture", "schedule": "10 11 * * 1-5" }]` (ou appelez-la depuis
 > QStash / cron-job.org avec `Authorization: Bearer CRON_SECRET`).
 
-Variables d'environnement : voir [`.env.local.example`](./.env.local.example).
 
 ## 📋 Fonctions V2 Pilote
 
@@ -117,7 +134,7 @@ Variables d'environnement : voir [`.env.local.example`](./.env.local.example).
 * **Modification manuelle par le RH** d'une commande (y compris après 11h10 et après la clôture) tant que le restaurant concerné n'a pas confirmé. Si le récap avait déjà été envoyé, il est recalculé et repasse « à renvoyer ». Une fois le restaurant confirmé, ses commandes sont verrouillées.
 * **Alerte 11h30** dans l'Espace RH si le restaurant n'a pas confirmé, avec bouton d'appel.
 * **Compte à rebours** sur la PWA employé, verrouillage automatique à l'heure limite, heure d'enregistrement du choix.
-* **Export Excel paie** (`/rh/export?mois=AAAA-MM&format=xlsx`) : onglets *Paie par service*, *Récap services*, *Facture traiteur*, *Détail jour par jour*.
+* **Export Excel paie** (`/rh/export?mois=AAAA-MM&format=xlsx`) : onglets *Paie par service*, *Récap services*, *Facture restaurants*, *Détail jour par jour*.
 
 * **Onglet Paramètres** : heures d'ouverture et de fin des commandes, **jours de travail** (lundi → dimanche, par défaut lundi → vendredi : la grille des menus, la duplication de semaine et les commandes des salariés les suivent), coordonnées, changement du code RH, état de l'abonnement.
 * **Onglet Historique & Factures** : historique jour par jour (détail par collaborateur), **facture PDF du mois** (`/rh/facture?mois=AAAA-MM` : synthèse, une facture par restaurant avec zone signature et cachet, ventilation par service), exports Excel et CSV.
@@ -132,4 +149,5 @@ Variables d'environnement : voir [`.env.local.example`](./.env.local.example).
 * `WAVE_NUMERO_PAIEMENT` (optionnel) : numéro Wave affiché aux RH dans l'onglet Paramètres.
 * Les entreprises déjà présentes avant la v1.3 restent « actives » sans échéance (pilotes gratuits).
 
-> Après mise à jour, relancez `supabase/schema.sql` (ajoute `employes.service`, `commandes.modifie_par_rh`, la table `restaurants`, l'heure d'ouverture des commandes, les colonnes d'abonnement et la table `paiements` ; l'ancien traiteur unique devient automatiquement le premier restaurant).
+> Après chaque mise à jour du code, relancez `supabase/schema.sql` en entier dans l'éditeur SQL Supabase avant de déployer :
+> le code lirait sinon des colonnes qui n'existent pas encore.

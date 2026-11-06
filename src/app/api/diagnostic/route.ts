@@ -53,6 +53,24 @@ export async function GET() {
     jwtRls = `échec : ${err.message}`;
   }
 
+  // Schéma à jour : les dernières tables et colonnes existent (sinon relancer supabase/schema.sql)
+  const schema: Record<string, string> = {};
+  try {
+    const supabase = createAdminClient();
+    const controles: Array<[string, string, string]> = [
+      ["plats_restaurant", "plats_restaurant", "id"],
+      ["comptes_restaurant", "comptes_restaurant", "id"],
+      ["restaurants.compte_id", "restaurants", "compte_id"],
+      ["menus_du_jour.ajoute_par", "menus_du_jour", "ajoute_par"],
+    ];
+    for (const [nom, table, colonne] of controles) {
+      const { error } = await (supabase.from(table as any) as any).select(colonne, { count: "exact", head: true });
+      schema[nom] = error ? `manquant : ${error.message}` : "ok";
+    }
+  } catch (err: any) {
+    schema.erreur = err.message;
+  }
+
   const appUrl = process.env.NEXT_PUBLIC_APP_URL || "";
 
   return NextResponse.json(
@@ -63,6 +81,7 @@ export async function GET() {
       app_url_pointe_sur_localhost: appUrl.includes("localhost"),
       connexion_supabase: connexionSupabase,
       jwt_rls: jwtRls,
+      schema,
     },
     { headers: { "Cache-Control": "no-store" } }
   );

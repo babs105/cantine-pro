@@ -133,6 +133,7 @@ export interface Database {
           prix_unitaire: number;
           is_available: boolean;
           restaurant_id: string | null;
+          ajoute_par: "rh" | "restaurant";
           created_at: string;
         };
         Insert: {
@@ -144,6 +145,7 @@ export interface Database {
           prix_unitaire?: number;
           is_available?: boolean;
           restaurant_id?: string | null;
+          ajoute_par?: "rh" | "restaurant";
           created_at?: string;
         };
         Update: {
@@ -155,6 +157,7 @@ export interface Database {
           prix_unitaire?: number;
           is_available?: boolean;
           restaurant_id?: string | null;
+          ajoute_par?: "rh" | "restaurant";
           created_at?: string;
         };
       };
@@ -205,6 +208,7 @@ export interface Database {
           heure_livraison: string | null;
           token: string;
           is_active: boolean;
+          compte_id: string | null;
           created_at: string;
         };
         Insert: {
@@ -215,6 +219,7 @@ export interface Database {
           heure_livraison?: string | null;
           token?: string;
           is_active?: boolean;
+          compte_id?: string | null;
           created_at?: string;
         };
         Update: {
@@ -264,6 +269,84 @@ export interface Database {
           envoye_at?: string | null;
           confirme_at?: string | null;
           confirme_par?: "restaurant" | "rh" | null;
+        };
+      };
+      comptes_restaurant: {
+        Row: {
+          id: string;
+          nom: string;
+          telephone_whatsapp: string;
+          ville: string | null;
+          code_hash: string;
+          code_partenaire: string;
+          is_active: boolean;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          nom: string;
+          telephone_whatsapp: string;
+          ville?: string | null;
+          code_hash: string;
+          code_partenaire?: string;
+          is_active?: boolean;
+          created_at?: string;
+        };
+        Update: {
+          nom?: string;
+          telephone_whatsapp?: string;
+          ville?: string | null;
+          code_hash?: string;
+          is_active?: boolean;
+        };
+      };
+      // v1.8 : compteur d'échecs de connexion, lu et écrit uniquement par les fonctions SQL
+      // (controler_tentatives, noter_echec_connexion, effacer_tentatives) : aucune politique RLS
+      tentatives_connexion: {
+        Row: {
+          cle: string;
+          echecs: number;
+          premier_echec_at: string;
+          bloque_jusqu_a: string | null;
+        };
+        Insert: {
+          cle: string;
+          echecs?: number;
+          premier_echec_at?: string;
+          bloque_jusqu_a?: string | null;
+        };
+        Update: {
+          echecs?: number;
+          premier_echec_at?: string;
+          bloque_jusqu_a?: string | null;
+        };
+      };
+      plats_restaurant: {
+        Row: {
+          id: string;
+          company_id: string;
+          restaurant_id: string;
+          titre: string;
+          description: string | null;
+          prix_unitaire: number;
+          is_active: boolean;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          company_id: string;
+          restaurant_id: string;
+          titre: string;
+          description?: string | null;
+          prix_unitaire?: number;
+          is_active?: boolean;
+          created_at?: string;
+        };
+        Update: {
+          titre?: string;
+          description?: string | null;
+          prix_unitaire?: number;
+          is_active?: boolean;
         };
       };
       paiements: {

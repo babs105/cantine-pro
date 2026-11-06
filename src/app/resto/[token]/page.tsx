@@ -1,10 +1,15 @@
 import { notFound } from "next/navigation";
-import { Utensils, MapPin, ShieldCheck } from "lucide-react";
+import Link from "next/link";
+import { Utensils, MapPin, ShieldCheck, Store } from "lucide-react";
+import { getRestoCompteId } from "@/lib/resto-session";
 import { echangerJetonRestaurant } from "@/lib/supabase/server";
 import { todayDakar } from "@/lib/config";
 import { formatDateLongue, getCommandesDuJour } from "@/lib/cloture";
 import { buildRecap, formatHeure } from "@/lib/recap";
-import { ConfirmButton } from "./confirm-button";
+import { ConfirmButton } from "../confirm-button";
+import { CarteRestaurant } from "../carte-restaurant";
+import type { PlatCarte } from "../actions";
+import { RelierLienButton } from "../relier-lien";
 
 export const dynamic = "force-dynamic";
 
@@ -26,7 +31,7 @@ export default async function TraiteurValidationPage({ params }: RestoPageProps)
 
   const { data: rawResto } = await supabase
     .from("restaurants")
-    .select("id, nom, heure_livraison, company_id, companies(nom)")
+    .select("id, nom, heure_livraison, company_id, compte_id, companies(nom, heure_limite_vote)")
     .eq("id", acces.restaurantId)
     .maybeSingle();
 
@@ -63,6 +68,17 @@ export default async function TraiteurValidationPage({ params }: RestoPageProps)
     recap = buildRecap(commandes.filter((c) => c.restaurant_id === resto.id));
     isCloture = false;
   }
+
+  // Carte du restaurant : plats proposés au RH pour composer le menu du jour
+  const { data: rawCarte } = await supabase
+    .from("plats_restaurant")
+    .select("id, titre, description, prix_unitaire, is_active")
+    .eq("restaurant_id", resto.id)
+    .order("created_at");
+  const carte = ((rawCarte as PlatCarte[] | null) || []);
+
+  const compteConnecte = !!(await getRestoCompteId());
+  const relieAUnCompte = !!resto.compte_id;
 
   const totalPlats = recap.reduce((acc, curr) => acc + curr.quantite, 0);
 
@@ -133,12 +149,48 @@ export default async function TraiteurValidationPage({ params }: RestoPageProps)
             Confirmez la bonne réception de la commande en un clic pour rassurer l&apos;entreprise :
           </div>
           <ConfirmButton
-            token={token}
+            cible={{ token }}
+            heureLimite={resto.companies?.heure_limite_vote}
             totalRepas={totalPlats}
             confirmeAt={confirmeAt}
             confirmeParRh={confirmeParRh}
             isCloture={isCloture}
           />
+        </div>
+
+        {/* Passerelle vers le compte restaurant multi-entreprises */}
+        <div className="mt-4 bg-neutral-800 rounded-3xl p-5 border border-neutral-700 space-y-3">
+          <div className="flex items-start gap-3">
+            <Store className="w-5 h-5 text-orange-500 shrink-0 mt-0.5" />
+            <p className="text-xs text-neutral-300">
+              {relieAUnCompte
+                ? "Cette entreprise fait partie de votre espace restaurant : retrouvez-y toutes vos entreprises, vos cartes et votre historique."
+                : "Vous livrez plusieurs entreprises ? Gérez-les toutes depuis un seul espace restaurant."}
+            </p>
+          </div>
+          {relieAUnCompte ? (
+            <Link href="/resto" className="block w-full py-2.5 text-center bg-neutral-700 hover:bg-neutral-600 text-white font-bold text-sm rounded-2xl transition">
+              Ouvrir mon espace restaurant
+            </Link>
+          ) : compteConnecte ? (
+            <RelierLienButton token={token} companyNom={companyNom} />
+          ) : (
+            <div className="grid grid-cols-2 gap-2">
+              <Link
+                href={`/resto/inscription?lien=${token}`}
+                className="py-2.5 text-center bg-orange-600 hover:bg-orange-500 text-white font-bold text-xs rounded-2xl transition"
+              >
+                Créer mon espace
+              </Link>
+              <Link href="/resto/login" className="py-2.5 text-center bg-neutral-700 hover:bg-neutral-600 text-white font-bold text-xs rounded-2xl transition">
+                Se connecter
+              </Link>
+            </div>
+          )}
+        </div>
+
+        <div className="mt-4">
+          <CarteRestaurant cible={{ token }} companyNom={companyNom} initialPlats={carte} />
         </div>
       </div>
 

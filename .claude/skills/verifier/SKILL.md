@@ -7,7 +7,8 @@ description: Vérifier un changement dans Cantine Pro avant de le considérer co
 
 1. **Types** : `npx tsc --noEmit`. Corriger toute erreur avant de continuer.
 2. **Règles du projet** sur le diff (`git diff`) :
-   - chaque requête Supabase d'une action RH passe par `createClientRh(companyId)` et est filtrée par `company_id` ; `createAdminClient()` n'apparaît que dans `/admin`, le cron, l'inscription et le diagnostic ;
+   - chaque requête Supabase d'une action RH passe par `createClientRh(companyId)` et est filtrée par `company_id` ; `createAdminClient()` n'apparaît que dans `/admin`, le cron, le diagnostic et les inscriptions (entreprise et restaurant) ;
+   - toute nouvelle page, action ou route privée vérifie sa session en tête (il n'y a pas de middleware) ;
    - toute nouvelle table ou tout nouvel accès d'un rôle a sa politique RLS dans `supabase/schema.sql` ;
    - pas de `new Date()` brut pour une date métier (utiliser `todayDakar()`) ;
    - textes d'interface en français, vocabulaire « commande » / « Espace RH » / « restaurant » ;
@@ -16,6 +17,7 @@ description: Vérifier un changement dans Cantine Pro avant de le considérer co
    Supabase. Ouvrir l'écran concerné, vérifier la console et l'affichage, aussi en largeur mobile (375 px), puis faire
    une capture d'écran. Ne pas créer, modifier ni envoyer de données réelles (commandes, clôtures, salariés) sans
    l'accord de l'utilisateur. L'Espace RH demande une connexion : c'est à l'utilisateur de se connecter.
-4. **Avant un push** : `npm run build` doit réussir.
+4. **Avant un push** : `NEXT_DIST_DIR=.next-build npm run build` doit réussir. Toujours ce dossier séparé :
+   ne jamais écrire dans le `.next` du `npm run dev` de l'utilisateur (la preview utilise `.next-preview`).
 
 Rapporter ce qui a été vérifié et ce qui ne l'a pas été (par exemple : écran derrière la connexion RH non ouvert).
