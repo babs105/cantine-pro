@@ -55,9 +55,16 @@ export async function createClientRhSession(): Promise<{ companyId: string; supa
   return { companyId, supabase: createClientRh(companyId) };
 }
 
+/** Code SQLSTATE levé par controler_tentatives : identifiant bloqué après 5 échecs en 15 minutes */
+const CODE_TROP_DE_TENTATIVES = "CP429";
+
+/** Connexion refusée parce que l'identifiant est temporairement bloqué ; le message est lisible par l'utilisateur */
+export class TropDeTentativesError extends Error {}
+
 /** Appelle une fonction d'échange SECURITY DEFINER avec la clé anon (le type Database ne décrit pas les fonctions) */
 async function appelerEchange<T>(fonction: string, args: Record<string, string>): Promise<T | null> {
   const { data, error } = await (serverClient() as any).rpc(fonction, args);
+  if (error?.code === CODE_TROP_DE_TENTATIVES) throw new TropDeTentativesError(error.message);
   if (error) throw new Error(error.message);
   return (data ?? null) as T | null;
 }

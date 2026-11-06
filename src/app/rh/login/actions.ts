@@ -1,7 +1,7 @@
 "use server";
 
 import { redirect } from "next/navigation";
-import { echangerAccesRh } from "@/lib/supabase/server";
+import { echangerAccesRh, TropDeTentativesError } from "@/lib/supabase/server";
 import { createRhSession, destroyRhSession } from "@/lib/rh-session";
 
 export async function loginRhAction(_prevState: { error?: string } | undefined,formData: FormData): Promise<{ error?: string }> {
@@ -13,7 +13,14 @@ export async function loginRhAction(_prevState: { error?: string } | undefined,f
   }
 
   // Identifiant entreprise (slug) ou e-mail du responsable saisi à l'inscription, vérifiés par echanger_acces_rh
-  const companyId = await echangerAccesRh(slug, code);
+  // (5 échecs en 15 minutes bloquent l'identifiant 15 minutes)
+  let companyId: string | null;
+  try {
+    companyId = await echangerAccesRh(slug, code);
+  } catch (err) {
+    if (err instanceof TropDeTentativesError) return { error: err.message };
+    throw err;
+  }
   if (!companyId) {
     return { error: "Identifiant ou code d'accès incorrect." };
   }

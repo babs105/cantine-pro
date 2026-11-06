@@ -291,6 +291,67 @@ SET rh_code_hash = NULL
 WHERE slug = 'pilote-thies'
   AND rh_code_hash = encode(digest('pilote-thies-2026', 'sha256'), 'hex');
 
+-- v1.8 : limite des tentatives de connexion (Espace RH, compte restaurant, SuperAdmin).
+-- Le compteur est en base et non dans Next.js : la clé anon est publique et echanger_acces_* peut être
+-- appelée directement sur Supabase. Après 5 échecs en 15 minutes sur un même identifiant, celui-ci est
+-- bloqué 15 minutes. Pas de company_id : la table est indexée par identifiant de connexion, sans politique
+-- (seules les fonctions SECURITY DEFINER ci-dessous et la clé service_role y accèdent).
+CREATE TABLE IF NOT EXISTS public.tentatives_connexion (
+    cle TEXT PRIMARY KEY, -- 'rh:<slug ou e-mail>', 'resto:<téléphone>' ou 'admin'
+    echecs INTEGER NOT NULL DEFAULT 0,
+    premier_echec_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    bloque_jusqu_a TIMESTAMPTZ
+);
+
+-- Lève une erreur CP429 si l'identifiant est bloqué
+CREATE OR REPLACE FUNCTION public.controler_tentatives(p_cle TEXT)
+RETURNS VOID
+LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = public AS $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM public.tentatives_connexion WHERE cle = p_cle AND bloque_jusqu_a > now()) THEN
+        RAISE EXCEPTION 'Trop de tentatives de connexion. Réessayez dans 15 minutes.' USING ERRCODE = 'CP429';
+    END IF;
+END;
+$$;
+
+-- Compte un échec ; le compteur repart à zéro si le premier échec date de plus de 15 minutes
+CREATE OR REPLACE FUNCTION public.noter_echec_connexion(p_cle TEXT)
+RETURNS VOID
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = public AS $$
+BEGIN
+    -- Ménage : les identifiants inventés par un attaquant ne s'accumulent pas
+    DELETE FROM public.tentatives_connexion
+    WHERE premier_echec_at < now() - interval '1 day'
+      AND (bloque_jusqu_a IS NULL OR bloque_jusqu_a < now());
+
+    INSERT INTO public.tentatives_connexion AS t (cle, echecs, premier_echec_at)
+    VALUES (p_cle, 1, now())
+    ON CONFLICT (cle) DO UPDATE SET
+        echecs = CASE WHEN t.premier_echec_at < now() - interval '15 minutes' THEN 1 ELSE t.echecs + 1 END,
+        premier_echec_at = CASE WHEN t.premier_echec_at < now() - interval '15 minutes' THEN now() ELSE t.premier_echec_at END;
+
+    UPDATE public.tentatives_connexion
+    SET bloque_jusqu_a = now() + interval '15 minutes'
+    WHERE cle = p_cle AND echecs >= 5;
+END;
+$$;
+
+-- Connexion réussie : l'identifiant repart de zéro
+CREATE OR REPLACE FUNCTION public.effacer_tentatives(p_cle TEXT)
+RETURNS VOID
+LANGUAGE sql VOLATILE SECURITY DEFINER SET search_path = public AS $$
+    DELETE FROM public.tentatives_connexion WHERE cle = p_cle
+$$;
+
+-- Supabase accorde par défaut EXECUTE à anon et authenticated : le retirer explicitement.
+-- Les echanger_acces_* (SECURITY DEFINER) les appellent avec les droits du propriétaire.
+REVOKE EXECUTE ON FUNCTION public.controler_tentatives(TEXT) FROM PUBLIC, anon, authenticated;
+REVOKE EXECUTE ON FUNCTION public.noter_echec_connexion(TEXT) FROM PUBLIC, anon, authenticated;
+REVOKE EXECUTE ON FUNCTION public.effacer_tentatives(TEXT) FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.controler_tentatives(TEXT) TO service_role;
+GRANT EXECUTE ON FUNCTION public.noter_echec_connexion(TEXT) TO service_role;
+GRANT EXECUTE ON FUNCTION public.effacer_tentatives(TEXT) TO service_role;
+
 -- 8. SÉCURITÉ : RLS ACTIVÉE SUR TOUTES LES TABLES
 -- Les politiques (section 9) n'ouvrent l'accès qu'aux requêtes portant un JWT signé par le serveur
 -- Next.js. La clé anon seule ne lit aucune table (tokens employés inclus).
@@ -303,6 +364,7 @@ ALTER TABLE public.restaurants ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.paiements ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.plats_restaurant ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.comptes_restaurant ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.tentatives_connexion ENABLE ROW LEVEL SECURITY;
 ALTER VIEW public.vue_recapitulatif_traiteur SET (security_invoker = true);
 
 -- 9. POLITIQUES RLS : PATTERN HYBRIDE « TOKEN URL -> JWT COURT »
@@ -329,10 +391,17 @@ CREATE OR REPLACE FUNCTION public.jwt_restaurant_id() RETURNS UUID
 LANGUAGE sql STABLE AS $$ SELECT NULLIF(auth.jwt() ->> 'restaurant_id', '')::uuid $$;
 
 -- Fonctions d'échange (seul accès possible avec la clé anon, ne renvoient que des identifiants)
+-- v1.8 : plpgsql pour compter les échecs (5 en 15 min → identifiant bloqué 15 min, erreur CP429)
 CREATE OR REPLACE FUNCTION public.echanger_acces_rh(p_identifiant TEXT, p_code_hash TEXT)
 RETURNS UUID
-LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public AS $$
-    SELECT c.id
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = public AS $$
+DECLARE
+    v_cle TEXT := 'rh:' || left(lower(trim(coalesce(p_identifiant, ''))), 200);
+    v_id UUID;
+BEGIN
+    PERFORM public.controler_tentatives(v_cle);
+
+    SELECT c.id INTO v_id
     FROM public.companies c
     WHERE CASE WHEN position('@' IN p_identifiant) > 0
                THEN c.email_contact = p_identifiant
@@ -340,7 +409,15 @@ LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public AS $$
       AND c.is_active
       AND c.rh_code_hash IS NOT NULL
       AND lower(c.rh_code_hash) = lower(p_code_hash)
-    LIMIT 1
+    LIMIT 1;
+
+    IF v_id IS NULL THEN
+        PERFORM public.noter_echec_connexion(v_cle);
+    ELSE
+        PERFORM public.effacer_tentatives(v_cle);
+    END IF;
+    RETURN v_id;
+END;
 $$;
 
 CREATE OR REPLACE FUNCTION public.echanger_jeton_salarie(p_token TEXT)
@@ -505,14 +582,29 @@ CREATE POLICY compte_lit_ses_partenariats ON public.restaurants FOR SELECT TO au
     USING (public.jwt_role_app() = 'compte_restaurant' AND compte_id = public.jwt_compte_id());
 
 -- Connexion d'un compte restaurant : téléphone + empreinte du code -> id du compte
+-- v1.8 : plpgsql pour compter les échecs (5 en 15 min → numéro bloqué 15 min, erreur CP429)
 CREATE OR REPLACE FUNCTION public.echanger_acces_compte_restaurant(p_telephone TEXT, p_code_hash TEXT)
 RETURNS UUID
-LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public AS $$
-    SELECT c.id FROM public.comptes_restaurant c
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = public AS $$
+DECLARE
+    v_cle TEXT := 'resto:' || left(trim(coalesce(p_telephone, '')), 50);
+    v_id UUID;
+BEGIN
+    PERFORM public.controler_tentatives(v_cle);
+
+    SELECT c.id INTO v_id FROM public.comptes_restaurant c
     WHERE c.telephone_whatsapp = p_telephone
       AND c.is_active
       AND lower(c.code_hash) = lower(p_code_hash)
-    LIMIT 1
+    LIMIT 1;
+
+    IF v_id IS NULL THEN
+        PERFORM public.noter_echec_connexion(v_cle);
+    ELSE
+        PERFORM public.effacer_tentatives(v_cle);
+    END IF;
+    RETURN v_id;
+END;
 $$;
 
 -- Le RH relie un compte restaurant à son entreprise grâce au code partenaire.

@@ -300,6 +300,27 @@ export interface Database {
           is_active?: boolean;
         };
       };
+      // v1.8 : compteur d'échecs de connexion, lu et écrit uniquement par les fonctions SQL
+      // (controler_tentatives, noter_echec_connexion, effacer_tentatives) : aucune politique RLS
+      tentatives_connexion: {
+        Row: {
+          cle: string;
+          echecs: number;
+          premier_echec_at: string;
+          bloque_jusqu_a: string | null;
+        };
+        Insert: {
+          cle: string;
+          echecs?: number;
+          premier_echec_at?: string;
+          bloque_jusqu_a?: string | null;
+        };
+        Update: {
+          echecs?: number;
+          premier_echec_at?: string;
+          bloque_jusqu_a?: string | null;
+        };
+      };
       plats_restaurant: {
         Row: {
           id: string;
