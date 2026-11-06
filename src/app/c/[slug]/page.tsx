@@ -29,9 +29,10 @@ export default async function CompanyPortalPage({ params }: PageProps) {
     notFound();
   }
 
+  // Jamais le token : ce composant serveur passe la liste au navigateur, et le portail est public
   const { data: emps } = await supabase
     .from("employes")
-    .select("id, nom, token")
+    .select("id, nom, service")
     .eq("company_id", comp.id)
     .eq("is_active", true)
     .order("nom");
