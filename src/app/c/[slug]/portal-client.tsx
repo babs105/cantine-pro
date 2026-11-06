@@ -1,14 +1,14 @@
 "use client";
 
 import { useState, useTransition } from "react";
-import Link from "next/link";
-import { Utensils, Search, User, ArrowRight, UserPlus, Clock } from "lucide-react";
+import { Utensils, Search, User, UserPlus, Clock, MessageCircle } from "lucide-react";
 import { inscriptionEmployeAction } from "./actions";
 
+/** Le lien personnel (token) n'est jamais envoyé au navigateur depuis le portail : le RH l'envoie par WhatsApp */
 interface EmployeBasic {
   id: string;
   nom: string;
-  token: string;
+  service: string | null;
 }
 
 interface PortalClientProps {
@@ -25,8 +25,9 @@ export function EnterprisePortalClient({
   company,
   employes: initialEmployes,
 }: PortalClientProps) {
-  const [employes, setEmployes] = useState<EmployeBasic[]>(initialEmployes);
+  const [employes] = useState<EmployeBasic[]>(initialEmployes);
   const [search, setSearch] = useState("");
+  const [profilChoisi, setProfilChoisi] = useState<string | null>(null);
   const [showAddModal, setShowAddModal] = useState(false);
   const [newNom, setNewNom] = useState("");
   const [newTel, setNewTel] = useState("");
@@ -44,7 +45,7 @@ export function EnterprisePortalClient({
       const res = await inscriptionEmployeAction(company.slug, newNom.trim(), newTel.trim() || undefined);
       const nouvelEmploye = res.employe;
       if (res.success && nouvelEmploye) {
-        setEmployes((prev) => [nouvelEmploye, ...prev]);
+        // Seul le salarié qui vient de s'inscrire reçoit son propre lien
         window.location.href = `/p/${nouvelEmploye.token}`;
       } else {
         window.alert(res.message || "Inscription impossible, contactez votre RH.");
@@ -109,25 +110,40 @@ export function EnterprisePortalClient({
             ) : (
               <div className="space-y-2 max-h-80 overflow-y-auto pr-1">
                 {filteredEmployes.map((emp) => (
-                  <Link
-                    key={emp.id}
-                    href={`/p/${emp.token}`}
-                    className="flex items-center justify-between p-3.5 bg-white rounded-2xl border border-neutral-100 hover:border-orange-300 hover:shadow-xs active:scale-98 transition group"
-                  >
-                    <div className="flex items-center gap-3">
-                      <div className="w-8 h-8 rounded-full bg-orange-100 text-orange-700 flex items-center justify-center font-bold text-xs">
-                        <User className="w-4 h-4" />
+                  <div key={emp.id} className="bg-white rounded-2xl border border-neutral-100">
+                    <button
+                      type="button"
+                      onClick={() => setProfilChoisi(profilChoisi === emp.id ? null : emp.id)}
+                      className="w-full flex items-center justify-between p-3.5 text-left hover:bg-orange-50/50 rounded-2xl transition group"
+                    >
+                      <div className="flex items-center gap-3">
+                        <div className="w-8 h-8 rounded-full bg-orange-100 text-orange-700 flex items-center justify-center font-bold text-xs">
+                          <User className="w-4 h-4" />
+                        </div>
+                        <div>
+                          <span className="block font-bold text-neutral-800 text-xs group-hover:text-orange-600 transition">
+                            {emp.nom}
+                          </span>
+                          {emp.service && (
+                            <span className="block text-[11px] text-neutral-400">{emp.service}</span>
+                          )}
+                        </div>
                       </div>
-                      <span className="font-bold text-neutral-800 text-xs group-hover:text-orange-600 transition">
-                        {emp.nom}
+                      <span className="text-xs font-semibold text-neutral-400 group-hover:text-orange-600 transition">
+                        C&apos;est moi
                       </span>
-                    </div>
+                    </button>
 
-                    <div className="flex items-center gap-1 text-xs font-semibold text-neutral-400 group-hover:text-orange-600 transition">
-                      <span>Commander</span>
-                      <ArrowRight className="w-3.5 h-3.5" />
-                    </div>
-                  </Link>
+                    {profilChoisi === emp.id && (
+                      <div className="mx-3.5 mb-3.5 p-3 bg-orange-50 rounded-xl flex gap-2 text-xs text-orange-900">
+                        <MessageCircle className="w-4 h-4 shrink-0 text-orange-600 mt-0.5" />
+                        <p>
+                          Vous êtes déjà inscrit. Votre lien personnel de commande vous est envoyé par votre RH
+                          sur WhatsApp : retrouvez-le dans vos messages ou demandez-le à votre RH.
+                        </p>
+                      </div>
+                    )}
+                  </div>
                 ))}
               </div>
             )}
