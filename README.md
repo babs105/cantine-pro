@@ -97,10 +97,15 @@ Une entreprise s'inscrit seule sur **`/inscription`** (14 jours d'essai, offre S
 connecte ensuite avec son identifiant ou son e-mail. Pour ouvrir une entreprise à la main, dans l'éditeur SQL Supabase :
 
 ```sql
-INSERT INTO public.companies (nom, slug, heure_ouverture_vote, heure_limite_vote, rh_code_hash)
-VALUES ('Nom Entreprise', 'nom-entreprise', '08:00', '11:10',
-        encode(digest('CODE-SECRET-RH', 'sha256'), 'hex'))
-RETURNING id;
+-- Le code d'accès RH est stocké à part (table acces_rh, illisible par les rôles applicatifs)
+WITH c AS (
+    INSERT INTO public.companies (nom, slug, heure_ouverture_vote, heure_limite_vote)
+    VALUES ('Nom Entreprise', 'nom-entreprise', '08:00', '11:10')
+    RETURNING id
+)
+INSERT INTO public.acces_rh (company_id, code_hash)
+SELECT id, encode(digest('CODE-SECRET-RH', 'sha256'), 'hex') FROM c
+RETURNING company_id;
 ```
 
 Le RH se connecte sur `/rh/login` avec le slug + le code, puis ajoute ses restaurants partenaires

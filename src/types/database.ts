@@ -33,7 +33,6 @@ export interface Database {
           traiteur_telephone: string | null;
           trial_ends_at: string;
           is_active: boolean;
-          rh_code_hash: string | null;
           traiteur_token: string;
           responsable_nom: string | null;
           email_contact: string | null;
@@ -56,7 +55,6 @@ export interface Database {
           traiteur_telephone?: string | null;
           trial_ends_at?: string;
           is_active?: boolean;
-          rh_code_hash?: string | null;
           traiteur_token?: string;
           responsable_nom?: string | null;
           email_contact?: string | null;
@@ -79,7 +77,6 @@ export interface Database {
           traiteur_telephone?: string | null;
           trial_ends_at?: string;
           is_active?: boolean;
-          rh_code_hash?: string | null;
           traiteur_token?: string;
           responsable_nom?: string | null;
           email_contact?: string | null;
