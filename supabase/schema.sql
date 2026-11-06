@@ -1,6 +1,7 @@
 -- ==============================================================================
 -- CANTINE PRO — SCHÉMA SUPABASE (Sprint Fast-Track 10 Jours)
--- Version: 1.3 — auth RH, restaurants partenaires, clôtures, inscription & abonnements
+-- Version: 1.9 — auth RH, restaurants partenaires, clôtures, inscription & abonnements,
+--                comptes restaurant, limite des tentatives, durcissement RLS (audit v1.9)
 -- ==============================================================================
 
 -- Extension pour la génération automatique de tokens aléatoires sécurisés si besoin
@@ -366,6 +367,78 @@ REVOKE EXECUTE ON FUNCTION public.effacer_tentatives(TEXT) FROM PUBLIC, anon, au
 GRANT EXECUTE ON FUNCTION public.controler_tentatives(TEXT) TO service_role;
 GRANT EXECUTE ON FUNCTION public.noter_echec_connexion(TEXT) TO service_role;
 GRANT EXECUTE ON FUNCTION public.effacer_tentatives(TEXT) TO service_role;
+
+-- v1.9 : durcissement après l'audit de la base (partie structure).
+-- Les fonctions, triggers et politiques de la v1.9 sont en fin de fichier : placés ici, ils seraient
+-- écrasés à chaque relance par les CREATE OR REPLACE / CREATE POLICY de la section 9.
+
+-- E-mail de connexion RH unique, sans tenir compte de la casse (index créé seulement sans doublon)
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM public.companies WHERE email_contact IS NOT NULL
+               GROUP BY lower(email_contact) HAVING count(*) > 1) THEN
+        RAISE WARNING 'Doublons dans companies.email_contact : index UNIQUE non créé, dédoublonner puis relancer.';
+    ELSE
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_companies_email_contact
+            ON public.companies (lower(email_contact)) WHERE email_contact IS NOT NULL;
+    END IF;
+END $$;
+
+-- Historique de facturation conservé : plus de suppression en cascade des clôtures et paiements
+DO $$
+DECLARE r RECORD;
+BEGIN
+    FOR r IN
+        SELECT c.conrelid::regclass AS tbl, c.confrelid::regclass AS cible, c.conname, a.attname
+        FROM pg_constraint c
+        JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = c.conkey[1]
+        WHERE c.contype = 'f' AND c.confdeltype <> 'r'
+          AND ((c.conrelid = 'public.clotures'::regclass
+                AND c.confrelid IN ('public.restaurants'::regclass, 'public.companies'::regclass))
+            OR (c.conrelid = 'public.paiements'::regclass AND c.confrelid = 'public.companies'::regclass))
+    LOOP
+        EXECUTE format('ALTER TABLE %s DROP CONSTRAINT %I', r.tbl, r.conname);
+        EXECUTE format('ALTER TABLE %s ADD CONSTRAINT %I FOREIGN KEY (%I) REFERENCES %s(id) ON DELETE RESTRICT',
+                       r.tbl, r.conname, r.attname, r.cible);
+    END LOOP;
+END $$;
+
+-- Code partenaire des nouveaux comptes : 48 bits au lieu de 32 (les codes existants restent valides)
+ALTER TABLE public.comptes_restaurant
+    ALTER COLUMN code_partenaire SET DEFAULT upper(encode(gen_random_bytes(6), 'hex'));
+
+-- Invariants (NOT VALID : les lignes existantes ne sont pas contrôlées, les nouvelles écritures oui)
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'commandes_choisi_a_un_plat') THEN
+        ALTER TABLE public.commandes ADD CONSTRAINT commandes_choisi_a_un_plat
+            CHECK (statut <> 'choisi' OR plat_id IS NOT NULL) NOT VALID;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'clotures_confirme_par_renseigne') THEN
+        ALTER TABLE public.clotures ADD CONSTRAINT clotures_confirme_par_renseigne
+            CHECK (confirme_at IS NULL OR confirme_par IS NOT NULL) NOT VALID;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'clotures_total_repas_positif') THEN
+        ALTER TABLE public.clotures ADD CONSTRAINT clotures_total_repas_positif
+            CHECK (total_repas >= 0) NOT VALID;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'paiements_montant_positif') THEN
+        ALTER TABLE public.paiements ADD CONSTRAINT paiements_montant_positif
+            CHECK (montant > 0) NOT VALID;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'menus_prix_positif') THEN
+        ALTER TABLE public.menus_du_jour ADD CONSTRAINT menus_prix_positif
+            CHECK (prix_unitaire >= 0) NOT VALID;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'plats_restaurant_prix_positif') THEN
+        ALTER TABLE public.plats_restaurant ADD CONSTRAINT plats_restaurant_prix_positif
+            CHECK (prix_unitaire >= 0) NOT VALID;
+    END IF;
+END $$;
+
+-- Index des clés étrangères filtrées par la RLS et par les suppressions de plats
+CREATE INDEX IF NOT EXISTS idx_commandes_plat ON public.commandes(plat_id);
+CREATE INDEX IF NOT EXISTS idx_menus_restaurant ON public.menus_du_jour(restaurant_id, date);
 
 -- 8. SÉCURITÉ : RLS ACTIVÉE SUR TOUTES LES TABLES
 -- Les politiques (section 9) n'ouvrent l'accès qu'aux requêtes portant un JWT signé par le serveur
@@ -734,3 +807,221 @@ GRANT EXECUTE ON FUNCTION public.rattacher_compte_restaurant(TEXT, TIME) TO auth
 GRANT EXECUTE ON FUNCTION public.synchroniser_compte_restaurant() TO authenticated;
 REVOKE EXECUTE ON FUNCTION public.relier_lien_restaurant(TEXT) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION public.relier_lien_restaurant(TEXT) TO authenticated;
+
+-- ==============================================================================
+-- v1.9 : durcissement après l'audit de la base (fonctions, triggers, politiques).
+-- Bloc volontairement en fin de fichier : il remplace des objets de la section 9 et doit donc
+-- s'exécuter après eux à chaque relance. Garder ce bloc (et les suivants) en dernier.
+-- ==============================================================================
+
+-- 1. Échanges de jetons : entreprise, partenariat et compte restaurant doivent être actifs
+CREATE OR REPLACE FUNCTION public.echanger_jeton_salarie(p_token TEXT)
+RETURNS TABLE (employe_id UUID, company_id UUID)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public AS $$
+    SELECT e.id, e.company_id FROM public.employes e
+    JOIN public.companies c ON c.id = e.company_id
+    WHERE e.token = p_token AND e.is_active AND c.is_active
+    LIMIT 1
+$$;
+
+CREATE OR REPLACE FUNCTION public.echanger_jeton_restaurant(p_token TEXT)
+RETURNS TABLE (restaurant_id UUID, company_id UUID)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public AS $$
+    SELECT r.id, r.company_id FROM public.restaurants r
+    JOIN public.companies c ON c.id = r.company_id
+    LEFT JOIN public.comptes_restaurant cr ON cr.id = r.compte_id
+    WHERE r.token = p_token AND r.is_active AND c.is_active
+      AND (r.compte_id IS NULL OR cr.is_active)
+    LIMIT 1
+$$;
+
+-- Connexion RH : e-mail comparé sans tenir compte de la casse (index unique lower(email_contact))
+CREATE OR REPLACE FUNCTION public.echanger_acces_rh(p_identifiant TEXT, p_code_hash TEXT)
+RETURNS UUID
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = public AS $$
+DECLARE
+    v_ident TEXT := lower(trim(coalesce(p_identifiant, '')));
+    v_cle TEXT := 'rh:' || left(v_ident, 100);
+    v_id UUID;
+BEGIN
+    PERFORM pg_advisory_xact_lock(hashtextextended(v_cle, 0));
+    PERFORM public.controler_tentatives(v_cle);
+
+    SELECT c.id INTO v_id
+    FROM public.companies c
+    WHERE CASE WHEN position('@' IN v_ident) > 0
+               THEN lower(c.email_contact) = v_ident
+               ELSE c.slug = v_ident END
+      AND c.is_active
+      AND c.rh_code_hash IS NOT NULL
+      AND lower(c.rh_code_hash) = lower(p_code_hash)
+    LIMIT 1;
+
+    IF v_id IS NULL THEN
+        PERFORM public.noter_echec_connexion(v_cle);
+    ELSE
+        PERFORM public.effacer_tentatives(v_cle);
+    END IF;
+    RETURN v_id;
+END;
+$$;
+
+REVOKE EXECUTE ON FUNCTION public.echanger_jeton_salarie(TEXT) FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION public.echanger_jeton_restaurant(TEXT) FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION public.echanger_acces_rh(TEXT, TEXT) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.echanger_jeton_salarie(TEXT) TO anon, authenticated, service_role;
+GRANT EXECUTE ON FUNCTION public.echanger_jeton_restaurant(TEXT) TO anon, authenticated, service_role;
+GRANT EXECUTE ON FUNCTION public.echanger_acces_rh(TEXT, TEXT) TO anon, authenticated, service_role;
+
+-- 2. Clôtures : le restaurant ne peut que confirmer (aucune autre colonne, pas de retour en arrière)
+CREATE OR REPLACE FUNCTION public.proteger_cloture_restaurant()
+RETURNS TRIGGER LANGUAGE plpgsql SET search_path = public AS $$
+BEGIN
+    IF public.jwt_role_app() = 'restaurant' THEN
+        IF NEW.company_id IS DISTINCT FROM OLD.company_id
+           OR NEW.restaurant_id IS DISTINCT FROM OLD.restaurant_id
+           OR NEW.date IS DISTINCT FROM OLD.date
+           OR NEW.recap IS DISTINCT FROM OLD.recap
+           OR NEW.total_repas IS DISTINCT FROM OLD.total_repas
+           OR NEW.message IS DISTINCT FROM OLD.message
+           OR NEW.envoi_statut IS DISTINCT FROM OLD.envoi_statut
+           OR NEW.envoi_erreur IS DISTINCT FROM OLD.envoi_erreur
+           OR NEW.envoye_at IS DISTINCT FROM OLD.envoye_at
+           OR NEW.created_at IS DISTINCT FROM OLD.created_at THEN
+            RAISE EXCEPTION 'Un restaurant ne peut que confirmer sa commande.';
+        END IF;
+        IF OLD.confirme_at IS NOT NULL THEN
+            NEW.confirme_at := OLD.confirme_at;
+            NEW.confirme_par := OLD.confirme_par;
+        ELSIF NEW.confirme_at IS NOT NULL THEN
+            NEW.confirme_par := 'restaurant';
+        END IF;
+    END IF;
+    RETURN NEW;
+END;
+$$;
+DROP TRIGGER IF EXISTS trg_proteger_cloture_restaurant ON public.clotures;
+CREATE TRIGGER trg_proteger_cloture_restaurant
+    BEFORE UPDATE ON public.clotures
+    FOR EACH ROW EXECUTE FUNCTION public.proteger_cloture_restaurant();
+
+DROP POLICY IF EXISTS restaurant_confirme_ses_clotures ON public.clotures;
+CREATE POLICY restaurant_confirme_ses_clotures ON public.clotures FOR UPDATE TO authenticated
+    USING (public.jwt_role_app() = 'restaurant' AND restaurant_id = public.jwt_restaurant_id()
+           AND company_id = public.jwt_company_id())
+    WITH CHECK (public.jwt_role_app() = 'restaurant' AND restaurant_id = public.jwt_restaurant_id()
+                AND company_id = public.jwt_company_id());
+
+-- 3. Compte restaurant : is_active et code partenaire réservés au SuperAdmin
+CREATE OR REPLACE FUNCTION public.proteger_fiche_compte_restaurant()
+RETURNS TRIGGER LANGUAGE plpgsql SET search_path = public AS $$
+BEGIN
+    IF public.jwt_role_app() = 'compte_restaurant'
+       AND (NEW.id IS DISTINCT FROM OLD.id
+            OR NEW.code_partenaire IS DISTINCT FROM OLD.code_partenaire
+            OR NEW.is_active IS DISTINCT FROM OLD.is_active
+            OR NEW.created_at IS DISTINCT FROM OLD.created_at) THEN
+        RAISE EXCEPTION 'Colonne réservée à la console SuperAdmin.';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+DROP TRIGGER IF EXISTS trg_proteger_fiche_compte_restaurant ON public.comptes_restaurant;
+CREATE TRIGGER trg_proteger_fiche_compte_restaurant
+    BEFORE UPDATE ON public.comptes_restaurant
+    FOR EACH ROW EXECUTE FUNCTION public.proteger_fiche_compte_restaurant();
+
+-- 4. Entreprise : abonnement, activation et slug réservés au SuperAdmin (service_role, sans role_app)
+CREATE OR REPLACE FUNCTION public.proteger_colonnes_companies()
+RETURNS TRIGGER LANGUAGE plpgsql SET search_path = public AS $$
+BEGIN
+    IF public.jwt_role_app() IS NOT NULL
+       AND (NEW.id IS DISTINCT FROM OLD.id
+            OR NEW.slug IS DISTINCT FROM OLD.slug
+            OR NEW.plan IS DISTINCT FROM OLD.plan
+            OR NEW.statut_abonnement IS DISTINCT FROM OLD.statut_abonnement
+            OR NEW.abonnement_fin IS DISTINCT FROM OLD.abonnement_fin
+            OR NEW.trial_ends_at IS DISTINCT FROM OLD.trial_ends_at
+            OR NEW.is_active IS DISTINCT FROM OLD.is_active
+            OR NEW.traiteur_token IS DISTINCT FROM OLD.traiteur_token
+            OR NEW.code_acces IS DISTINCT FROM OLD.code_acces
+            OR NEW.created_at IS DISTINCT FROM OLD.created_at) THEN
+        RAISE EXCEPTION 'Colonne réservée à la console SuperAdmin.';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+DROP TRIGGER IF EXISTS trg_proteger_colonnes_companies ON public.companies;
+CREATE TRIGGER trg_proteger_colonnes_companies
+    BEFORE UPDATE ON public.companies
+    FOR EACH ROW EXECUTE FUNCTION public.proteger_colonnes_companies();
+
+-- Lecture de la fiche entreprise limitée aux rôles qui en ont besoin (avant : tout JWT portant company_id)
+DROP POLICY IF EXISTS rh_lit_son_entreprise ON public.companies;
+CREATE POLICY rh_lit_son_entreprise ON public.companies FOR SELECT TO authenticated
+    USING (public.jwt_role_app() IN ('rh', 'salarie', 'restaurant', 'portail') AND id = public.jwt_company_id());
+
+-- 5. Un restaurant ne lit que les commandes de ses plats et ses propres menus
+DROP POLICY IF EXISTS restaurant_lit_les_commandes ON public.commandes;
+CREATE POLICY restaurant_lit_les_commandes ON public.commandes FOR SELECT TO authenticated
+    USING (public.jwt_role_app() = 'restaurant' AND company_id = public.jwt_company_id()
+           AND plat_id IN (SELECT m.id FROM public.menus_du_jour m
+                           WHERE m.restaurant_id = public.jwt_restaurant_id()));
+
+DROP POLICY IF EXISTS salarie_et_restaurant_lisent_les_menus ON public.menus_du_jour;
+DROP POLICY IF EXISTS salarie_lit_les_menus ON public.menus_du_jour;
+CREATE POLICY salarie_lit_les_menus ON public.menus_du_jour FOR SELECT TO authenticated
+    USING (public.jwt_role_app() = 'salarie' AND company_id = public.jwt_company_id());
+DROP POLICY IF EXISTS restaurant_lit_ses_menus ON public.menus_du_jour;
+CREATE POLICY restaurant_lit_ses_menus ON public.menus_du_jour FOR SELECT TO authenticated
+    USING (public.jwt_role_app() = 'restaurant' AND company_id = public.jwt_company_id()
+           AND restaurant_id = public.jwt_restaurant_id());
+
+-- 6. Rattachement par code partenaire : limite de tentatives par entreprise (5 échecs → 15 min)
+CREATE OR REPLACE FUNCTION public.rattacher_compte_restaurant(p_code TEXT, p_heure_livraison TIME)
+RETURNS UUID
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = public AS $$
+DECLARE
+    v_compte public.comptes_restaurant%ROWTYPE;
+    v_company UUID := public.jwt_company_id();
+    v_cle TEXT;
+    v_id UUID;
+BEGIN
+    IF public.jwt_role_app() IS DISTINCT FROM 'rh' OR v_company IS NULL THEN
+        RAISE EXCEPTION 'Accès refusé';
+    END IF;
+    v_cle := 'partenaire:' || v_company::text;
+    PERFORM pg_advisory_xact_lock(hashtextextended(v_cle, 0));
+    PERFORM public.controler_tentatives(v_cle);
+
+    SELECT * INTO v_compte FROM public.comptes_restaurant
+    WHERE code_partenaire = upper(trim(p_code)) AND is_active;
+    IF NOT FOUND THEN
+        PERFORM public.noter_echec_connexion(v_cle);
+        RETURN NULL;
+    END IF;
+    PERFORM public.effacer_tentatives(v_cle);
+
+    PERFORM set_config('cantine.rattachement', 'on', true);
+
+    SELECT id INTO v_id FROM public.restaurants WHERE company_id = v_company AND compte_id = v_compte.id;
+    IF v_id IS NOT NULL THEN
+        UPDATE public.restaurants SET is_active = true WHERE id = v_id;
+        RETURN v_id;
+    END IF;
+
+    INSERT INTO public.restaurants (company_id, nom, telephone_whatsapp, heure_livraison, compte_id)
+    VALUES (v_company, v_compte.nom, v_compte.telephone_whatsapp, COALESCE(p_heure_livraison, '12:30:00'), v_compte.id)
+    RETURNING id INTO v_id;
+    RETURN v_id;
+END;
+$$;
+
+-- 7. Droits : Supabase accorde EXECUTE et les tables à anon par défaut, REVOKE FROM PUBLIC ne suffit pas
+REVOKE EXECUTE ON FUNCTION public.rattacher_compte_restaurant(TEXT, TIME) FROM PUBLIC, anon;
+REVOKE EXECUTE ON FUNCTION public.synchroniser_compte_restaurant() FROM PUBLIC, anon;
+REVOKE EXECUTE ON FUNCTION public.relier_lien_restaurant(TEXT) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.rattacher_compte_restaurant(TEXT, TIME) TO authenticated;
+-- anon ne lit aucune table (seules les fonctions echanger_* lui sont ouvertes) ; la RLS reste le filet
+REVOKE ALL ON ALL TABLES IN SCHEMA public FROM anon;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE ALL ON TABLES FROM anon;
