@@ -41,12 +41,12 @@ export async function confirmerPreparationAction(
     return { success: false, message: LIEN_INVALIDE };
   }
 
-  const confirmeAt = new Date().toISOString();
+  // L'heure enregistrée est fixée par la base (trigger proteger_cloture_restaurant)
   const { data, error } = await (acces.supabase.from("clotures") as any)
-    .update({ confirme_at: confirmeAt, confirme_par: "restaurant" })
+    .update({ confirme_at: new Date().toISOString(), confirme_par: "restaurant" })
     .eq("restaurant_id", acces.restaurantId)
     .eq("date", todayDakar())
-    .select("id");
+    .select("id, confirme_at");
 
   if (error) {
     return { success: false, message: error.message };
@@ -56,7 +56,7 @@ export async function confirmerPreparationAction(
   }
 
   revaliderCible(cible);
-  return { success: true, confirmeAt };
+  return { success: true, confirmeAt: data[0].confirme_at };
 }
 
 export interface PlatCarte {

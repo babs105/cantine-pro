@@ -492,6 +492,9 @@ export async function rattacherRestaurantParCodeAction(
     p_code: codePropre,
     p_heure_livraison: heure,
   });
+  if (error?.code === "CP429") {
+    return { success: false, message: "Trop de codes partenaires incorrects. Réessayez dans 15 minutes." };
+  }
   if (error) return { success: false, message: "Impossible d'ajouter ce restaurant." };
   if (!restaurantId) return { success: false, message: "Code partenaire inconnu : vérifiez-le auprès du restaurant." };
 

@@ -1,10 +1,37 @@
 -- ==============================================================================
 -- CANTINE PRO — SCHÉMA SUPABASE (Sprint Fast-Track 10 Jours)
--- Version: 1.3 — auth RH, restaurants partenaires, clôtures, inscription & abonnements
+-- Version: 1.9 — auth RH, restaurants partenaires, clôtures, inscription & abonnements,
+--                comptes restaurant, limite des tentatives, durcissement RLS (audit v1.9)
 -- ==============================================================================
 
 -- Extension pour la génération automatique de tokens aléatoires sécurisés si besoin
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";
+
+-- v1.9 : migrations de données exécutées une seule fois.
+-- Ce script est relancé en entier : un UPDATE / INSERT de données nu se rejoue à chaque relance
+-- (restaurant fantôme, heure limite remise à 11h10, menus réattribués...). Chaque migration de
+-- données est donc enveloppée dans un bloc DO qui consulte cette table, puis s'y inscrit.
+-- Créée en tête de fichier car les blocs concernés sont plus bas.
+-- Première création sur une base existante (production, déjà en v1.8) : les migrations de données
+-- historiques sont marquées comme faites SANS être rejouées. Sur une base neuve (companies absente),
+-- rien n'est marqué : elles s'exécutent une fois, sur des tables vides.
+DO $$
+BEGIN
+    IF to_regclass('public.schema_migrations') IS NULL THEN
+        CREATE TABLE public.schema_migrations (
+            nom TEXT PRIMARY KEY,
+            applique_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        );
+        IF to_regclass('public.companies') IS NOT NULL THEN
+            INSERT INTO public.schema_migrations (nom) VALUES
+                ('v1.2-heure-limite-11h10'),
+                ('v1.2-traiteur-vers-restaurant'),
+                ('v1.7-acces-demo');
+        END IF;
+    END IF;
+END $$;
+-- Table technique : aucun rôle applicatif n'y accède (RLS activée en section 8, aucune politique)
+REVOKE ALL ON public.schema_migrations FROM PUBLIC, anon, authenticated;
 
 -- 1. TABLE DES ENTREPRISES PILOTES
 CREATE TABLE IF NOT EXISTS public.companies (
@@ -122,7 +149,15 @@ ALTER TABLE public.companies
 
 -- Les votes ferment à 11h10, heure de l'envoi aux restaurants (ancien défaut : 11h00)
 ALTER TABLE public.companies ALTER COLUMN heure_limite_vote SET DEFAULT '11:10:00';
-UPDATE public.companies SET heure_limite_vote = '11:10:00' WHERE heure_limite_vote = '11:00:00';
+-- Exécuté une seule fois (v1.9, voir schema_migrations) : sinon une entreprise qui choisit 11h00
+-- serait remise à 11h10 à chaque relance
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM public.schema_migrations WHERE nom = 'v1.2-heure-limite-11h10') THEN
+        UPDATE public.companies SET heure_limite_vote = '11:10:00' WHERE heure_limite_vote = '11:00:00';
+        INSERT INTO public.schema_migrations (nom) VALUES ('v1.2-heure-limite-11h10');
+    END IF;
+END $$;
 
 CREATE TABLE IF NOT EXISTS public.restaurants (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -145,26 +180,35 @@ ALTER TABLE public.clotures
 
 -- Migration : l'ancien traiteur unique devient le premier restaurant de l'entreprise.
 -- Son token est repris : les liens /resto/... déjà envoyés continuent de fonctionner.
-INSERT INTO public.restaurants (company_id, nom, telephone_whatsapp, heure_livraison, token)
-SELECT c.id,
-       COALESCE(c.traiteur_nom, 'Restaurant partenaire'),
-       c.traiteur_telephone,
-       COALESCE(c.heure_livraison_souhaitee, '12:30:00'),
-       COALESCE(c.traiteur_token, encode(gen_random_bytes(12), 'hex'))
-FROM public.companies c
-WHERE NOT EXISTS (SELECT 1 FROM public.restaurants r WHERE r.company_id = c.id);
+-- Exécuté une seule fois (v1.9, voir schema_migrations) : sinon chaque relance créait un restaurant
+-- fantôme pour toute entreprise sans restaurant et réattribuait les menus d'un restaurant supprimé
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM public.schema_migrations WHERE nom = 'v1.2-traiteur-vers-restaurant') THEN
+        INSERT INTO public.restaurants (company_id, nom, telephone_whatsapp, heure_livraison, token)
+        SELECT c.id,
+               COALESCE(c.traiteur_nom, 'Restaurant partenaire'),
+               c.traiteur_telephone,
+               COALESCE(c.heure_livraison_souhaitee, '12:30:00'),
+               COALESCE(c.traiteur_token, encode(gen_random_bytes(12), 'hex'))
+        FROM public.companies c
+        WHERE NOT EXISTS (SELECT 1 FROM public.restaurants r WHERE r.company_id = c.id);
 
-UPDATE public.menus_du_jour m
-SET restaurant_id = (
-    SELECT r.id FROM public.restaurants r WHERE r.company_id = m.company_id ORDER BY r.created_at LIMIT 1
-)
-WHERE m.restaurant_id IS NULL;
+        UPDATE public.menus_du_jour m
+        SET restaurant_id = (
+            SELECT r.id FROM public.restaurants r WHERE r.company_id = m.company_id ORDER BY r.created_at LIMIT 1
+        )
+        WHERE m.restaurant_id IS NULL;
 
-UPDATE public.clotures cl
-SET restaurant_id = (
-    SELECT r.id FROM public.restaurants r WHERE r.company_id = cl.company_id ORDER BY r.created_at LIMIT 1
-)
-WHERE cl.restaurant_id IS NULL;
+        UPDATE public.clotures cl
+        SET restaurant_id = (
+            SELECT r.id FROM public.restaurants r WHERE r.company_id = cl.company_id ORDER BY r.created_at LIMIT 1
+        )
+        WHERE cl.restaurant_id IS NULL;
+
+        INSERT INTO public.schema_migrations (nom) VALUES ('v1.2-traiteur-vers-restaurant');
+    END IF;
+END $$;
 
 -- Une clôture par restaurant et par jour (au lieu d'une par entreprise)
 ALTER TABLE public.clotures DROP CONSTRAINT IF EXISTS unique_cloture_company_jour;
@@ -282,14 +326,22 @@ END $$;
 -- v1.7 : suppression des accès de démonstration (code RH et liens salariés publiés dans le dépôt).
 -- Les liens token-demo-* sont désactivés et remplacés par un token aléatoire ; le code RH de démo
 -- n'est retiré que s'il n'a jamais été changé (une entreprise qui l'a changé garde le sien).
-UPDATE public.employes
-SET token = encode(gen_random_bytes(8), 'hex'), is_active = false
-WHERE token LIKE 'token-demo-%';
+-- Exécuté une seule fois (v1.9, voir schema_migrations)
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM public.schema_migrations WHERE nom = 'v1.7-acces-demo') THEN
+        UPDATE public.employes
+        SET token = encode(gen_random_bytes(8), 'hex'), is_active = false
+        WHERE token LIKE 'token-demo-%';
 
-UPDATE public.companies
-SET rh_code_hash = NULL
-WHERE slug = 'pilote-thies'
-  AND rh_code_hash = encode(digest('pilote-thies-2026', 'sha256'), 'hex');
+        UPDATE public.companies
+        SET rh_code_hash = NULL
+        WHERE slug = 'pilote-thies'
+          AND rh_code_hash = encode(digest('pilote-thies-2026', 'sha256'), 'hex');
+
+        INSERT INTO public.schema_migrations (nom) VALUES ('v1.7-acces-demo');
+    END IF;
+END $$;
 
 -- v1.8 : limite des tentatives de connexion (Espace RH, compte restaurant, SuperAdmin).
 -- Le compteur est en base et non dans Next.js : la clé anon est publique et echanger_acces_* peut être
@@ -367,6 +419,78 @@ GRANT EXECUTE ON FUNCTION public.controler_tentatives(TEXT) TO service_role;
 GRANT EXECUTE ON FUNCTION public.noter_echec_connexion(TEXT) TO service_role;
 GRANT EXECUTE ON FUNCTION public.effacer_tentatives(TEXT) TO service_role;
 
+-- v1.9 : durcissement après l'audit de la base (partie structure).
+-- Les fonctions, triggers et politiques de la v1.9 sont en fin de fichier : placés ici, ils seraient
+-- écrasés à chaque relance par les CREATE OR REPLACE / CREATE POLICY de la section 9.
+
+-- E-mail de connexion RH unique, sans tenir compte de la casse (index créé seulement sans doublon)
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM public.companies WHERE email_contact IS NOT NULL
+               GROUP BY lower(email_contact) HAVING count(*) > 1) THEN
+        RAISE WARNING 'Doublons dans companies.email_contact : index UNIQUE non créé, dédoublonner puis relancer.';
+    ELSE
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_companies_email_contact
+            ON public.companies (lower(email_contact)) WHERE email_contact IS NOT NULL;
+    END IF;
+END $$;
+
+-- Historique de facturation conservé : plus de suppression en cascade des clôtures et paiements
+DO $$
+DECLARE r RECORD;
+BEGIN
+    FOR r IN
+        SELECT c.conrelid::regclass AS tbl, c.confrelid::regclass AS cible, c.conname, a.attname
+        FROM pg_constraint c
+        JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = c.conkey[1]
+        WHERE c.contype = 'f' AND c.confdeltype <> 'r'
+          AND ((c.conrelid = 'public.clotures'::regclass
+                AND c.confrelid IN ('public.restaurants'::regclass, 'public.companies'::regclass))
+            OR (c.conrelid = 'public.paiements'::regclass AND c.confrelid = 'public.companies'::regclass))
+    LOOP
+        EXECUTE format('ALTER TABLE %s DROP CONSTRAINT %I', r.tbl, r.conname);
+        EXECUTE format('ALTER TABLE %s ADD CONSTRAINT %I FOREIGN KEY (%I) REFERENCES %s(id) ON DELETE RESTRICT',
+                       r.tbl, r.conname, r.attname, r.cible);
+    END LOOP;
+END $$;
+
+-- Code partenaire des nouveaux comptes : 48 bits au lieu de 32 (les codes existants restent valides)
+ALTER TABLE public.comptes_restaurant
+    ALTER COLUMN code_partenaire SET DEFAULT upper(encode(gen_random_bytes(6), 'hex'));
+
+-- Invariants (NOT VALID : les lignes existantes ne sont pas contrôlées, les nouvelles écritures oui)
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'commandes_choisi_a_un_plat') THEN
+        ALTER TABLE public.commandes ADD CONSTRAINT commandes_choisi_a_un_plat
+            CHECK (statut <> 'choisi' OR plat_id IS NOT NULL) NOT VALID;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'clotures_confirme_par_renseigne') THEN
+        ALTER TABLE public.clotures ADD CONSTRAINT clotures_confirme_par_renseigne
+            CHECK (confirme_at IS NULL OR confirme_par IS NOT NULL) NOT VALID;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'clotures_total_repas_positif') THEN
+        ALTER TABLE public.clotures ADD CONSTRAINT clotures_total_repas_positif
+            CHECK (total_repas >= 0) NOT VALID;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'paiements_montant_positif') THEN
+        ALTER TABLE public.paiements ADD CONSTRAINT paiements_montant_positif
+            CHECK (montant > 0) NOT VALID;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'menus_prix_positif') THEN
+        ALTER TABLE public.menus_du_jour ADD CONSTRAINT menus_prix_positif
+            CHECK (prix_unitaire >= 0) NOT VALID;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'plats_restaurant_prix_positif') THEN
+        ALTER TABLE public.plats_restaurant ADD CONSTRAINT plats_restaurant_prix_positif
+            CHECK (prix_unitaire >= 0) NOT VALID;
+    END IF;
+END $$;
+
+-- Index des clés étrangères filtrées par la RLS et par les suppressions de plats
+CREATE INDEX IF NOT EXISTS idx_commandes_plat ON public.commandes(plat_id);
+CREATE INDEX IF NOT EXISTS idx_menus_restaurant ON public.menus_du_jour(restaurant_id, date);
+
 -- 8. SÉCURITÉ : RLS ACTIVÉE SUR TOUTES LES TABLES
 -- Les politiques (section 9) n'ouvrent l'accès qu'aux requêtes portant un JWT signé par le serveur
 -- Next.js. La clé anon seule ne lit aucune table (tokens employés inclus).
@@ -380,6 +504,7 @@ ALTER TABLE public.paiements ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.plats_restaurant ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.comptes_restaurant ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.tentatives_connexion ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.schema_migrations ENABLE ROW LEVEL SECURITY;
 ALTER VIEW public.vue_recapitulatif_traiteur SET (security_invoker = true);
 
 -- 9. POLITIQUES RLS : PATTERN HYBRIDE « TOKEN URL -> JWT COURT »
@@ -734,3 +859,220 @@ GRANT EXECUTE ON FUNCTION public.rattacher_compte_restaurant(TEXT, TIME) TO auth
 GRANT EXECUTE ON FUNCTION public.synchroniser_compte_restaurant() TO authenticated;
 REVOKE EXECUTE ON FUNCTION public.relier_lien_restaurant(TEXT) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION public.relier_lien_restaurant(TEXT) TO authenticated;
+
+-- ==============================================================================
+-- v1.9 : durcissement après l'audit de la base (fonctions, triggers, politiques).
+-- Bloc volontairement en fin de fichier : il remplace des objets de la section 9 et doit donc
+-- s'exécuter après eux à chaque relance. Garder ce bloc (et les suivants) en dernier.
+-- ==============================================================================
+
+-- 1. Échanges de jetons : entreprise, partenariat et compte restaurant doivent être actifs
+CREATE OR REPLACE FUNCTION public.echanger_jeton_salarie(p_token TEXT)
+RETURNS TABLE (employe_id UUID, company_id UUID)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public AS $$
+    SELECT e.id, e.company_id FROM public.employes e
+    JOIN public.companies c ON c.id = e.company_id
+    WHERE e.token = p_token AND e.is_active AND c.is_active
+    LIMIT 1
+$$;
+
+CREATE OR REPLACE FUNCTION public.echanger_jeton_restaurant(p_token TEXT)
+RETURNS TABLE (restaurant_id UUID, company_id UUID)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public AS $$
+    SELECT r.id, r.company_id FROM public.restaurants r
+    JOIN public.companies c ON c.id = r.company_id
+    LEFT JOIN public.comptes_restaurant cr ON cr.id = r.compte_id
+    WHERE r.token = p_token AND r.is_active AND c.is_active
+      AND (r.compte_id IS NULL OR cr.is_active)
+    LIMIT 1
+$$;
+
+-- Connexion RH : e-mail comparé sans tenir compte de la casse (index unique lower(email_contact))
+CREATE OR REPLACE FUNCTION public.echanger_acces_rh(p_identifiant TEXT, p_code_hash TEXT)
+RETURNS UUID
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = public AS $$
+DECLARE
+    v_ident TEXT := lower(trim(coalesce(p_identifiant, '')));
+    v_cle TEXT := 'rh:' || left(v_ident, 100);
+    v_id UUID;
+BEGIN
+    PERFORM pg_advisory_xact_lock(hashtextextended(v_cle, 0));
+    PERFORM public.controler_tentatives(v_cle);
+
+    SELECT c.id INTO v_id
+    FROM public.companies c
+    WHERE CASE WHEN position('@' IN v_ident) > 0
+               THEN lower(c.email_contact) = v_ident
+               ELSE c.slug = v_ident END
+      AND c.is_active
+      AND c.rh_code_hash IS NOT NULL
+      AND lower(c.rh_code_hash) = lower(p_code_hash)
+    LIMIT 1;
+
+    IF v_id IS NULL THEN
+        PERFORM public.noter_echec_connexion(v_cle);
+    ELSE
+        PERFORM public.effacer_tentatives(v_cle);
+    END IF;
+    RETURN v_id;
+END;
+$$;
+
+REVOKE EXECUTE ON FUNCTION public.echanger_jeton_salarie(TEXT) FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION public.echanger_jeton_restaurant(TEXT) FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION public.echanger_acces_rh(TEXT, TEXT) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.echanger_jeton_salarie(TEXT) TO anon, authenticated, service_role;
+GRANT EXECUTE ON FUNCTION public.echanger_jeton_restaurant(TEXT) TO anon, authenticated, service_role;
+GRANT EXECUTE ON FUNCTION public.echanger_acces_rh(TEXT, TEXT) TO anon, authenticated, service_role;
+
+-- 2. Clôtures : le restaurant ne peut que confirmer (aucune autre colonne, pas de retour en arrière).
+-- Liste blanche : toute colonne autre que confirme_at / confirme_par est figée, y compris les futures.
+CREATE OR REPLACE FUNCTION public.proteger_cloture_restaurant()
+RETURNS TRIGGER LANGUAGE plpgsql SET search_path = public AS $$
+BEGIN
+    IF public.jwt_role_app() = 'restaurant' THEN
+        IF (to_jsonb(NEW) - 'confirme_at' - 'confirme_par')
+           IS DISTINCT FROM (to_jsonb(OLD) - 'confirme_at' - 'confirme_par') THEN
+            RAISE EXCEPTION 'Un restaurant ne peut que confirmer sa commande.';
+        END IF;
+        IF OLD.confirme_at IS NOT NULL THEN
+            -- Déjà confirmée : ni annulation ni réécriture
+            NEW.confirme_at := OLD.confirme_at;
+            NEW.confirme_par := OLD.confirme_par;
+        ELSIF NEW.confirme_at IS NOT NULL THEN
+            -- Confirmation : l'heure est celle du serveur, pas celle envoyée par le client
+            NEW.confirme_at := now();
+            NEW.confirme_par := 'restaurant';
+        ELSE
+            -- Pas de confirmation : confirme_par ne bouge pas
+            NEW.confirme_par := OLD.confirme_par;
+        END IF;
+    END IF;
+    RETURN NEW;
+END;
+$$;
+DROP TRIGGER IF EXISTS trg_proteger_cloture_restaurant ON public.clotures;
+CREATE TRIGGER trg_proteger_cloture_restaurant
+    BEFORE UPDATE ON public.clotures
+    FOR EACH ROW EXECUTE FUNCTION public.proteger_cloture_restaurant();
+
+DROP POLICY IF EXISTS restaurant_confirme_ses_clotures ON public.clotures;
+CREATE POLICY restaurant_confirme_ses_clotures ON public.clotures FOR UPDATE TO authenticated
+    USING (public.jwt_role_app() = 'restaurant' AND restaurant_id = public.jwt_restaurant_id()
+           AND company_id = public.jwt_company_id())
+    WITH CHECK (public.jwt_role_app() = 'restaurant' AND restaurant_id = public.jwt_restaurant_id()
+                AND company_id = public.jwt_company_id());
+
+-- 3. Compte restaurant : is_active et code partenaire réservés au SuperAdmin
+CREATE OR REPLACE FUNCTION public.proteger_fiche_compte_restaurant()
+RETURNS TRIGGER LANGUAGE plpgsql SET search_path = public AS $$
+BEGIN
+    IF public.jwt_role_app() = 'compte_restaurant'
+       AND (NEW.id IS DISTINCT FROM OLD.id
+            OR NEW.code_partenaire IS DISTINCT FROM OLD.code_partenaire
+            OR NEW.is_active IS DISTINCT FROM OLD.is_active
+            OR NEW.created_at IS DISTINCT FROM OLD.created_at) THEN
+        RAISE EXCEPTION 'Colonne réservée à la console SuperAdmin.';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+DROP TRIGGER IF EXISTS trg_proteger_fiche_compte_restaurant ON public.comptes_restaurant;
+CREATE TRIGGER trg_proteger_fiche_compte_restaurant
+    BEFORE UPDATE ON public.comptes_restaurant
+    FOR EACH ROW EXECUTE FUNCTION public.proteger_fiche_compte_restaurant();
+
+-- 4. Entreprise : abonnement, activation et slug réservés au SuperAdmin (service_role, sans role_app)
+CREATE OR REPLACE FUNCTION public.proteger_colonnes_companies()
+RETURNS TRIGGER LANGUAGE plpgsql SET search_path = public AS $$
+BEGIN
+    IF public.jwt_role_app() IS NOT NULL
+       AND (NEW.id IS DISTINCT FROM OLD.id
+            OR NEW.slug IS DISTINCT FROM OLD.slug
+            OR NEW.plan IS DISTINCT FROM OLD.plan
+            OR NEW.statut_abonnement IS DISTINCT FROM OLD.statut_abonnement
+            OR NEW.abonnement_fin IS DISTINCT FROM OLD.abonnement_fin
+            OR NEW.trial_ends_at IS DISTINCT FROM OLD.trial_ends_at
+            OR NEW.is_active IS DISTINCT FROM OLD.is_active
+            OR NEW.traiteur_token IS DISTINCT FROM OLD.traiteur_token
+            OR NEW.code_acces IS DISTINCT FROM OLD.code_acces
+            OR NEW.created_at IS DISTINCT FROM OLD.created_at) THEN
+        RAISE EXCEPTION 'Colonne réservée à la console SuperAdmin.';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+DROP TRIGGER IF EXISTS trg_proteger_colonnes_companies ON public.companies;
+CREATE TRIGGER trg_proteger_colonnes_companies
+    BEFORE UPDATE ON public.companies
+    FOR EACH ROW EXECUTE FUNCTION public.proteger_colonnes_companies();
+
+-- Lecture de la fiche entreprise limitée aux rôles qui en ont besoin (avant : tout JWT portant company_id)
+DROP POLICY IF EXISTS rh_lit_son_entreprise ON public.companies;
+CREATE POLICY rh_lit_son_entreprise ON public.companies FOR SELECT TO authenticated
+    USING (public.jwt_role_app() IN ('rh', 'salarie', 'restaurant', 'portail') AND id = public.jwt_company_id());
+
+-- 5. Un restaurant ne lit que les commandes de ses plats et ses propres menus
+DROP POLICY IF EXISTS restaurant_lit_les_commandes ON public.commandes;
+CREATE POLICY restaurant_lit_les_commandes ON public.commandes FOR SELECT TO authenticated
+    USING (public.jwt_role_app() = 'restaurant' AND company_id = public.jwt_company_id()
+           AND plat_id IN (SELECT m.id FROM public.menus_du_jour m
+                           WHERE m.restaurant_id = public.jwt_restaurant_id()));
+
+DROP POLICY IF EXISTS salarie_et_restaurant_lisent_les_menus ON public.menus_du_jour;
+DROP POLICY IF EXISTS salarie_lit_les_menus ON public.menus_du_jour;
+CREATE POLICY salarie_lit_les_menus ON public.menus_du_jour FOR SELECT TO authenticated
+    USING (public.jwt_role_app() = 'salarie' AND company_id = public.jwt_company_id());
+DROP POLICY IF EXISTS restaurant_lit_ses_menus ON public.menus_du_jour;
+CREATE POLICY restaurant_lit_ses_menus ON public.menus_du_jour FOR SELECT TO authenticated
+    USING (public.jwt_role_app() = 'restaurant' AND company_id = public.jwt_company_id()
+           AND restaurant_id = public.jwt_restaurant_id());
+
+-- 6. Rattachement par code partenaire : limite de tentatives par entreprise (5 échecs → 15 min)
+CREATE OR REPLACE FUNCTION public.rattacher_compte_restaurant(p_code TEXT, p_heure_livraison TIME)
+RETURNS UUID
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = public AS $$
+DECLARE
+    v_compte public.comptes_restaurant%ROWTYPE;
+    v_company UUID := public.jwt_company_id();
+    v_cle TEXT;
+    v_id UUID;
+BEGIN
+    IF public.jwt_role_app() IS DISTINCT FROM 'rh' OR v_company IS NULL THEN
+        RAISE EXCEPTION 'Accès refusé';
+    END IF;
+    v_cle := 'partenaire:' || v_company::text;
+    PERFORM pg_advisory_xact_lock(hashtextextended(v_cle, 0));
+    PERFORM public.controler_tentatives(v_cle);
+
+    SELECT * INTO v_compte FROM public.comptes_restaurant
+    WHERE code_partenaire = upper(trim(p_code)) AND is_active;
+    IF NOT FOUND THEN
+        PERFORM public.noter_echec_connexion(v_cle);
+        RETURN NULL;
+    END IF;
+    PERFORM public.effacer_tentatives(v_cle);
+
+    PERFORM set_config('cantine.rattachement', 'on', true);
+
+    SELECT id INTO v_id FROM public.restaurants WHERE company_id = v_company AND compte_id = v_compte.id;
+    IF v_id IS NOT NULL THEN
+        UPDATE public.restaurants SET is_active = true WHERE id = v_id;
+        RETURN v_id;
+    END IF;
+
+    INSERT INTO public.restaurants (company_id, nom, telephone_whatsapp, heure_livraison, compte_id)
+    VALUES (v_company, v_compte.nom, v_compte.telephone_whatsapp, COALESCE(p_heure_livraison, '12:30:00'), v_compte.id)
+    RETURNING id INTO v_id;
+    RETURN v_id;
+END;
+$$;
+
+-- 7. Droits : Supabase accorde EXECUTE et les tables à anon par défaut, REVOKE FROM PUBLIC ne suffit pas
+REVOKE EXECUTE ON FUNCTION public.rattacher_compte_restaurant(TEXT, TIME) FROM PUBLIC, anon;
+REVOKE EXECUTE ON FUNCTION public.synchroniser_compte_restaurant() FROM PUBLIC, anon;
+REVOKE EXECUTE ON FUNCTION public.relier_lien_restaurant(TEXT) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.rattacher_compte_restaurant(TEXT, TIME) TO authenticated;
+-- anon ne lit aucune table (seules les fonctions echanger_* lui sont ouvertes) ; la RLS reste le filet
+REVOKE ALL ON ALL TABLES IN SCHEMA public FROM anon;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE ALL ON TABLES FROM anon;

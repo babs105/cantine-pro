@@ -3,10 +3,11 @@ name: regles-database-reviewer
 description: >
   Règles de revue PostgreSQL et Supabase pour Cantine Pro. Charger ce skill
   dès qu'on audite une policy RLS, une fonction SECURITY DEFINER, une vue,
-  une migration de schéma, un trigger, ou une Server Action qui appelle
+  une migration de schéma, un trigger, une Server Action qui appelle
   .from() sur companies / employes / restaurants / comptes_restaurant /
-  clotures / paiements. Contient les checklists C1-C10, H1-H7, M1-M5 avec
-  exemples de code et commandes grep prêtes à l'emploi.
+  clotures / paiements, ou une fonction d'échange (echanger_*, rattacher_*).
+  Contient les checklists C1-C15, H1-H8, M1-M5 avec exemples de code et
+  commandes grep prêtes à l'emploi.
 ---
 
 # Règles de revue database — Cantine Pro
@@ -46,14 +47,15 @@ Cantine Pro utilise un **pattern hybride "token URL → JWT court"** :
 code_partenaire), `clotures` (recap, total_repas : base de facturation),
 `paiements`.
 
-**État actuel** : il n'existe **aucune** table `*_secrets`. Les secrets sont
-dans les tables principales, et plusieurs policies SELECT les exposent au
-niveau ligne (voir C3). Ne pas supposer qu'une séparation existe : la
-proposer comme correction.
+**Cible à atteindre (v1.10)** : aucune colonne sensible ne doit rester dans
+une table qui a une policy SELECT ouverte à un autre rôle que le propriétaire
+du secret. Les tokens (employé, restaurant, code RH) doivent être dans des
+tables `*_secrets` **sans policy SELECT**. Ne pas supposer que la séparation
+existe : la proposer comme correction.
 
 ---
 
-## 🔴 Critiques (C1-C10) — bloquent le merge
+## 🔴 Critiques (C1-C15) — bloquent le merge
 
 ### C1 — RLS activée sur toute table `public`
 
@@ -182,6 +184,16 @@ WHERE r.token = p_token LIMIT 1
 WHERE r.token = p_token AND r.is_active LIMIT 1
 ```
 
+**Depuis v1.9**, les échanges vérifient aussi `companies.is_active` et
+`comptes_restaurant.is_active` (LEFT JOIN pour les partenariats legacy sans
+compte). Une nouvelle fonction `echanger_*` qui ne vérifie que la ligne
+principale est un finding.
+
+```bash
+grep -n "echanger_jeton_salarie\|echanger_jeton_restaurant\|echanger_acces_rh\|echanger_acces_compte_restaurant" supabase/schema.sql
+# Vérifier que chaque échange joint companies.is_active (et comptes_restaurant.is_active si applicable)
+```
+
 ### C10 — FK vers `clotures` / `paiements` : pas de `CASCADE`
 
 Les clôtures sont des données de facturation. Une suppression de restaurant
@@ -192,9 +204,161 @@ grep -n "REFERENCES public.restaurants(id) ON DELETE CASCADE" supabase/schema.sq
 # Interdit si la FK est sur clotures ou paiements → RESTRICT ou SET NULL
 ```
 
+**Depuis v1.9**, un bloc `DO $$` convertit les FK existantes en `RESTRICT`.
+Toute nouvelle FK depuis `clotures` ou `paiements` doit être créée en
+`RESTRICT` directement.
+
+### C11 — Rate limiting sur les surfaces de login
+
+Toute fonction `echanger_acces_*` qui valide un identifiant (RH, resto,
+compte resto, rattachement partenaire) doit implémenter le pattern
+`controler_tentatives` / `noter_echec_connexion` / `effacer_tentatives` :
+
+```sql
+-- ✅ Modèle à suivre (echanger_acces_rh v1.9)
+BEGIN
+    PERFORM pg_advisory_xact_lock(hashtextextended(v_cle, 0));  -- sérialise les tentatives
+    PERFORM public.controler_tentatives(v_cle);                  -- lève CP429 si bloqué
+
+    SELECT c.id INTO v_id FROM ... WHERE ...;
+
+    IF v_id IS NULL THEN
+        PERFORM public.noter_echec_connexion(v_cle);
+    ELSE
+        PERFORM public.effacer_tentatives(v_cle);
+    END IF;
+    RETURN v_id;
+END;
+```
+
+**Vérifier :**
+- `pg_advisory_xact_lock` en début de transaction (empêche les attaques par rafale)
+- `controler_tentatives` avant le SELECT
+- `noter_echec_connexion` si échec, `effacer_tentatives` si succès
+- La clé (`rh:`, `resto:`, `partenaire:`) est normalisée (`lower`, `trim`, `left(...,100)`)
+
+```bash
+grep -n "echanger_acces_\|rattacher_compte_restaurant" supabase/schema.sql
+# Vérifier que chaque fonction contient les 3 appels controler/noter/effacer
+```
+
+### C12 — Tables sans policy (tables "système")
+
+Certaines tables n'ont **aucune policy** par design : `tentatives_connexion`
+est un état interne, pas une donnée utilisateur. Elles doivent être
+verrouillées **explicitement** :
+
+```sql
+-- ✅ Modèle à suivre (tentatives_connexion v1.8)
+ALTER TABLE public.tentatives_connexion ENABLE ROW LEVEL SECURITY;
+REVOKE ALL ON public.tentatives_connexion FROM PUBLIC, anon, authenticated;
+-- (création + accès via les fonctions SECURITY DEFINER uniquement)
+```
+
+**Test d'auto-défense :** même si quelqu'un désactive la RLS par erreur,
+`REVOKE ALL` protège encore (contrairement à une policy manquante qui
+laisserait la RLS seule).
+
+**Toute table sans policy est suspecte** : c'est soit une table système
+(→ `REVOKE ALL`), soit une table où la RLS a été oubliée (→ critique).
+
+### C13 — `FOR UPDATE` interdit dans une sous-requête `IN` / `EXISTS` / `ANY` / `ALL`
+
+PostgreSQL **interdit** `FOR UPDATE` dans une sous-requête `IN`, `EXISTS`,
+`ANY` ou `ALL`. Il faut passer par une CTE :
+
+```sql
+-- ❌ Erreur à la création ou à l'exécution
+DELETE FROM public.tentatives_connexion
+WHERE cle IN (
+    SELECT cle FROM public.tentatives_connexion
+    WHERE ... LIMIT 100 FOR UPDATE SKIP LOCKED
+);
+
+-- ✅ CTE
+WITH a_supprimer AS (
+    SELECT cle FROM public.tentatives_connexion
+    WHERE ... LIMIT 100 FOR UPDATE SKIP LOCKED
+)
+DELETE FROM public.tentatives_connexion
+WHERE cle IN (SELECT cle FROM a_supprimer);
+
+-- ✅ ou DELETE ... USING
+DELETE FROM public.tentatives_connexion t
+USING (
+    SELECT cle FROM public.tentatives_connexion
+    WHERE ... LIMIT 100 FOR UPDATE SKIP LOCKED
+) s
+WHERE t.cle = s.cle;
+```
+
+**Test :** créer la fonction en dev, l'appeler une fois avec des données
+remplissant la condition (`premier_echec_at < now() - interval '1 day'`).
+Si erreur → bug C13.
+
+**Cas connu dans le schéma v1.9** : `noter_echec_connexion` contient
+`FOR UPDATE` dans une sous-requête `IN` → **bloquant** (corrigé en v1.10).
+
+### C14 — Codes d'erreur custom documentés
+
+Les `RAISE EXCEPTION ... USING ERRCODE = 'CPxxx'` sont autorisés pour les
+erreurs métier (ex: `CP429` = rate limit). Chaque code doit être :
+
+1. Documenté dans un commentaire SQL au-dessus de la fonction
+2. Traité côté Next.js (`try/catch` avec check sur `error.code`)
+3. Testé en dev
+
+```sql
+-- ✅
+-- Lève une erreur CP429 si l'identifiant est bloqué
+CREATE OR REPLACE FUNCTION public.controler_tentatives(p_cle TEXT)
+...
+RAISE EXCEPTION 'Trop de tentatives...' USING ERRCODE = 'CP429';
+```
+
+```ts
+// ✅ côté Next.js
+try {
+  await supabase.rpc('echanger_acces_rh', {...});
+} catch (e) {
+  if (e.code === 'CP429') return { success: false, message: 'Trop de tentatives, réessayez dans 15 minutes.' };
+  throw e;
+}
+```
+
+```bash
+grep -n "ERRCODE = 'CP" supabase/schema.sql
+# Chaque code doit avoir un commentaire explicatif et un équivalent côté Next.js
+```
+
+### C15 — Défense en profondeur : REVOKE ALL + ALTER DEFAULT PRIVILEGES
+
+Supabase accorde par défaut **tous les droits** sur une nouvelle table à
+`anon` et `authenticated`. La RLS les bloque, mais un REVOKE explicite
+protège aussi d'une RLS désactivée par erreur.
+
+À la fin de chaque migration qui ajoute une table ou une fonction, ajouter :
+
+```sql
+-- ✅ Bloc à ajouter en fin de migration
+REVOKE ALL ON ALL TABLES IN SCHEMA public FROM anon;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE ALL ON TABLES FROM anon;
+
+-- Et pour chaque fonction SECURITY DEFINER :
+REVOKE EXECUTE ON FUNCTION public.<f> FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.<f> TO <rôle>;
+```
+
+**Piège** : `ALTER DEFAULT PRIVILEGES` s'applique aux **futures tables
+créées par le rôle courant**. Si les migrations ne sont pas exécutées par le
+même rôle que `schema.sql`, l'ALTER ne sert à rien. Documenter le rôle utilisé.
+
+**Toute nouvelle table** doit avoir son `REVOKE ALL ON ... FROM anon` ou une
+policy qui justifie l'accès anon (rare).
+
 ---
 
-## 🟠 Hautes (H1-H7) — à corriger avant le prochain sprint
+## 🟠 Hautes (H1-H8) — à corriger avant le prochain sprint
 
 ### H1 — `FOR UPDATE` sans `WITH CHECK` = déplacement possible
 
@@ -232,7 +396,8 @@ USING (
 ### H3 — `UNIQUE` sur les colonnes de login
 
 - `companies.email_contact` sert d'identifiant dans `echanger_acces_rh` →
-  **doit** être `UNIQUE`.
+  **doit** être `UNIQUE` (en v1.9 : `UNIQUE INDEX lower(email_contact) WHERE
+  email_contact IS NOT NULL`).
 - `comptes_restaurant.telephone_whatsapp` → doit être `UNIQUE` (déjà ✅).
 
 ### H4 — `CHECK` sur les invariants métier
@@ -244,6 +409,10 @@ Invariants qui doivent être en `CHECK` (pas seulement supposés par le code) :
 - `commandes.statut IN ('choisi', 'absent', 'ne_mange_pas')` (existe déjà)
 - `clotures.envoi_statut IN (...)` (existe déjà)
 - `companies.plan IN (...)` (existe déjà)
+
+Depuis v1.9, ces `CHECK` sont ajoutés en `NOT VALID` (lignes existantes non
+contrôlées, nouvelles écritures contrôlées). Toute nouvelle contrainte
+d'invariant doit suivre le même pattern.
 
 ### H5 — Fonctions SECURITY DEFINER qui écrivent sans vérifier le scope
 
@@ -276,6 +445,44 @@ doit avoir un index. Vérifier systématiquement :
 - `commandes(date, plat_id)` pour la vue récap
 - `clotures(restaurant_id, date)` pour les clôtures par resto
 - `employes(company_id)` pour le portail
+
+### H8 — Trigger `proteger_*` : toutes les colonnes sensibles couvertes
+
+Si un trigger protège des colonnes (empêche un rôle de les modifier), il doit
+lister **explicitement** toutes les colonnes sensibles de la table. Un trigger
+partiel donne une fausse impression de sécurité.
+
+```sql
+-- ✅ protege_colonnes_companies (v1.9) — chaque colonne sensible est listée
+IF NEW.id IS DISTINCT FROM OLD.id
+   OR NEW.slug IS DISTINCT FROM OLD.slug
+   OR NEW.plan IS DISTINCT FROM OLD.plan
+   OR NEW.statut_abonnement IS DISTINCT FROM OLD.statut_abonnement
+   OR NEW.abonnement_fin IS DISTINCT FROM OLD.abonnement_fin
+   OR NEW.trial_ends_at IS DISTINCT FROM OLD.trial_ends_at
+   OR NEW.is_active IS DISTINCT FROM OLD.is_active
+   OR NEW.traiteur_token IS DISTINCT FROM OLD.traiteur_token
+   OR NEW.code_acces IS DISTINCT FROM OLD.code_acces
+   OR NEW.created_at IS DISTINCT FROM OLD.created_at THEN
+    RAISE EXCEPTION 'Colonne réservée à la console SuperAdmin.';
+END IF;
+```
+
+**Test :** ajouter une nouvelle colonne sensible à une table protégée →
+modifier le trigger en même temps. Si un `ALTER TABLE ADD COLUMN` ajoute une
+colonne sensible sans mettre à jour le trigger, c'est un finding.
+
+```bash
+# Vérifier que chaque trigger protege_* est synchronisé avec les colonnes sensibles
+grep -n "CREATE OR REPLACE FUNCTION public.proteger_" supabase/schema.sql
+```
+
+**Attention aux colonnes droppées** : quand une colonne référencée par un
+trigger est supprimée (`DROP COLUMN`), le trigger doit être recréé **avant**
+le `DROP`, sinon `CREATE OR REPLACE FUNCTION` échoue avec
+`column does not exist`. (Cas concret : v1.10 supprime `code_acces` et
+`traiteur_token`, il faut recréer `proteger_colonnes_companies` sans ces
+références avant le `DROP COLUMN`.)
 
 ---
 
@@ -320,23 +527,43 @@ grep -rn "SERVICE_ROLE\|service_role" src/
 # Colonnes sensibles
 grep -nE "(token|hash|secret|code_|password|key)" supabase/schema.sql | \
   grep -iE "CREATE TABLE|ADD COLUMN"
+
+# Rate limiting (C11)
+grep -n "controler_tentatives\|noter_echec_connexion\|effacer_tentatives" supabase/schema.sql
+
+# FOR UPDATE dangereux (C13)
+grep -nB2 "FOR UPDATE SKIP LOCKED" supabase/schema.sql
+# Vérifier que chaque occurrence est dans une CTE (WITH ... AS), pas dans IN/EXISTS
+
+# Codes d'erreur custom (C14)
+grep -n "ERRCODE = 'CP" supabase/schema.sql
+
+# Triggers de protection (H8)
+grep -n "CREATE OR REPLACE FUNCTION public.proteger_" supabase/schema.sql
+
+# REVOKE ALL sur les tables système (C12)
+grep -n "REVOKE ALL ON public\." supabase/schema.sql
 ```
 
 ---
 
 ## 🎯 Cas de test d'auto-évaluation
 
-Le skill est correctement calibré si, en le chargeant sur le `schema.sql`
-actuel (aucune de ces failles n'est encore corrigée), l'agent trouve **au minimum** :
+Le skill est correctement calibré si, en le chargeant sur le `schema.sql` v1.9
+actuel, l'agent trouve **au minimum** :
 
-1. ✅ `salarie_lit_les_restaurants` → token exposé (C3)
-2. ✅ `portail_lit_les_salaries` → token exposé (C3)
-3. ✅ `rh_lit_son_entreprise` → `rh_code_hash` accessible à tous les rôles (C3)
-4. ✅ `echanger_jeton_restaurant` sans `is_active` (C9)
-5. ✅ `clotures.restaurant_id ON DELETE CASCADE` (C10)
-6. ✅ `email_contact` sans `UNIQUE` (H3)
+1. ✅ `salarie_lit_les_restaurants` → token exposé (C3) — **toujours présent**
+2. ✅ `portail_lit_les_salaries` → token exposé (C3) — **toujours présent**
+3. ✅ `rh_lit_son_entreprise` → `rh_code_hash` exposé à 4 rôles (C3) — **toujours présent**
+4. ✅ `noter_echec_connexion` → `FOR UPDATE` dans sous-requête `IN` (C13) — **bug v1.9**
+5. ✅ `companies_secrets` / `employes_secrets` / `restaurants_secrets` → absentes (C3) — **cible non atteinte**
+6. ✅ Rate limiting `rattacher_compte_restaurant` → bien implémenté (C11) — **à valider, pas à corriger**
+7. ✅ `tentatives_connexion` sans policy → `REVOKE ALL` présent (C12) — **à valider**
 
-S'il rate l'un de ces 6, renforcer la section correspondante.
+Points 1, 2, 3, 4, 5 → findings à corriger.
+Points 6, 7 → présents et corrects, à mentionner dans « ✅ Ce qui est bon ».
+
+S'il rate l'un de ces 7, renforcer la section correspondante.
 
 ---
 

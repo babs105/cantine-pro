@@ -105,7 +105,9 @@ export async function cloturerEntreprise(
 
   for (const restaurant of restaurants) {
     const existante = ((existantes || []) as Cloture[]).find((c) => c.restaurant_id === restaurant.id);
-    if (existante && existante.envoi_statut === "envoye") {
+    // Déjà envoyée ou déjà confirmée par le restaurant : on ne recalcule pas, sinon le récap
+    // facturé ne serait plus celui que le restaurant a confirmé
+    if (existante && (existante.envoi_statut === "envoye" || existante.confirme_at)) {
       resultats.push({ ...existante, restaurant_nom: restaurant.nom });
       continue;
     }
