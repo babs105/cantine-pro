@@ -34,7 +34,9 @@ Espaces : `/rh` (Espace RH, 7 onglets dans `rh-dashboard-client.tsx`), `/p/[toke
 `/resto` (espace restaurant multi-entreprises : `/resto/login`, `/resto/inscription`), `/resto/[token]` (lien restaurant d'une entreprise), `/c/[slug]` (portail entreprise), `/admin` (SuperAdmin), `/inscription`.
 
 ## Règles du code
-
+Le processus de livraison (plan → tranche → dev → reviews → merge) est
+documenté dans `.claude/WORKFLOW.md`. Le lire avant de lancer un agent
+dev.
 ### Accès à Supabase : RLS + JWT hybride (`src/lib/supabase/`)
 Aucune requête ne passe par la clé service_role, sauf exceptions ci-dessous. Pattern « token URL → JWT court » :
 l'identifiant reçu est échangé par une fonction SQL `SECURITY DEFINER` (`echanger_*`), puis le serveur signe un JWT
@@ -52,6 +54,10 @@ filtrent chaque table via les politiques de `supabase/schema.sql` (section 9). L
 | SuperAdmin, cron, inscriptions (entreprise et restaurant), diagnostic | `createAdminClient()` (`admin.ts`, service_role, contourne la RLS) |
 
 Ne jamais utiliser `createAdminClient()` ailleurs. Le client navigateur (`client.ts`) ne lit rien : pas de politique pour `anon`.
+
+Il n'y a **pas de `src/middleware.ts`** : chaque page, Server Action et route vérifie elle-même sa session
+(`getRhCompanyId()`, `getRestoCompteId()`, `isAdmin()`) ou ré-échange son token. Une nouvelle page privée doit
+donc faire ce contrôle en tête de fichier. Pas de Zod non plus : les entrées sont validées à la main (`trim`, longueur, `normaliserTelephone`).
 
 ### Server Actions (sécurité)
 Toute action RH suit ce modèle, dans cet ordre :
@@ -98,4 +104,5 @@ Les actions de `src/app/resto/actions.ts` prennent une `CibleRestaurant` : `{ to
 2. Si l'interface change : ouvrir la preview `cantine-pro` et vérifier l'écran concerné, sans créer ni modifier de données réelles sans l'accord de l'utilisateur
 3. Avant un push : `NEXT_DIST_DIR=.next-build npm run build` (dossier séparé : ne jamais écrire dans le `.next` du `npm run dev` de l'utilisateur ; la preview utilise `.next-preview`). Vercel, lui, lance `npm run build` normalement
 
-Les skills du projet (`.claude/skills/`) décrivent les tâches courantes : `/nouvelle-action`, `/migration-schema`, `/verifier`.
+Les skills du projet (`.claude/skills/`) décrivent les tâches courantes : `/migration-schema`, `/verifier`.
+Les skills `regles-*` (architect, database-reviewer, security-reviewer, dev-commande-salarie) sont chargés par les agents de `.claude/agents/`.
