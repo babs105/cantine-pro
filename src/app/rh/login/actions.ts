@@ -4,10 +4,7 @@ import { redirect } from "next/navigation";
 import { echangerAccesRh } from "@/lib/supabase/server";
 import { createRhSession, destroyRhSession } from "@/lib/rh-session";
 
-export async function loginRhAction(
-  _prevState: { error?: string } | undefined,
-  formData: FormData
-): Promise<{ error?: string }> {
+export async function loginRhAction(_prevState: { error?: string } | undefined,formData: FormData): Promise<{ error?: string }> {
   const slug = String(formData.get("slug") || "").trim().toLowerCase();
   const code = String(formData.get("code") || "");
 

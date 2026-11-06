@@ -40,7 +40,7 @@ import {
   envoyerRelanceDernierRappelAction,
 } from "./actions";
 import { logoutRhAction } from "./login/actions";
-import { MenusSemaine, type PlatSemaine } from "./menus-semaine";
+import { MenusSemaine, type PlatCarteRestaurant, type PlatSemaine } from "./menus-semaine";
 import { ImportEmployesModal } from "./import-employes-modal";
 import { RecapRestaurant, type ClotureInfo, type RestaurantInfo } from "./recap-restaurant";
 import { RestaurantsPanel } from "./restaurants-panel";
@@ -99,6 +99,8 @@ interface RhDashboardClientProps {
   initialEmployes: Employe[];
   initialPlats: Plat[];
   platsSemaine: PlatSemaine[];
+  /** Plats disponibles sur la carte de chaque restaurant */
+  cartesRestaurants: PlatCarteRestaurant[];
   semaineLundi: string;
   todayDate: string;
   initialCommandes: CommandeItem[];
@@ -121,6 +123,7 @@ export function RhDashboardClient({
   initialEmployes,
   initialPlats,
   platsSemaine,
+  cartesRestaurants,
   semaineLundi,
   todayDate,
   initialCommandes,
@@ -922,6 +925,7 @@ export function RhDashboardClient({
         {activeTab === "menus" && (
           <MenusSemaine
             platsSemaine={platsSemaine}
+            cartesRestaurants={cartesRestaurants}
             semaineLundi={semaineLundi}
             todayDate={todayDate}
             joursTravail={company.jours_travail}

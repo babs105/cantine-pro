@@ -231,6 +231,59 @@ CREATE INDEX IF NOT EXISTS idx_paiements_company ON public.paiements(company_id)
 ALTER TABLE public.companies
     ADD COLUMN IF NOT EXISTS jours_travail SMALLINT[] NOT NULL DEFAULT '{1,2,3,4,5}';
 
+-- v1.4 : carte des restaurants. Chaque restaurant saisit ses plats depuis son lien /resto/[token] ;
+-- le RH les sélectionne pour composer le menu du jour (copie dans menus_du_jour).
+CREATE TABLE IF NOT EXISTS public.plats_restaurant (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    company_id UUID NOT NULL REFERENCES public.companies(id) ON DELETE CASCADE,
+    restaurant_id UUID NOT NULL REFERENCES public.restaurants(id) ON DELETE CASCADE,
+    titre TEXT NOT NULL,
+    description TEXT,
+    prix_unitaire INTEGER NOT NULL DEFAULT 1500, -- FCFA
+    is_active BOOLEAN NOT NULL DEFAULT true,
+    created_at TIMESTAMPTZ DEFAULT timezone('utc'::text, now()) NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_plats_restaurant_company ON public.plats_restaurant(company_id);
+CREATE INDEX IF NOT EXISTS idx_plats_restaurant_restaurant ON public.plats_restaurant(restaurant_id);
+
+-- v1.5 : comptes restaurant multi-entreprises. Un restaurant s'inscrit (/resto/inscription), se connecte
+-- (/resto/login, téléphone + code) et sert plusieurs entreprises. Chaque ligne de public.restaurants
+-- reste le partenariat avec UNE entreprise (heure de livraison, carte, clôtures) et pointe vers son compte.
+-- Le RH relie un compte à son entreprise avec le code partenaire que le restaurant lui communique.
+CREATE TABLE IF NOT EXISTS public.comptes_restaurant (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    nom TEXT NOT NULL,
+    telephone_whatsapp TEXT UNIQUE NOT NULL, -- Format E.164, sert aussi d'identifiant de connexion
+    ville TEXT,
+    code_hash TEXT NOT NULL, -- sha256 hex du code d'accès
+    code_partenaire TEXT UNIQUE NOT NULL DEFAULT upper(encode(gen_random_bytes(4), 'hex')),
+    is_active BOOLEAN NOT NULL DEFAULT true,
+    created_at TIMESTAMPTZ DEFAULT timezone('utc'::text, now()) NOT NULL
+);
+
+ALTER TABLE public.restaurants
+    ADD COLUMN IF NOT EXISTS compte_id UUID REFERENCES public.comptes_restaurant(id) ON DELETE SET NULL;
+
+CREATE INDEX IF NOT EXISTS idx_restaurants_compte ON public.restaurants(compte_id);
+
+-- Un compte n'est relié qu'une fois à une même entreprise
+CREATE UNIQUE INDEX IF NOT EXISTS idx_restaurants_company_compte
+    ON public.restaurants(company_id, compte_id) WHERE compte_id IS NOT NULL;
+
+-- v1.6 : le restaurant publie lui-même ses menus de la semaine dans ceux de l'entreprise.
+-- ajoute_par indique l'origine du plat (affichée au RH, qui garde la main pour le retirer).
+ALTER TABLE public.menus_du_jour
+    ADD COLUMN IF NOT EXISTS ajoute_par TEXT NOT NULL DEFAULT 'rh';
+
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'menus_du_jour_ajoute_par_check') THEN
+        ALTER TABLE public.menus_du_jour
+            ADD CONSTRAINT menus_du_jour_ajoute_par_check CHECK (ajoute_par IN ('rh', 'restaurant'));
+    END IF;
+END $$;
+
 -- 8. SÉCURITÉ : RLS ACTIVÉE SUR TOUTES LES TABLES
 -- Les politiques (section 9) n'ouvrent l'accès qu'aux requêtes portant un JWT signé par le serveur
 -- Next.js. La clé anon seule ne lit aucune table (tokens employés inclus).
@@ -241,6 +294,8 @@ ALTER TABLE public.commandes ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.clotures ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.restaurants ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.paiements ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.plats_restaurant ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.comptes_restaurant ENABLE ROW LEVEL SECURITY;
 ALTER VIEW public.vue_recapitulatif_traiteur SET (security_invoker = true);
 
 -- 9. POLITIQUES RLS : PATTERN HYBRIDE « TOKEN URL -> JWT COURT »
@@ -359,6 +414,22 @@ DROP POLICY IF EXISTS salarie_et_restaurant_lisent_les_menus ON public.menus_du_
 CREATE POLICY salarie_et_restaurant_lisent_les_menus ON public.menus_du_jour FOR SELECT TO authenticated
     USING (public.jwt_role_app() IN ('salarie', 'restaurant') AND company_id = public.jwt_company_id());
 
+-- menus_du_jour (v1.6) : le restaurant publie, modifie et retire ses propres plats dans les menus de l'entreprise
+DROP POLICY IF EXISTS restaurant_publie_ses_menus ON public.menus_du_jour;
+CREATE POLICY restaurant_publie_ses_menus ON public.menus_du_jour FOR INSERT TO authenticated
+    WITH CHECK (public.jwt_role_app() = 'restaurant' AND restaurant_id = public.jwt_restaurant_id()
+                AND company_id = public.jwt_company_id() AND ajoute_par = 'restaurant');
+DROP POLICY IF EXISTS restaurant_modifie_ses_menus ON public.menus_du_jour;
+CREATE POLICY restaurant_modifie_ses_menus ON public.menus_du_jour FOR UPDATE TO authenticated
+    USING (public.jwt_role_app() = 'restaurant' AND restaurant_id = public.jwt_restaurant_id()
+           AND company_id = public.jwt_company_id())
+    WITH CHECK (public.jwt_role_app() = 'restaurant' AND restaurant_id = public.jwt_restaurant_id()
+                AND company_id = public.jwt_company_id());
+DROP POLICY IF EXISTS restaurant_retire_ses_menus ON public.menus_du_jour;
+CREATE POLICY restaurant_retire_ses_menus ON public.menus_du_jour FOR DELETE TO authenticated
+    USING (public.jwt_role_app() = 'restaurant' AND restaurant_id = public.jwt_restaurant_id()
+           AND company_id = public.jwt_company_id());
+
 -- commandes
 DROP POLICY IF EXISTS rh_gere_les_commandes ON public.commandes;
 CREATE POLICY rh_gere_les_commandes ON public.commandes FOR ALL TO authenticated
@@ -397,6 +468,153 @@ CREATE POLICY restaurant_confirme_ses_clotures ON public.clotures FOR UPDATE TO 
 DROP POLICY IF EXISTS rh_lit_ses_paiements ON public.paiements;
 CREATE POLICY rh_lit_ses_paiements ON public.paiements FOR SELECT TO authenticated
     USING (public.jwt_role_app() = 'rh' AND company_id = public.jwt_company_id());
+
+-- plats_restaurant (carte) : le restaurant gère la sienne, le RH la consulte pour composer ses menus
+DROP POLICY IF EXISTS restaurant_gere_sa_carte ON public.plats_restaurant;
+CREATE POLICY restaurant_gere_sa_carte ON public.plats_restaurant FOR ALL TO authenticated
+    USING (public.jwt_role_app() = 'restaurant' AND restaurant_id = public.jwt_restaurant_id()
+           AND company_id = public.jwt_company_id())
+    WITH CHECK (public.jwt_role_app() = 'restaurant' AND restaurant_id = public.jwt_restaurant_id()
+                AND company_id = public.jwt_company_id());
+DROP POLICY IF EXISTS rh_lit_les_cartes ON public.plats_restaurant;
+CREATE POLICY rh_lit_les_cartes ON public.plats_restaurant FOR SELECT TO authenticated
+    USING (public.jwt_role_app() = 'rh' AND company_id = public.jwt_company_id());
+
+-- comptes_restaurant (v1.5) : claim role_app = 'compte_restaurant' + compte_id.
+-- Le compte liste ses partenariats ; pour agir sur une entreprise, le serveur signe ensuite un JWT
+-- role_app = 'restaurant' limité à ce partenariat (politiques « restaurant » ci-dessus).
+CREATE OR REPLACE FUNCTION public.jwt_compte_id() RETURNS UUID
+LANGUAGE sql STABLE AS $$ SELECT NULLIF(auth.jwt() ->> 'compte_id', '')::uuid $$;
+
+DROP POLICY IF EXISTS compte_lit_sa_fiche ON public.comptes_restaurant;
+CREATE POLICY compte_lit_sa_fiche ON public.comptes_restaurant FOR SELECT TO authenticated
+    USING (public.jwt_role_app() = 'compte_restaurant' AND id = public.jwt_compte_id());
+DROP POLICY IF EXISTS compte_modifie_sa_fiche ON public.comptes_restaurant;
+CREATE POLICY compte_modifie_sa_fiche ON public.comptes_restaurant FOR UPDATE TO authenticated
+    USING (public.jwt_role_app() = 'compte_restaurant' AND id = public.jwt_compte_id())
+    WITH CHECK (public.jwt_role_app() = 'compte_restaurant' AND id = public.jwt_compte_id());
+DROP POLICY IF EXISTS compte_lit_ses_partenariats ON public.restaurants;
+CREATE POLICY compte_lit_ses_partenariats ON public.restaurants FOR SELECT TO authenticated
+    USING (public.jwt_role_app() = 'compte_restaurant' AND compte_id = public.jwt_compte_id());
+
+-- Connexion d'un compte restaurant : téléphone + empreinte du code -> id du compte
+CREATE OR REPLACE FUNCTION public.echanger_acces_compte_restaurant(p_telephone TEXT, p_code_hash TEXT)
+RETURNS UUID
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public AS $$
+    SELECT c.id FROM public.comptes_restaurant c
+    WHERE c.telephone_whatsapp = p_telephone
+      AND c.is_active
+      AND lower(c.code_hash) = lower(p_code_hash)
+    LIMIT 1
+$$;
+
+-- Le RH relie un compte restaurant à son entreprise grâce au code partenaire.
+-- Si le partenariat existe déjà, il est simplement réactivé.
+CREATE OR REPLACE FUNCTION public.rattacher_compte_restaurant(p_code TEXT, p_heure_livraison TIME)
+RETURNS UUID
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = public AS $$
+DECLARE
+    v_compte public.comptes_restaurant%ROWTYPE;
+    v_company UUID := public.jwt_company_id();
+    v_id UUID;
+BEGIN
+    IF public.jwt_role_app() IS DISTINCT FROM 'rh' OR v_company IS NULL THEN
+        RAISE EXCEPTION 'Accès refusé';
+    END IF;
+
+    SELECT * INTO v_compte FROM public.comptes_restaurant
+    WHERE code_partenaire = upper(trim(p_code)) AND is_active;
+    IF NOT FOUND THEN
+        RETURN NULL;
+    END IF;
+
+    PERFORM set_config('cantine.rattachement', 'on', true);
+
+    SELECT id INTO v_id FROM public.restaurants WHERE company_id = v_company AND compte_id = v_compte.id;
+    IF v_id IS NOT NULL THEN
+        UPDATE public.restaurants SET is_active = true WHERE id = v_id;
+        RETURN v_id;
+    END IF;
+
+    INSERT INTO public.restaurants (company_id, nom, telephone_whatsapp, heure_livraison, compte_id)
+    VALUES (v_company, v_compte.nom, v_compte.telephone_whatsapp, COALESCE(p_heure_livraison, '12:30:00'), v_compte.id)
+    RETURNING id INTO v_id;
+    RETURN v_id;
+END;
+$$;
+
+-- Après modification du profil, le nom et le WhatsApp du compte sont recopiés sur ses partenariats
+-- (c'est ce numéro qui reçoit le récapitulatif de chaque entreprise).
+CREATE OR REPLACE FUNCTION public.synchroniser_compte_restaurant()
+RETURNS VOID
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = public AS $$
+BEGIN
+    IF public.jwt_role_app() IS DISTINCT FROM 'compte_restaurant' THEN
+        RAISE EXCEPTION 'Accès refusé';
+    END IF;
+    PERFORM set_config('cantine.rattachement', 'on', true);
+    UPDATE public.restaurants r
+    SET nom = c.nom, telephone_whatsapp = c.telephone_whatsapp
+    FROM public.comptes_restaurant c
+    WHERE c.id = public.jwt_compte_id() AND r.compte_id = c.id;
+END;
+$$;
+
+-- Un compte connecté reprend un lien /resto/[token] reçu d'une entreprise avant d'avoir son compte
+CREATE OR REPLACE FUNCTION public.relier_lien_restaurant(p_token TEXT)
+RETURNS UUID
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = public AS $$
+DECLARE
+    v_compte UUID := public.jwt_compte_id();
+    v_ligne public.restaurants%ROWTYPE;
+BEGIN
+    IF public.jwt_role_app() IS DISTINCT FROM 'compte_restaurant' OR v_compte IS NULL THEN
+        RAISE EXCEPTION 'Accès refusé';
+    END IF;
+    SELECT * INTO v_ligne FROM public.restaurants WHERE token = p_token;
+    IF NOT FOUND OR (v_ligne.compte_id IS NOT NULL AND v_ligne.compte_id <> v_compte) THEN
+        RETURN NULL;
+    END IF;
+    IF EXISTS (SELECT 1 FROM public.restaurants
+               WHERE company_id = v_ligne.company_id AND compte_id = v_compte AND id <> v_ligne.id) THEN
+        RAISE EXCEPTION 'Cette entreprise est déjà reliée à votre compte.';
+    END IF;
+    UPDATE public.restaurants r
+    SET compte_id = v_compte, nom = c.nom, telephone_whatsapp = c.telephone_whatsapp
+    FROM public.comptes_restaurant c
+    WHERE c.id = v_compte AND r.id = v_ligne.id;
+    RETURN v_ligne.id;
+END;
+$$;
+
+-- Le RH ne peut pas renseigner compte_id lui-même : uniquement via rattacher_compte_restaurant
+CREATE OR REPLACE FUNCTION public.proteger_compte_restaurant()
+RETURNS TRIGGER
+LANGUAGE plpgsql AS $$
+BEGIN
+    IF public.jwt_role_app() = 'rh' AND current_setting('cantine.rattachement', true) IS DISTINCT FROM 'on' THEN
+        IF (TG_OP = 'INSERT' AND NEW.compte_id IS NOT NULL)
+           OR (TG_OP = 'UPDATE' AND NEW.compte_id IS DISTINCT FROM OLD.compte_id) THEN
+            RAISE EXCEPTION 'Le compte restaurant se relie avec son code partenaire.';
+        END IF;
+    END IF;
+    RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trg_proteger_compte_restaurant ON public.restaurants;
+CREATE TRIGGER trg_proteger_compte_restaurant
+    BEFORE INSERT OR UPDATE ON public.restaurants
+    FOR EACH ROW EXECUTE FUNCTION public.proteger_compte_restaurant();
+
+REVOKE EXECUTE ON FUNCTION public.echanger_acces_compte_restaurant(TEXT, TEXT) FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION public.rattacher_compte_restaurant(TEXT, TIME) FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION public.synchroniser_compte_restaurant() FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.echanger_acces_compte_restaurant(TEXT, TEXT) TO anon, authenticated, service_role;
+GRANT EXECUTE ON FUNCTION public.rattacher_compte_restaurant(TEXT, TIME) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.synchroniser_compte_restaurant() TO authenticated;
+REVOKE EXECUTE ON FUNCTION public.relier_lien_restaurant(TEXT) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.relier_lien_restaurant(TEXT) TO authenticated;
 
 -- 10. JEU DE DONNÉES DE TEST / DÉMARRAGE (ENTREPRISES PILOTES THIÈS)
 DO $$

@@ -133,6 +133,7 @@ export interface Database {
           prix_unitaire: number;
           is_available: boolean;
           restaurant_id: string | null;
+          ajoute_par: "rh" | "restaurant";
           created_at: string;
         };
         Insert: {
@@ -144,6 +145,7 @@ export interface Database {
           prix_unitaire?: number;
           is_available?: boolean;
           restaurant_id?: string | null;
+          ajoute_par?: "rh" | "restaurant";
           created_at?: string;
         };
         Update: {
@@ -155,6 +157,7 @@ export interface Database {
           prix_unitaire?: number;
           is_available?: boolean;
           restaurant_id?: string | null;
+          ajoute_par?: "rh" | "restaurant";
           created_at?: string;
         };
       };
@@ -205,6 +208,7 @@ export interface Database {
           heure_livraison: string | null;
           token: string;
           is_active: boolean;
+          compte_id: string | null;
           created_at: string;
         };
         Insert: {
@@ -215,6 +219,7 @@ export interface Database {
           heure_livraison?: string | null;
           token?: string;
           is_active?: boolean;
+          compte_id?: string | null;
           created_at?: string;
         };
         Update: {
@@ -264,6 +269,63 @@ export interface Database {
           envoye_at?: string | null;
           confirme_at?: string | null;
           confirme_par?: "restaurant" | "rh" | null;
+        };
+      };
+      comptes_restaurant: {
+        Row: {
+          id: string;
+          nom: string;
+          telephone_whatsapp: string;
+          ville: string | null;
+          code_hash: string;
+          code_partenaire: string;
+          is_active: boolean;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          nom: string;
+          telephone_whatsapp: string;
+          ville?: string | null;
+          code_hash: string;
+          code_partenaire?: string;
+          is_active?: boolean;
+          created_at?: string;
+        };
+        Update: {
+          nom?: string;
+          telephone_whatsapp?: string;
+          ville?: string | null;
+          code_hash?: string;
+          is_active?: boolean;
+        };
+      };
+      plats_restaurant: {
+        Row: {
+          id: string;
+          company_id: string;
+          restaurant_id: string;
+          titre: string;
+          description: string | null;
+          prix_unitaire: number;
+          is_active: boolean;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          company_id: string;
+          restaurant_id: string;
+          titre: string;
+          description?: string | null;
+          prix_unitaire?: number;
+          is_active?: boolean;
+          created_at?: string;
+        };
+        Update: {
+          titre?: string;
+          description?: string | null;
+          prix_unitaire?: number;
+          is_active?: boolean;
         };
       };
       paiements: {

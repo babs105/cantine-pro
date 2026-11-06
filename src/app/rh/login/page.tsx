@@ -72,6 +72,17 @@ export default function RhLoginPage() {
             Essai gratuit 14 jours
           </Link>
         </p>
+        <p className="text-center text-xs text-neutral-500">
+          Vous êtes un restaurant ?{" "}
+          <Link href="/resto/login" className="font-bold text-neutral-800 hover:underline">
+            Espace restaurant
+          </Link>
+        </p>
+        <p className="text-center">
+          <Link href="/" className="text-[11px] text-neutral-400 hover:text-neutral-700">
+            ← Retour à l&apos;accueil
+          </Link>
+        </p>
       </div>
     </div>
   );

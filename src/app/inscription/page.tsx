@@ -1,6 +1,6 @@
 "use client";
 
-import { useActionState } from "react";
+import { useActionState, useEffect, useState } from "react";
 import Link from "next/link";
 import { Building2, Utensils } from "lucide-react";
 import { PLANS, PLAN_IDS } from "@/lib/abonnement";
@@ -12,6 +12,12 @@ const champClasse =
 export default function InscriptionPage() {
   const [state, formAction, isPending] = useActionState(inscriptionEntrepriseAction, undefined);
   const v = state?.champs || {};
+  // Invitation d'un restaurant : /inscription?partenaire=CODE l'ajoute automatiquement à l'entreprise
+  const [partenaire, setPartenaire] = useState("");
+  useEffect(() => {
+    const code = new URLSearchParams(window.location.search).get("partenaire") || "";
+    if (/^[A-Za-z0-9]{6,16}$/.test(code)) setPartenaire(code.toUpperCase());
+  }, []);
 
   return (
     <div className="min-h-screen bg-neutral-50 px-4 py-10 max-w-md mx-auto flex flex-col justify-center">
@@ -28,12 +34,19 @@ export default function InscriptionPage() {
           </p>
         </div>
 
+        {partenaire && (
+          <div className="p-3 bg-orange-50 border border-orange-200 text-orange-800 rounded-2xl text-xs">
+            Vous êtes invité par un restaurant partenaire : il sera ajouté automatiquement à votre entreprise.
+          </div>
+        )}
+
         {state?.error && (
           <div className="p-3 bg-red-50 border border-red-200 text-red-700 rounded-2xl text-xs">{state.error}</div>
         )}
 
         <form action={formAction} className="space-y-3">
           <input type="text" name="site_web" tabIndex={-1} autoComplete="off" className="hidden" aria-hidden />
+          <input type="hidden" name="partenaire" value={partenaire} />
 
           <div>
             <label className="block text-xs font-bold text-neutral-700 mb-1">Nom de l&apos;entreprise</label>
@@ -126,6 +139,17 @@ export default function InscriptionPage() {
           Déjà inscrit ?{" "}
           <Link href="/rh/login" className="font-bold text-orange-600 hover:underline">
             Se connecter à l&apos;Espace RH
+          </Link>
+        </p>
+        <p className="text-center text-xs text-neutral-500">
+          Vous êtes un restaurant ?{" "}
+          <Link href="/resto/inscription" className="font-bold text-neutral-800 hover:underline">
+            Créer votre espace restaurant
+          </Link>
+        </p>
+        <p className="text-center">
+          <Link href="/" className="text-[11px] text-neutral-400 hover:text-neutral-700">
+            ← Retour à l&apos;accueil
           </Link>
         </p>
       </div>

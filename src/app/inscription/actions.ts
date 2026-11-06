@@ -2,6 +2,7 @@
 
 import { redirect } from "next/navigation";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { createClientRh } from "@/lib/supabase/server";
 import { createRhSession, hashRhCode } from "@/lib/rh-session";
 import { DUREE_ESSAI_JOURS, isPlanId } from "@/lib/abonnement";
 
@@ -87,6 +88,15 @@ export async function inscriptionEntrepriseAction(
 
   if (error || !company) {
     return { error: `Inscription impossible : ${error?.message || "erreur inconnue"}`, champs };
+  }
+
+  // Invitation d'un restaurant (code partenaire dans le lien) : on le relie avec le JWT RH de la nouvelle entreprise
+  const partenaire = String(formData.get("partenaire") || "").trim().toUpperCase();
+  if (/^[A-Z0-9]{6,16}$/.test(partenaire)) {
+    await (createClientRh(company.id) as any).rpc("rattacher_compte_restaurant", {
+      p_code: partenaire,
+      p_heure_livraison: "12:30",
+    });
   }
 
   await createRhSession(company.id);

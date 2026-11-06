@@ -31,7 +31,7 @@ Répondre et écrire en **français** : messages, commentaires de code, libellé
 - `supabase/schema.sql` : schéma complet et **idempotent** (relancé en entier dans l'éditeur SQL Supabase)
 
 Espaces : `/rh` (Espace RH, 7 onglets dans `rh-dashboard-client.tsx`), `/p/[token]` (salarié, PWA),
-`/resto/[token]` (restaurant), `/c/[slug]` (portail entreprise), `/admin` (SuperAdmin), `/inscription`.
+`/resto` (espace restaurant multi-entreprises : `/resto/login`, `/resto/inscription`), `/resto/[token]` (lien restaurant d'une entreprise), `/c/[slug]` (portail entreprise), `/admin` (SuperAdmin), `/inscription`.
 
 ## Règles du code
 
@@ -46,9 +46,10 @@ filtrent chaque table via les politiques de `supabase/schema.sql` (section 9). L
 | RH (cookie de session) | `createClientRh(companyId)` après `getRhCompanyId()` |
 | Connexion RH | `echangerAccesRh(identifiant, code)` |
 | Salarié `/p/[token]` | `echangerJetonSalarie(token)` → `{ supabase, employeId, companyId }` |
-| Restaurant `/resto/[token]` | `echangerJetonRestaurant(token)` |
+| Restaurant `/resto/[token]` (une entreprise) | `echangerJetonRestaurant(token)` |
+| Compte restaurant `/resto` (cookie, plusieurs entreprises) | `createClientCompteSession()` pour la fiche et la liste des partenariats, puis `accesPartenariatCompte(restaurantId)` (JWT `restaurant` limité à une entreprise) |
 | Portail `/c/[slug]` | `echangerSlugPortail(slug)` |
-| SuperAdmin, cron, inscription, diagnostic | `createAdminClient()` (`admin.ts`, service_role, contourne la RLS) |
+| SuperAdmin, cron, inscriptions (entreprise et restaurant), diagnostic | `createAdminClient()` (`admin.ts`, service_role, contourne la RLS) |
 
 Ne jamais utiliser `createAdminClient()` ailleurs. Le client navigateur (`client.ts`) ne lit rien : pas de politique pour `anon`.
 
@@ -74,6 +75,12 @@ Fuseau `Africa/Dakar`. Utiliser `todayDakar()`, `nowDakarTime()`, `isApresHeureL
 - Mise à jour optimiste : modifier l'état local puis appeler l'action dans `startTransition`.
 - Les envois WhatsApp sont des liens `wa.me` ouverts par le RH (mode manuel du pilote).
 
+### Restaurants multi-entreprises
+`comptes_restaurant` = le restaurant (connexion téléphone + code, code partenaire). Chaque ligne de `restaurants`
+= un partenariat avec UNE entreprise (heure de livraison, carte `plats_restaurant`, clôtures), reliée via `compte_id`.
+Le RH relie un compte avec `rattacher_compte_restaurant` (code partenaire) ; il ne peut pas écrire `compte_id` lui-même (trigger).
+Les actions de `src/app/resto/actions.ts` prennent une `CibleRestaurant` : `{ token }` ou `{ restaurantId }`.
+
 ### Vocabulaire métier
 « commande » (pas « vote », même si des noms de colonnes gardent `vote`), « Espace RH » (pas « cockpit »),
 « restaurant » (pas « traiteur » dans l'interface), « collaborateur » ou « salarié ».
@@ -89,6 +96,6 @@ Fuseau `Africa/Dakar`. Utiliser `todayDakar()`, `nowDakarTime()`, `isApresHeureL
 
 1. `npx tsc --noEmit` (un hook le lance automatiquement en fin de tour si des fichiers .ts/.tsx ont changé)
 2. Si l'interface change : ouvrir la preview `cantine-pro` et vérifier l'écran concerné, sans créer ni modifier de données réelles sans l'accord de l'utilisateur
-3. Avant un push : `npm run build`
+3. Avant un push : `NEXT_DIST_DIR=.next-build npm run build` (dossier séparé : ne jamais écrire dans le `.next` du `npm run dev` de l'utilisateur ; la preview utilise `.next-preview`). Vercel, lui, lance `npm run build` normalement
 
 Les skills du projet (`.claude/skills/`) décrivent les tâches courantes : `/nouvelle-action`, `/migration-schema`, `/verifier`.

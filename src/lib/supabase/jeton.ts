@@ -9,7 +9,8 @@ export type ClaimsCantine =
   | { role_app: "rh"; company_id: string }
   | { role_app: "salarie"; company_id: string; employe_id: string }
   | { role_app: "restaurant"; company_id: string; restaurant_id: string }
-  | { role_app: "portail"; company_id: string };
+  | { role_app: "portail"; company_id: string }
+  | { role_app: "compte_restaurant"; compte_id: string };
 
 function base64url(valeur: string | Buffer): string {
   return Buffer.from(valeur).toString("base64url");
@@ -58,7 +59,9 @@ export function signerJetonSupabase(claims: ClaimsCantine): string {
       ? claims.employe_id
       : claims.role_app === "restaurant"
         ? claims.restaurant_id
-        : claims.company_id;
+        : claims.role_app === "compte_restaurant"
+          ? claims.compte_id
+          : claims.company_id;
 
   const entete = base64url(JSON.stringify({ alg: "ES256", typ: "JWT", kid }));
   const contenu = base64url(

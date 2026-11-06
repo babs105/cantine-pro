@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { ChevronLeft, ChevronRight, CopyPlus, Plus, ToggleLeft, ToggleRight, Trash2 } from "lucide-react";
+import { BookOpen, ChevronLeft, ChevronRight, CopyPlus, Plus, ToggleLeft, ToggleRight, Trash2 } from "lucide-react";
 import { formatFCFA } from "@/lib/utils";
 import { ajouterJours, formatJourCourt, joursOuvres, normaliserJoursTravail } from "@/lib/dates";
 import {
@@ -20,10 +20,22 @@ export interface PlatSemaine {
   prix_unitaire: number;
   is_available: boolean;
   restaurant_id?: string | null;
+  /** Plat publié par le restaurant depuis son espace (sinon ajouté par le RH) */
+  ajoute_par?: "rh" | "restaurant";
+}
+
+/** Plat de la carte d'un restaurant (saisi par le restaurant depuis son lien) */
+export interface PlatCarteRestaurant {
+  id: string;
+  restaurant_id: string;
+  titre: string;
+  description: string | null;
+  prix_unitaire: number;
 }
 
 interface MenusSemaineProps {
   platsSemaine: PlatSemaine[];
+  cartesRestaurants?: PlatCarteRestaurant[];
   semaineLundi: string;
   todayDate: string;
   /** Jours de service de l'entreprise (1 = lundi … 7 = dimanche) */
@@ -42,6 +54,7 @@ const SUGGESTIONS = [
 
 export function MenusSemaine({
   platsSemaine,
+  cartesRestaurants = [],
   semaineLundi,
   todayDate,
   joursTravail: joursTravailBruts,
@@ -78,27 +91,34 @@ export function MenusSemaine({
     router.replace(`/rh?semaine=${ajouterJours(semaineLundi, decalage * 7)}`, { scroll: false });
   };
 
-  const handleAdd = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!titre.trim()) return;
+  const carteDuRestaurant = cartesRestaurants.filter((p) => p.restaurant_id === restaurantId);
+  const dejaAuMenu = (platCarte: PlatCarteRestaurant) =>
+    plats.some((p) => p.date === jourCible && p.restaurant_id === restaurantId && p.titre === platCarte.titre);
+
+  const ajouterPlat = (platTitre: string, platPrix: number, platDesc: string | undefined, apres?: () => void) => {
     startTransition(async () => {
-      const res = await addMenuPlatAction(
-        titre.trim(),
-        parseInt(prix, 10) || 1500,
-        desc.trim() || undefined,
-        jourCible,
-        restaurantId
-      );
+      const res = await addMenuPlatAction(platTitre, platPrix, platDesc, jourCible, restaurantId);
       if (res.success && res.plat) {
         setPlats((prev) => [...prev, { ...res.plat, date: res.plat.date || jourCible }]);
-        setTitre("");
-        setDesc("");
+        apres?.();
         onError(null);
       } else {
         onError(res.message || "Impossible d'ajouter le plat.");
       }
     });
   };
+
+  const handleAdd = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!titre.trim()) return;
+    ajouterPlat(titre.trim(), parseInt(prix, 10) || 1500, desc.trim() || undefined, () => {
+      setTitre("");
+      setDesc("");
+    });
+  };
+
+  const ajouterDepuisCarte = (platCarte: PlatCarteRestaurant) =>
+    ajouterPlat(platCarte.titre, platCarte.prix_unitaire, platCarte.description || undefined);
 
   const toggle = (plat: PlatSemaine) => {
     setPlats((prev) => prev.map((p) => (p.id === plat.id ? { ...p, is_available: !p.is_available } : p)));
@@ -186,6 +206,7 @@ export function MenusSemaine({
             </p>
           ) : (
             <>
+              {carteDuRestaurant.length === 0 && (
               <div className="flex flex-wrap gap-1.5">
                 {SUGGESTIONS.map((s) => (
                   <button
@@ -202,6 +223,7 @@ export function MenusSemaine({
                   </button>
                 ))}
               </div>
+              )}
 
               <form onSubmit={handleAdd} className="space-y-3">
                 <div>
@@ -233,6 +255,48 @@ export function MenusSemaine({
                     ))}
                   </select>
                 </div>
+
+                {/* Carte saisie par le restaurant : ajout en un clic au jour choisi */}
+                {carteDuRestaurant.length > 0 ? (
+                  <div className="rounded-2xl border border-orange-200 bg-orange-50/50 p-3 space-y-2">
+                    <div className="text-[11px] font-bold text-orange-800 flex items-center gap-1.5">
+                      <BookOpen className="w-3.5 h-3.5" />
+                      Carte du restaurant
+                    </div>
+                    {carteDuRestaurant.map((pc) => {
+                      const ajoute = dejaAuMenu(pc);
+                      return (
+                        <div key={pc.id} className="flex items-center justify-between gap-2 bg-white rounded-xl border border-neutral-200 px-2.5 py-2">
+                          <div className="min-w-0">
+                            <div className="text-xs font-bold text-neutral-900 truncate">{pc.titre}</div>
+                            <div className="text-[11px] font-extrabold text-orange-600">{formatFCFA(pc.prix_unitaire)}</div>
+                          </div>
+                          <button
+                            type="button"
+                            disabled={isPending || ajoute}
+                            onClick={() => ajouterDepuisCarte(pc)}
+                            className="shrink-0 px-2.5 py-1.5 rounded-lg bg-orange-600 hover:bg-orange-700 disabled:bg-neutral-200 disabled:text-neutral-500 text-white text-[11px] font-bold transition flex items-center gap-1"
+                          >
+                            {ajoute ? (
+                              "Au menu"
+                            ) : (
+                              <>
+                                <Plus className="w-3.5 h-3.5" />
+                                Ajouter
+                              </>
+                            )}
+                          </button>
+                        </div>
+                      );
+                    })}
+                    <p className="text-[10px] text-neutral-500">Ou saisissez un autre plat ci-dessous.</p>
+                  </div>
+                ) : (
+                  <p className="text-[11px] text-neutral-500">
+                    Ce restaurant n&apos;a pas encore rempli sa carte : il peut le faire depuis son lien restaurant.
+                  </p>
+                )}
+
                 <div>
                   <label className="block text-xs font-bold text-neutral-700 mb-1">Nom du plat</label>
                   <input
@@ -319,6 +383,14 @@ export function MenusSemaine({
                             {nomRestaurant(plat.restaurant_id) && (
                               <span className="text-[10px] bg-neutral-100 text-neutral-600 px-2 py-0.5 rounded-full font-semibold">
                                 {nomRestaurant(plat.restaurant_id)}
+                              </span>
+                            )}
+                            {plat.ajoute_par === "restaurant" && (
+                              <span
+                                title="Publié par le restaurant depuis son espace restaurant"
+                                className="text-[10px] bg-emerald-50 text-emerald-700 border border-emerald-200 px-2 py-0.5 rounded-full font-semibold"
+                              >
+                                Proposé par le restaurant
                               </span>
                             )}
                             {!plat.is_available && (

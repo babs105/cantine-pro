@@ -13,6 +13,8 @@ export interface RestaurantInfo {
   heure_livraison: string | null;
   token: string;
   is_active: boolean;
+  /** Compte restaurant Cantine Pro relié (le restaurant gère alors son profil lui-même) */
+  compte_id?: string | null;
   lien: string;
 }
 

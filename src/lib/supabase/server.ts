@@ -2,6 +2,7 @@ import "server-only";
 import { createServerClient } from "@supabase/ssr";
 import { Database } from "@/types/database";
 import { getRhCompanyId, hashRhCode } from "@/lib/rh-session";
+import { getRestoCompteId } from "@/lib/resto-session";
 import { signerJetonSupabase, type ClaimsCantine } from "./jeton";
 
 /**
@@ -110,4 +111,50 @@ export async function echangerSlugPortail(
   const companyId = await appelerEchange<string>("echanger_slug_portail", { p_slug: slug });
   if (!companyId) return null;
   return { companyId, supabase: createClientAvecClaims({ role_app: "portail", company_id: companyId }) };
+}
+
+/** Échange téléphone + code d'un compte restaurant contre l'id du compte, ou null si incorrect */
+export async function echangerAccesCompteRestaurant(telephone: string, code: string): Promise<string | null> {
+  return appelerEchange<string>("echanger_acces_compte_restaurant", {
+    p_telephone: telephone,
+    p_code_hash: hashRhCode(code),
+  });
+}
+
+/** Client du compte restaurant connecté (cookie déjà vérifié par getRestoCompteId) : fiche et partenariats */
+export function createClientCompteRestaurant(compteId: string): SupabaseServeur {
+  return createClientAvecClaims({ role_app: "compte_restaurant", compte_id: compteId });
+}
+
+/** Client du compte restaurant à partir du cookie de session, ou null si non connecté */
+export async function createClientCompteSession(): Promise<{ compteId: string; supabase: SupabaseServeur } | null> {
+  const compteId = await getRestoCompteId();
+  if (!compteId) return null;
+  return { compteId, supabase: createClientCompteRestaurant(compteId) };
+}
+
+/**
+ * Accès à un partenariat (une entreprise) du compte connecté : vérifie que la ligne restaurants
+ * appartient bien au compte, puis renvoie un client « restaurant » limité à ce partenariat.
+ */
+export async function accesPartenariatCompte(
+  restaurantId: string
+): Promise<{ compteId: string; restaurantId: string; companyId: string; supabase: SupabaseServeur } | null> {
+  const session = await createClientCompteSession();
+  if (!session) return null;
+  const { data } = await session.supabase
+    .from("restaurants")
+    .select("id, company_id")
+    .eq("id", restaurantId)
+    .eq("compte_id", session.compteId)
+    .eq("is_active", true)
+    .maybeSingle();
+  const ligne = data as { id: string; company_id: string } | null;
+  if (!ligne) return null;
+  return {
+    compteId: session.compteId,
+    restaurantId: ligne.id,
+    companyId: ligne.company_id,
+    supabase: createClientAvecClaims({ role_app: "restaurant", company_id: ligne.company_id, restaurant_id: ligne.id }),
+  };
 }

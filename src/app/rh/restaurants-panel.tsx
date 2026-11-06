@@ -1,8 +1,8 @@
 "use client";
 
 import { useEffect, useState, useTransition } from "react";
-import { Check, Copy, ExternalLink, Plus, Store, ToggleLeft, ToggleRight } from "lucide-react";
-import { addRestaurantAction, modifierRestaurantAction } from "./actions";
+import { BadgeCheck, Check, Copy, ExternalLink, Link2, Plus, Store, ToggleLeft, ToggleRight } from "lucide-react";
+import { addRestaurantAction, modifierRestaurantAction, rattacherRestaurantParCodeAction } from "./actions";
 import type { RestaurantInfo } from "./recap-restaurant";
 
 interface RestaurantsPanelProps {
@@ -17,6 +17,8 @@ export function RestaurantsPanel({ restaurants: initial, appBaseUrl, onError }: 
   const [telephone, setTelephone] = useState("");
   const [heure, setHeure] = useState("12:30");
   const [copie, setCopie] = useState<string | null>(null);
+  const [codePartenaire, setCodePartenaire] = useState("");
+  const [heureCode, setHeureCode] = useState("12:30");
   const [isPending, startTransition] = useTransition();
 
   useEffect(() => setRestaurants(initial), [initial]);
@@ -29,6 +31,21 @@ export function RestaurantsPanel({ restaurants: initial, appBaseUrl, onError }: 
         setRestaurants((prev) => [...prev, { ...res.restaurant, lien: `${appBaseUrl}/resto/${res.restaurant.token}` }]);
         setNom("");
         setTelephone("");
+        onError(null);
+      } else {
+        onError(res.message || "Impossible d'ajouter le restaurant.");
+      }
+    });
+  };
+
+  const rattacher = (e: React.FormEvent) => {
+    e.preventDefault();
+    startTransition(async () => {
+      const res = await rattacherRestaurantParCodeAction(codePartenaire, heureCode);
+      if (res.success && res.restaurant) {
+        const r = { ...res.restaurant, lien: `${appBaseUrl}/resto/${res.restaurant.token}` };
+        setRestaurants((prev) => (prev.some((x) => x.id === r.id) ? prev.map((x) => (x.id === r.id ? r : x)) : [...prev, r]));
+        setCodePartenaire("");
         onError(null);
       } else {
         onError(res.message || "Impossible d'ajouter le restaurant.");
@@ -63,13 +80,54 @@ export function RestaurantsPanel({ restaurants: initial, appBaseUrl, onError }: 
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+      <div className="lg:col-span-1 space-y-6">
+      <form
+        onSubmit={rattacher}
+        className="bg-white rounded-3xl p-6 border border-orange-200 shadow-sm space-y-3"
+      >
+        <h2 className="text-sm font-extrabold text-neutral-900 flex items-center gap-2">
+          <Link2 className="w-4 h-4 text-orange-500" />
+          Ajouter avec un code partenaire
+        </h2>
+        <p className="text-xs text-neutral-500">
+          Le restaurant est inscrit sur Cantine Pro ? Saisissez son code : il gère lui-même sa carte, ses
+          confirmations et son historique depuis son espace restaurant.
+        </p>
+        <input
+          type="text"
+          required
+          value={codePartenaire}
+          onChange={(e) => setCodePartenaire(e.target.value.toUpperCase())}
+          placeholder="Ex: A3F09B1C"
+          autoCapitalize="characters"
+          className="w-full text-sm font-mono tracking-widest px-3 py-2 rounded-xl border border-neutral-200 focus:outline-none focus:ring-2 focus:ring-orange-500"
+        />
+        <div>
+          <label className="block text-xs font-bold text-neutral-700 mb-1">Heure de livraison</label>
+          <input
+            type="time"
+            value={heureCode}
+            onChange={(e) => setHeureCode(e.target.value)}
+            className="w-full text-xs px-3 py-2 rounded-xl border border-neutral-200 focus:outline-none focus:ring-2 focus:ring-orange-500"
+          />
+        </div>
+        <button
+          type="submit"
+          disabled={isPending || codePartenaire.trim().length < 6}
+          className="w-full py-2.5 bg-orange-600 hover:bg-orange-700 active:scale-98 disabled:opacity-50 text-white font-bold text-xs rounded-xl transition flex items-center justify-center gap-1.5"
+        >
+          <Link2 className="w-4 h-4" />
+          Ajouter ce restaurant
+        </button>
+      </form>
+
       <form
         onSubmit={ajouter}
-        className="lg:col-span-1 bg-white rounded-3xl p-6 border border-neutral-200 shadow-sm space-y-3 h-fit"
+        className="bg-white rounded-3xl p-6 border border-neutral-200 shadow-sm space-y-3"
       >
         <h2 className="text-sm font-extrabold text-neutral-900 flex items-center gap-2">
           <Plus className="w-4 h-4 text-orange-500" />
-          Ajouter un restaurant
+          Ajouter sans code
         </h2>
         <p className="text-xs text-neutral-500">
           À 11h10, chaque restaurant reçoit sur WhatsApp le récapitulatif de ses plats commandés.
@@ -113,6 +171,7 @@ export function RestaurantsPanel({ restaurants: initial, appBaseUrl, onError }: 
           Ajouter le restaurant
         </button>
       </form>
+      </div>
 
       <div className="lg:col-span-2 space-y-3">
         {restaurants.length === 0 ? (
@@ -131,6 +190,15 @@ export function RestaurantsPanel({ restaurants: initial, appBaseUrl, onError }: 
                 <h3 className="text-sm font-extrabold text-neutral-900 flex items-center gap-2">
                   <Store className="w-4 h-4 text-orange-500" />
                   {r.nom}
+                  {r.compte_id && (
+                    <span
+                      title="Le restaurant gère son nom et son WhatsApp depuis son espace restaurant"
+                      className="text-[10px] bg-emerald-50 text-emerald-700 border border-emerald-200 px-2 py-0.5 rounded-full font-bold flex items-center gap-1"
+                    >
+                      <BadgeCheck className="w-3 h-3" />
+                      Espace restaurant
+                    </span>
+                  )}
                 </h3>
                 <button
                   type="button"
@@ -157,6 +225,8 @@ export function RestaurantsPanel({ restaurants: initial, appBaseUrl, onError }: 
                   <input
                     type="tel"
                     defaultValue={r.telephone_whatsapp || ""}
+                    readOnly={!!r.compte_id}
+                    title={r.compte_id ? "Numéro géré par le restaurant depuis son espace" : undefined}
                     placeholder="+221 77..."
                     onBlur={(e) =>
                       e.target.value !== (r.telephone_whatsapp || "") && modifier(r, { telephone: e.target.value })
@@ -178,7 +248,7 @@ export function RestaurantsPanel({ restaurants: initial, appBaseUrl, onError }: 
                   />
                 </label>
                 <div className="space-y-1">
-                  <span className="block font-bold text-neutral-500">Lien de confirmation</span>
+                  <span className="block font-bold text-neutral-500">Lien restaurant (carte et confirmation)</span>
                   <div className="flex gap-1.5">
                     <a
                       href={`/resto/${r.token}`}
