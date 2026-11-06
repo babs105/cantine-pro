@@ -81,13 +81,30 @@ export async function inscriptionEntrepriseAction(
       plan: champs.plan,
       statut_abonnement: "trial",
       trial_ends_at: new Date(Date.now() + DUREE_ESSAI_JOURS * 86400000).toISOString(),
-      rh_code_hash: hashRhCode(code),
     })
     .select("id")
     .single();
 
   if (error || !company) {
-    return { error: `Inscription impossible : ${error?.message || "erreur inconnue"}`, champs };
+    // Pas de message Postgres au visiteur (noms de contraintes, colonnes)
+    console.error("[inscription] création de l'entreprise :", error?.code);
+    return { error: "Inscription impossible pour le moment, réessayez dans quelques minutes.", champs };
+  }
+
+  // v1.10 : le code d'accès RH est stocké hors de companies (table acces_rh, illisible par les rôles applicatifs)
+  const { error: erreurAcces } = await (supabase.from("acces_rh") as any).insert({
+    company_id: company.id,
+    code_hash: hashRhCode(code),
+  });
+  if (erreurAcces) {
+    // Pas d'entreprise sans code d'accès : on annule l'inscription
+    console.error("[inscription] code d'accès :", erreurAcces.code);
+    const { error: erreurAnnulation } = await supabase.from("companies").delete().eq("id", company.id);
+    if (erreurAnnulation) {
+      // Entreprise orpheline (sans code) : à supprimer depuis la console SuperAdmin
+      console.error("[inscription] annulation impossible, entreprise orpheline :", company.id, erreurAnnulation.code);
+    }
+    return { error: "Inscription impossible pour le moment, réessayez dans quelques minutes.", champs };
   }
 
   // Invitation d'un restaurant (code partenaire dans le lien) : on le relie avec le JWT RH de la nouvelle entreprise

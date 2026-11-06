@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { createClientRh } from "@/lib/supabase/server";
 import { isDateValide, normaliserJoursTravail } from "@/lib/dates";
-import { getRhCompanyId, hashRhCode, verifyRhCode } from "@/lib/rh-session";
+import { getRhCompanyId, hashRhCode } from "@/lib/rh-session";
 import { getLignesFacturation, periodeMois, regrouperParPlat, type LigneFacturation } from "@/lib/facturation";
 
 const SESSION_EXPIREE = "Session RH expirée, reconnectez-vous.";
@@ -286,16 +286,21 @@ export async function changerCodeRhAction(
 ): Promise<{ success: boolean; message?: string }> {
   const ctx = await contexte();
   if ("erreur" in ctx) return { success: false, message: ctx.erreur };
+  // Une Server Action peut être appelée avec n'importe quoi : types et longueurs vérifiés ici
+  if (typeof ancien !== "string" || typeof nouveau !== "string") return { success: false, message: "Requête invalide." };
+  if (!ancien.trim()) return { success: false, message: "Saisissez votre code actuel." };
   if (nouveau.trim().length < 8) return { success: false, message: "Le nouveau code doit contenir au moins 8 caractères." };
+  if (nouveau.length > 200) return { success: false, message: "Le nouveau code est trop long (200 caractères maximum)." };
 
-  const { data: comp } = await ctx.supabase.from("companies").select("rh_code_hash").eq("id", ctx.companyId).single();
-  if (!verifyRhCode(ancien, (comp as any)?.rh_code_hash ?? null)) {
-    return { success: false, message: "Code actuel incorrect." };
+  // v1.10 : le hash n'est plus lisible par le RH ; la fonction SQL compare l'ancien code et limite les essais
+  const { data: change, error } = await (ctx.supabase as any).rpc("changer_code_rh", {
+    p_ancien_hash: hashRhCode(ancien),
+    p_nouveau_hash: hashRhCode(nouveau),
+  });
+  if (error?.code === "CP429") {
+    return { success: false, message: "Trop de codes actuels incorrects. Réessayez dans 15 minutes." };
   }
-
-  const { error } = await (ctx.supabase.from("companies") as any)
-    .update({ rh_code_hash: hashRhCode(nouveau) })
-    .eq("id", ctx.companyId);
-  if (error) return { success: false, message: error.message };
+  if (error) return { success: false, message: "Impossible de changer le code d'accès pour le moment." };
+  if (!change) return { success: false, message: "Code actuel incorrect." };
   return { success: true };
 }
