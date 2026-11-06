@@ -300,6 +300,21 @@ export interface Database {
           is_active?: boolean;
         };
       };
+      // v1.9 : migrations de données déjà exécutées, lue et écrite uniquement par schema.sql
+      // (aucun rôle applicatif n'y a accès)
+      schema_migrations: {
+        Row: {
+          nom: string;
+          applique_at: string;
+        };
+        Insert: {
+          nom: string;
+          applique_at?: string;
+        };
+        Update: {
+          applique_at?: string;
+        };
+      };
       // v1.8 : compteur d'échecs de connexion, lu et écrit uniquement par les fonctions SQL
       // (controler_tentatives, noter_echec_connexion, effacer_tentatives) : aucune politique RLS
       tentatives_connexion: {

@@ -32,6 +32,33 @@ Règles :
 - Un secret (token, hash, code) ne va pas dans une table qui a une politique SELECT ouverte à un autre rôle (RLS ne filtre pas les colonnes).
 - Montants en FCFA : `INTEGER`. Heures : `TIME`. Dates métier : `DATE`.
 
+### Migration de données (UPDATE / INSERT / DELETE sur des lignes existantes)
+
+Jamais nue : le script étant relancé en entier, elle se rejouerait à chaque relance (c'est ce qui créait
+des restaurants fantômes avant la v1.9). L'envelopper dans la table `schema_migrations`, avec un nom
+unique qui ne change plus jamais :
+
+```sql
+-- vX.Y : <ce que fait la migration de données>
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM public.schema_migrations WHERE nom = 'vX.Y-description-courte') THEN
+        UPDATE public.ma_table SET ... WHERE ...;
+        INSERT INTO public.schema_migrations (nom) VALUES ('vX.Y-description-courte');
+    END IF;
+END $$;
+```
+
+Seule exception admise : un `UPDATE ... WHERE colonne IS NULL` qui remplit une nouvelle colonne et
+reste sans effet à la relance.
+
+### Remplacer une fonction, une politique ou un trigger de la section 9
+
+Un `CREATE OR REPLACE FUNCTION` ou un `CREATE POLICY` placé avant la section 8 est écrasé, à chaque
+relance, par la définition de la section 9. Les remplacements vont donc dans le **bloc final** en fin
+de fichier (commencé en v1.9), qui doit toujours rester le dernier. La partie structure (colonnes,
+contraintes, index) reste avant la section 8.
+
 ## 2. Mettre à jour les types
 
 Dans `src/types/database.ts`, ajouter la colonne dans `Row`, `Insert` et `Update` de la table.

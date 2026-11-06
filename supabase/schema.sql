@@ -7,6 +7,32 @@
 -- Extension pour la génération automatique de tokens aléatoires sécurisés si besoin
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 
+-- v1.9 : migrations de données exécutées une seule fois.
+-- Ce script est relancé en entier : un UPDATE / INSERT de données nu se rejoue à chaque relance
+-- (restaurant fantôme, heure limite remise à 11h10, menus réattribués...). Chaque migration de
+-- données est donc enveloppée dans un bloc DO qui consulte cette table, puis s'y inscrit.
+-- Créée en tête de fichier car les blocs concernés sont plus bas.
+-- Première création sur une base existante (production, déjà en v1.8) : les migrations de données
+-- historiques sont marquées comme faites SANS être rejouées. Sur une base neuve (companies absente),
+-- rien n'est marqué : elles s'exécutent une fois, sur des tables vides.
+DO $$
+BEGIN
+    IF to_regclass('public.schema_migrations') IS NULL THEN
+        CREATE TABLE public.schema_migrations (
+            nom TEXT PRIMARY KEY,
+            applique_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        );
+        IF to_regclass('public.companies') IS NOT NULL THEN
+            INSERT INTO public.schema_migrations (nom) VALUES
+                ('v1.2-heure-limite-11h10'),
+                ('v1.2-traiteur-vers-restaurant'),
+                ('v1.7-acces-demo');
+        END IF;
+    END IF;
+END $$;
+-- Table technique : aucun rôle applicatif n'y accède (RLS activée en section 8, aucune politique)
+REVOKE ALL ON public.schema_migrations FROM PUBLIC, anon, authenticated;
+
 -- 1. TABLE DES ENTREPRISES PILOTES
 CREATE TABLE IF NOT EXISTS public.companies (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -123,7 +149,15 @@ ALTER TABLE public.companies
 
 -- Les votes ferment à 11h10, heure de l'envoi aux restaurants (ancien défaut : 11h00)
 ALTER TABLE public.companies ALTER COLUMN heure_limite_vote SET DEFAULT '11:10:00';
-UPDATE public.companies SET heure_limite_vote = '11:10:00' WHERE heure_limite_vote = '11:00:00';
+-- Exécuté une seule fois (v1.9, voir schema_migrations) : sinon une entreprise qui choisit 11h00
+-- serait remise à 11h10 à chaque relance
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM public.schema_migrations WHERE nom = 'v1.2-heure-limite-11h10') THEN
+        UPDATE public.companies SET heure_limite_vote = '11:10:00' WHERE heure_limite_vote = '11:00:00';
+        INSERT INTO public.schema_migrations (nom) VALUES ('v1.2-heure-limite-11h10');
+    END IF;
+END $$;
 
 CREATE TABLE IF NOT EXISTS public.restaurants (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -146,26 +180,35 @@ ALTER TABLE public.clotures
 
 -- Migration : l'ancien traiteur unique devient le premier restaurant de l'entreprise.
 -- Son token est repris : les liens /resto/... déjà envoyés continuent de fonctionner.
-INSERT INTO public.restaurants (company_id, nom, telephone_whatsapp, heure_livraison, token)
-SELECT c.id,
-       COALESCE(c.traiteur_nom, 'Restaurant partenaire'),
-       c.traiteur_telephone,
-       COALESCE(c.heure_livraison_souhaitee, '12:30:00'),
-       COALESCE(c.traiteur_token, encode(gen_random_bytes(12), 'hex'))
-FROM public.companies c
-WHERE NOT EXISTS (SELECT 1 FROM public.restaurants r WHERE r.company_id = c.id);
+-- Exécuté une seule fois (v1.9, voir schema_migrations) : sinon chaque relance créait un restaurant
+-- fantôme pour toute entreprise sans restaurant et réattribuait les menus d'un restaurant supprimé
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM public.schema_migrations WHERE nom = 'v1.2-traiteur-vers-restaurant') THEN
+        INSERT INTO public.restaurants (company_id, nom, telephone_whatsapp, heure_livraison, token)
+        SELECT c.id,
+               COALESCE(c.traiteur_nom, 'Restaurant partenaire'),
+               c.traiteur_telephone,
+               COALESCE(c.heure_livraison_souhaitee, '12:30:00'),
+               COALESCE(c.traiteur_token, encode(gen_random_bytes(12), 'hex'))
+        FROM public.companies c
+        WHERE NOT EXISTS (SELECT 1 FROM public.restaurants r WHERE r.company_id = c.id);
 
-UPDATE public.menus_du_jour m
-SET restaurant_id = (
-    SELECT r.id FROM public.restaurants r WHERE r.company_id = m.company_id ORDER BY r.created_at LIMIT 1
-)
-WHERE m.restaurant_id IS NULL;
+        UPDATE public.menus_du_jour m
+        SET restaurant_id = (
+            SELECT r.id FROM public.restaurants r WHERE r.company_id = m.company_id ORDER BY r.created_at LIMIT 1
+        )
+        WHERE m.restaurant_id IS NULL;
 
-UPDATE public.clotures cl
-SET restaurant_id = (
-    SELECT r.id FROM public.restaurants r WHERE r.company_id = cl.company_id ORDER BY r.created_at LIMIT 1
-)
-WHERE cl.restaurant_id IS NULL;
+        UPDATE public.clotures cl
+        SET restaurant_id = (
+            SELECT r.id FROM public.restaurants r WHERE r.company_id = cl.company_id ORDER BY r.created_at LIMIT 1
+        )
+        WHERE cl.restaurant_id IS NULL;
+
+        INSERT INTO public.schema_migrations (nom) VALUES ('v1.2-traiteur-vers-restaurant');
+    END IF;
+END $$;
 
 -- Une clôture par restaurant et par jour (au lieu d'une par entreprise)
 ALTER TABLE public.clotures DROP CONSTRAINT IF EXISTS unique_cloture_company_jour;
@@ -283,14 +326,22 @@ END $$;
 -- v1.7 : suppression des accès de démonstration (code RH et liens salariés publiés dans le dépôt).
 -- Les liens token-demo-* sont désactivés et remplacés par un token aléatoire ; le code RH de démo
 -- n'est retiré que s'il n'a jamais été changé (une entreprise qui l'a changé garde le sien).
-UPDATE public.employes
-SET token = encode(gen_random_bytes(8), 'hex'), is_active = false
-WHERE token LIKE 'token-demo-%';
+-- Exécuté une seule fois (v1.9, voir schema_migrations)
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM public.schema_migrations WHERE nom = 'v1.7-acces-demo') THEN
+        UPDATE public.employes
+        SET token = encode(gen_random_bytes(8), 'hex'), is_active = false
+        WHERE token LIKE 'token-demo-%';
 
-UPDATE public.companies
-SET rh_code_hash = NULL
-WHERE slug = 'pilote-thies'
-  AND rh_code_hash = encode(digest('pilote-thies-2026', 'sha256'), 'hex');
+        UPDATE public.companies
+        SET rh_code_hash = NULL
+        WHERE slug = 'pilote-thies'
+          AND rh_code_hash = encode(digest('pilote-thies-2026', 'sha256'), 'hex');
+
+        INSERT INTO public.schema_migrations (nom) VALUES ('v1.7-acces-demo');
+    END IF;
+END $$;
 
 -- v1.8 : limite des tentatives de connexion (Espace RH, compte restaurant, SuperAdmin).
 -- Le compteur est en base et non dans Next.js : la clé anon est publique et echanger_acces_* peut être
@@ -453,6 +504,7 @@ ALTER TABLE public.paiements ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.plats_restaurant ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.comptes_restaurant ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.tentatives_connexion ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.schema_migrations ENABLE ROW LEVEL SECURITY;
 ALTER VIEW public.vue_recapitulatif_traiteur SET (security_invoker = true);
 
 -- 9. POLITIQUES RLS : PATTERN HYBRIDE « TOKEN URL -> JWT COURT »
