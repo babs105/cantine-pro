@@ -20,16 +20,25 @@ export async function loginAdminAction(
   const { error: blocage } = await supabase.rpc("controler_tentatives", { p_cle: CLE_TENTATIVES_ADMIN });
   if (blocage) {
     if (blocage.code === "CP429") return { error: blocage.message };
-    // PGRST202 : fonction introuvable, le schéma v1.8 n'a pas encore été relancé dans Supabase
-    if (blocage.code === "PGRST202") return { error: "Relancez supabase/schema.sql dans Supabase (v1.8)." };
-    return { error: "Connexion impossible, réessayez." };
+    // Détail réservé aux logs serveur : la page de connexion ne doit rien dire de l'architecture.
+    // PGRST202 = fonction introuvable, le schéma v1.8 n'a pas été relancé dans Supabase.
+    console.error("[admin] controler_tentatives :", blocage.code);
+    return { error: "Connexion indisponible, réessayez plus tard." };
   }
 
-  if (!verifyAdminCode(String(formData.get("code") || ""))) {
-    await supabase.rpc("noter_echec_connexion", { p_cle: CLE_TENTATIVES_ADMIN });
-    return { error: "Code incorrect (ou SUPERADMIN_CODE non configuré)." };
+  if (!verifyAdminCode(String(formData.get("code") || "").slice(0, 200))) {
+    // Échec fermé : un échec non compté rendrait la limite inopérante
+    const { error: comptage } = await supabase.rpc("noter_echec_connexion", { p_cle: CLE_TENTATIVES_ADMIN });
+    if (comptage) {
+      console.error("[admin] noter_echec_connexion :", comptage.code);
+      return { error: "Connexion indisponible, réessayez plus tard." };
+    }
+    return { error: "Code incorrect." };
   }
-  await supabase.rpc("effacer_tentatives", { p_cle: CLE_TENTATIVES_ADMIN });
+
+  // Le code est bon : un compteur non effacé n'est pas une faille, on se contente de le journaliser
+  const { error: effacement } = await supabase.rpc("effacer_tentatives", { p_cle: CLE_TENTATIVES_ADMIN });
+  if (effacement) console.error("[admin] effacer_tentatives :", effacement.code);
   await createAdminSession();
   redirect("/admin");
 }

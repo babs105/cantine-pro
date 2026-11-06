@@ -303,6 +303,14 @@ CREATE TABLE IF NOT EXISTS public.tentatives_connexion (
     bloque_jusqu_a TIMESTAMPTZ
 );
 
+-- Le ménage filtre sur premier_echec_at à chaque échec
+CREATE INDEX IF NOT EXISTS idx_tentatives_connexion_premier_echec
+    ON public.tentatives_connexion (premier_echec_at);
+
+-- Supabase accorde par défaut tous les droits sur une nouvelle table à anon et authenticated :
+-- la RLS sans politique les bloque déjà, ce REVOKE protège aussi d'une RLS désactivée par erreur
+REVOKE ALL ON public.tentatives_connexion FROM PUBLIC, anon, authenticated;
+
 -- Lève une erreur CP429 si l'identifiant est bloqué
 CREATE OR REPLACE FUNCTION public.controler_tentatives(p_cle TEXT)
 RETURNS VOID
@@ -319,15 +327,22 @@ CREATE OR REPLACE FUNCTION public.noter_echec_connexion(p_cle TEXT)
 RETURNS VOID
 LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = public AS $$
 BEGIN
-    -- Ménage : les identifiants inventés par un attaquant ne s'accumulent pas
+    -- Ménage : les identifiants inventés par un attaquant ne s'accumulent pas.
+    -- Borné à 100 lignes (index sur premier_echec_at) et sans attendre les lignes verrouillées ailleurs.
     DELETE FROM public.tentatives_connexion
-    WHERE premier_echec_at < now() - interval '1 day'
-      AND (bloque_jusqu_a IS NULL OR bloque_jusqu_a < now());
+    WHERE cle IN (
+        SELECT cle FROM public.tentatives_connexion
+        WHERE premier_echec_at < now() - interval '1 day'
+          AND (bloque_jusqu_a IS NULL OR bloque_jusqu_a < now())
+        LIMIT 100
+        FOR UPDATE SKIP LOCKED
+    );
 
     INSERT INTO public.tentatives_connexion AS t (cle, echecs, premier_echec_at)
     VALUES (p_cle, 1, now())
     ON CONFLICT (cle) DO UPDATE SET
         echecs = CASE WHEN t.premier_echec_at < now() - interval '15 minutes' THEN 1 ELSE t.echecs + 1 END,
+        bloque_jusqu_a = CASE WHEN t.premier_echec_at < now() - interval '15 minutes' THEN NULL ELSE t.bloque_jusqu_a END,
         premier_echec_at = CASE WHEN t.premier_echec_at < now() - interval '15 minutes' THEN now() ELSE t.premier_echec_at END;
 
     UPDATE public.tentatives_connexion
@@ -396,9 +411,12 @@ CREATE OR REPLACE FUNCTION public.echanger_acces_rh(p_identifiant TEXT, p_code_h
 RETURNS UUID
 LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = public AS $$
 DECLARE
-    v_cle TEXT := 'rh:' || left(lower(trim(coalesce(p_identifiant, ''))), 200);
+    v_cle TEXT := 'rh:' || left(lower(trim(coalesce(p_identifiant, ''))), 100);
     v_id UUID;
 BEGIN
+    -- Une tentative à la fois par identifiant (verrou libéré au commit) : une rafale de requêtes
+    -- parallèles ne peut pas passer le contrôle avant que les échecs précédents soient comptés
+    PERFORM pg_advisory_xact_lock(hashtextextended(v_cle, 0));
     PERFORM public.controler_tentatives(v_cle);
 
     SELECT c.id INTO v_id
@@ -590,6 +608,8 @@ DECLARE
     v_cle TEXT := 'resto:' || left(trim(coalesce(p_telephone, '')), 50);
     v_id UUID;
 BEGIN
+    -- Une tentative à la fois par numéro (voir echanger_acces_rh)
+    PERFORM pg_advisory_xact_lock(hashtextextended(v_cle, 0));
     PERFORM public.controler_tentatives(v_cle);
 
     SELECT c.id INTO v_id FROM public.comptes_restaurant c
