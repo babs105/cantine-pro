@@ -114,11 +114,6 @@ CREATE TABLE IF NOT EXISTS public.clotures (
     CONSTRAINT unique_cloture_company_jour UNIQUE (company_id, date)
 );
 
--- Base créée avant la v1.1 : l'entreprise de démo existe déjà mais n'a pas de code RH
-UPDATE public.companies
-SET rh_code_hash = encode(digest('pilote-thies-2026', 'sha256'), 'hex')
-WHERE slug = 'pilote-thies' AND rh_code_hash IS NULL;
-
 -- 7. RESTAURANTS PARTENAIRES (v1.2) : plusieurs restaurants par entreprise
 -- Chaque plat du menu appartient à un restaurant ; à la clôture, chaque restaurant
 -- reçoit le récapitulatif de ses propres plats et le confirme via /resto/[token].
@@ -283,6 +278,18 @@ BEGIN
             ADD CONSTRAINT menus_du_jour_ajoute_par_check CHECK (ajoute_par IN ('rh', 'restaurant'));
     END IF;
 END $$;
+
+-- v1.7 : suppression des accès de démonstration (code RH et liens salariés publiés dans le dépôt).
+-- Les liens token-demo-* sont désactivés et remplacés par un token aléatoire ; le code RH de démo
+-- n'est retiré que s'il n'a jamais été changé (une entreprise qui l'a changé garde le sien).
+UPDATE public.employes
+SET token = encode(gen_random_bytes(8), 'hex'), is_active = false
+WHERE token LIKE 'token-demo-%';
+
+UPDATE public.companies
+SET rh_code_hash = NULL
+WHERE slug = 'pilote-thies'
+  AND rh_code_hash = encode(digest('pilote-thies-2026', 'sha256'), 'hex');
 
 -- 8. SÉCURITÉ : RLS ACTIVÉE SUR TOUTES LES TABLES
 -- Les politiques (section 9) n'ouvrent l'accès qu'aux requêtes portant un JWT signé par le serveur
@@ -615,42 +622,3 @@ GRANT EXECUTE ON FUNCTION public.rattacher_compte_restaurant(TEXT, TIME) TO auth
 GRANT EXECUTE ON FUNCTION public.synchroniser_compte_restaurant() TO authenticated;
 REVOKE EXECUTE ON FUNCTION public.relier_lien_restaurant(TEXT) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION public.relier_lien_restaurant(TEXT) TO authenticated;
-
--- 10. JEU DE DONNÉES DE TEST / DÉMARRAGE (ENTREPRISES PILOTES THIÈS)
-DO $$
-DECLARE
-    v_comp_id UUID;
-    v_resto1_id UUID;
-    v_resto2_id UUID;
-BEGIN
-    -- Insertion d'une entreprise pilote test si aucune n'existe
-    IF NOT EXISTS (SELECT 1 FROM public.companies WHERE slug = 'pilote-thies') THEN
-        -- Code RH de démo : pilote-thies-2026 (à changer avant le go-live)
-        INSERT INTO public.companies (nom, slug, heure_ouverture_vote, heure_limite_vote, rh_code_hash)
-        VALUES ('Pilote Thiès Innovation', 'pilote-thies', '08:00:00', '11:10:00', encode(digest('pilote-thies-2026', 'sha256'), 'hex'))
-        RETURNING id INTO v_comp_id;
-
-        -- Restaurants partenaires
-        INSERT INTO public.restaurants (company_id, nom, telephone_whatsapp, heure_livraison)
-        VALUES (v_comp_id, 'Chez Fatou Traiteur Thiès', '+221770000000', '12:30:00')
-        RETURNING id INTO v_resto1_id;
-
-        INSERT INTO public.restaurants (company_id, nom, telephone_whatsapp, heure_livraison)
-        VALUES (v_comp_id, 'Restaurant Le Teranga', '+221770000001', '12:45:00')
-        RETURNING id INTO v_resto2_id;
-
-        -- Employés de démonstration
-        INSERT INTO public.employes (company_id, nom, telephone, token)
-        VALUES 
-            (v_comp_id, 'Moussa Ndiaye', '+221771112233', 'token-demo-moussa'),
-            (v_comp_id, 'Aminata Sow', '+221772223344', 'token-demo-aminata'),
-            (v_comp_id, 'Cheikh Diop', '+221773334455', 'token-demo-cheikh');
-
-        -- Plats du jour du Sénégal
-        INSERT INTO public.menus_du_jour (company_id, restaurant_id, date, titre, description, prix_unitaire)
-        VALUES
-            (v_comp_id, v_resto1_id, CURRENT_DATE, 'Thiéboudienne Rouge Penda Mbaye', 'Riz au poisson avec légumes locaux et beignets de niébé', 1500),
-            (v_comp_id, v_resto1_id, CURRENT_DATE, 'Yassa Poulet au Feu de Bois', 'Poulet mariné au citron et oignons caramélisés avec riz blanc', 1500),
-            (v_comp_id, v_resto2_id, CURRENT_DATE, 'Soupou Kandia (Sauce Gombo)', 'Riz blanc avec sauce gombo, poisson fumé et fruits de mer', 1700);
-    END IF;
-END $$;

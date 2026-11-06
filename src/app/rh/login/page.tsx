@@ -40,7 +40,7 @@ export default function RhLoginPage() {
               required
               autoCapitalize="none"
               autoCorrect="off"
-              placeholder="ex: pilote-thies ou rh@entreprise.sn"
+              placeholder="ex: mon-entreprise ou rh@entreprise.sn"
               className="w-full text-xs px-3 py-2.5 rounded-xl border border-neutral-200 focus:outline-none focus:ring-2 focus:ring-orange-500"
             />
           </div>
