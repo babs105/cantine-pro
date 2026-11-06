@@ -873,28 +873,27 @@ GRANT EXECUTE ON FUNCTION public.echanger_jeton_salarie(TEXT) TO anon, authentic
 GRANT EXECUTE ON FUNCTION public.echanger_jeton_restaurant(TEXT) TO anon, authenticated, service_role;
 GRANT EXECUTE ON FUNCTION public.echanger_acces_rh(TEXT, TEXT) TO anon, authenticated, service_role;
 
--- 2. Clôtures : le restaurant ne peut que confirmer (aucune autre colonne, pas de retour en arrière)
+-- 2. Clôtures : le restaurant ne peut que confirmer (aucune autre colonne, pas de retour en arrière).
+-- Liste blanche : toute colonne autre que confirme_at / confirme_par est figée, y compris les futures.
 CREATE OR REPLACE FUNCTION public.proteger_cloture_restaurant()
 RETURNS TRIGGER LANGUAGE plpgsql SET search_path = public AS $$
 BEGIN
     IF public.jwt_role_app() = 'restaurant' THEN
-        IF NEW.company_id IS DISTINCT FROM OLD.company_id
-           OR NEW.restaurant_id IS DISTINCT FROM OLD.restaurant_id
-           OR NEW.date IS DISTINCT FROM OLD.date
-           OR NEW.recap IS DISTINCT FROM OLD.recap
-           OR NEW.total_repas IS DISTINCT FROM OLD.total_repas
-           OR NEW.message IS DISTINCT FROM OLD.message
-           OR NEW.envoi_statut IS DISTINCT FROM OLD.envoi_statut
-           OR NEW.envoi_erreur IS DISTINCT FROM OLD.envoi_erreur
-           OR NEW.envoye_at IS DISTINCT FROM OLD.envoye_at
-           OR NEW.created_at IS DISTINCT FROM OLD.created_at THEN
+        IF (to_jsonb(NEW) - 'confirme_at' - 'confirme_par')
+           IS DISTINCT FROM (to_jsonb(OLD) - 'confirme_at' - 'confirme_par') THEN
             RAISE EXCEPTION 'Un restaurant ne peut que confirmer sa commande.';
         END IF;
         IF OLD.confirme_at IS NOT NULL THEN
+            -- Déjà confirmée : ni annulation ni réécriture
             NEW.confirme_at := OLD.confirme_at;
             NEW.confirme_par := OLD.confirme_par;
         ELSIF NEW.confirme_at IS NOT NULL THEN
+            -- Confirmation : l'heure est celle du serveur, pas celle envoyée par le client
+            NEW.confirme_at := now();
             NEW.confirme_par := 'restaurant';
+        ELSE
+            -- Pas de confirmation : confirme_par ne bouge pas
+            NEW.confirme_par := OLD.confirme_par;
         END IF;
     END IF;
     RETURN NEW;
