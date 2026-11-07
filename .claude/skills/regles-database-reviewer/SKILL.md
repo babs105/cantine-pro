@@ -42,16 +42,23 @@ Cantine Pro utilise un **pattern hybride "token URL → JWT court"** :
 | compte_restaurant | — | — | — | ✅ |
 
 **Tables sensibles** (contiennent un secret ou une donnée financière) :
-`companies` (rh_code_hash, traiteur_token, email_contact, plan), `employes`
+`acces_rh` (code_hash du code RH, depuis la v1.10), `companies` (traiteur_token,
+code_acces, email_contact, plan), `employes`
 (token), `restaurants` (token), `comptes_restaurant` (code_hash,
 code_partenaire), `clotures` (recap, total_repas : base de facturation),
 `paiements`.
 
-**Cible à atteindre (v1.10)** : aucune colonne sensible ne doit rester dans
-une table qui a une policy SELECT ouverte à un autre rôle que le propriétaire
-du secret. Les tokens (employé, restaurant, code RH) doivent être dans des
-tables `*_secrets` **sans policy SELECT**. Ne pas supposer que la séparation
-existe : la proposer comme correction.
+**Cible (plan v1.10, validé)** : aucune colonne sensible ne doit être lisible
+par un rôle qui n'en a pas besoin. Deux moyens, selon le secret :
+- **Secret que personne ne lit** (hash d'un code) : table à part **sans
+  aucune policy**, accès par fonctions `SECURITY DEFINER`. Fait pour le code
+  RH : `acces_rh` (v1.10 T1, en production), `changer_code_rh`, `echanger_acces_rh`.
+- **Token que le RH doit lire** (`employes.token`, `restaurants.token`, envoyés
+  par WhatsApp) : il reste dans sa table ; on retire aux autres rôles leur
+  policy SELECT trop large et on la remplace par une fonction `SECURITY DEFINER`
+  à colonnes fixes (v1.10 T2 portail : fait, `portail_lister_salaries` et
+  `portail_inscrire_salarie` ; T3 salarié : à faire). Pas de tables
+  `*_secrets` pour ces tokens : décision du plan v1.10.
 
 ---
 
@@ -82,9 +89,10 @@ grep -n "USING (true)\|USING(true)" supabase/schema.sql
 **Postgres RLS ne filtre pas les colonnes.** Une policy `FOR SELECT` expose
 toutes les colonnes de la ligne. Tout champ dont le nom matche `token`,
 `hash`, `secret`, `code_`, `key` ou `password` doit être dans une table
-`*_secrets` **sans policy SELECT** (cible à atteindre : aujourd'hui
-`employes.token`, `restaurants.token` et `companies.rh_code_hash` sont encore
-dans les tables principales). Toute **nouvelle** colonne secrète ajoutée à une
+à part **sans policy SELECT**, ou n'être lisible que par les rôles qui en ont
+besoin (voir « Cible » plus haut : `companies.rh_code_hash` est supprimée depuis
+la v1.10 T1 ; `employes.token` n'est plus lisible par le portail depuis la v1.10
+T2 ; `restaurants.token` reste exposé au salarié jusqu'à T3). Toute **nouvelle** colonne secrète ajoutée à une
 table qui a une policy SELECT ouverte à un autre rôle est bloquante.
 
 ```bash
@@ -262,42 +270,15 @@ laisserait la RLS seule).
 **Toute table sans policy est suspecte** : c'est soit une table système
 (→ `REVOKE ALL`), soit une table où la RLS a été oubliée (→ critique).
 
-### C13 — `FOR UPDATE` interdit dans une sous-requête `IN` / `EXISTS` / `ANY` / `ALL`
+### C13 — `FOR UPDATE` dans une sous-requête `IN` : autorisé (ancienne règle retirée)
 
-PostgreSQL **interdit** `FOR UPDATE` dans une sous-requête `IN`, `EXISTS`,
-`ANY` ou `ALL`. Il faut passer par une CTE :
-
-```sql
--- ❌ Erreur à la création ou à l'exécution
-DELETE FROM public.tentatives_connexion
-WHERE cle IN (
-    SELECT cle FROM public.tentatives_connexion
-    WHERE ... LIMIT 100 FOR UPDATE SKIP LOCKED
-);
-
--- ✅ CTE
-WITH a_supprimer AS (
-    SELECT cle FROM public.tentatives_connexion
-    WHERE ... LIMIT 100 FOR UPDATE SKIP LOCKED
-)
-DELETE FROM public.tentatives_connexion
-WHERE cle IN (SELECT cle FROM a_supprimer);
-
--- ✅ ou DELETE ... USING
-DELETE FROM public.tentatives_connexion t
-USING (
-    SELECT cle FROM public.tentatives_connexion
-    WHERE ... LIMIT 100 FOR UPDATE SKIP LOCKED
-) s
-WHERE t.cle = s.cle;
-```
-
-**Test :** créer la fonction en dev, l'appeler une fois avec des données
-remplissant la condition (`premier_echec_at < now() - interval '1 day'`).
-Si erreur → bug C13.
-
-**Cas connu dans le schéma v1.9** : `noter_echec_connexion` contient
-`FOR UPDATE` dans une sous-requête `IN` → **bloquant** (corrigé en v1.10).
+Cette règle affirmait que PostgreSQL interdit `FOR UPDATE` dans une sous-requête
+`IN`. **C'est faux** : `DELETE ... WHERE cle IN (SELECT ... LIMIT 100 FOR UPDATE
+SKIP LOCKED)` est un motif de file d'attente accepté. `noter_echec_connexion`
+l'utilise et a été exécutée des dizaines de fois sans erreur (tests locaux
+PostgreSQL 18 de la v1.10, et en production depuis la v1.8). Ne plus le
+signaler. Restent interdits avec `FOR UPDATE` : `UNION`, `GROUP BY`, `DISTINCT`,
+`HAVING`, les agrégats et les fonctions de fenêtre.
 
 ### C14 — Codes d'erreur custom documentés
 
@@ -531,9 +512,8 @@ grep -nE "(token|hash|secret|code_|password|key)" supabase/schema.sql | \
 # Rate limiting (C11)
 grep -n "controler_tentatives\|noter_echec_connexion\|effacer_tentatives" supabase/schema.sql
 
-# FOR UPDATE dangereux (C13)
-grep -nB2 "FOR UPDATE SKIP LOCKED" supabase/schema.sql
-# Vérifier que chaque occurrence est dans une CTE (WITH ... AS), pas dans IN/EXISTS
+# FOR UPDATE (C13) : autorisé dans IN ; signaler seulement avec UNION, GROUP BY, DISTINCT, agrégat
+grep -nB2 "FOR UPDATE" supabase/schema.sql
 
 # Codes d'erreur custom (C14)
 grep -n "ERRCODE = 'CP" supabase/schema.sql
@@ -549,19 +529,19 @@ grep -n "REVOKE ALL ON public\." supabase/schema.sql
 
 ## 🎯 Cas de test d'auto-évaluation
 
-Le skill est correctement calibré si, en le chargeant sur le `schema.sql` v1.9
+Le skill est correctement calibré si, en le chargeant sur le `schema.sql` v1.10 (T1)
 actuel, l'agent trouve **au minimum** :
 
 1. ✅ `salarie_lit_les_restaurants` → token exposé (C3) — **toujours présent**
-2. ✅ `portail_lit_les_salaries` → token exposé (C3) — **toujours présent**
-3. ✅ `rh_lit_son_entreprise` → `rh_code_hash` exposé à 4 rôles (C3) — **toujours présent**
-4. ✅ `noter_echec_connexion` → `FOR UPDATE` dans sous-requête `IN` (C13) — **bug v1.9**
-5. ✅ `companies_secrets` / `employes_secrets` / `restaurants_secrets` → absentes (C3) — **cible non atteinte**
+2. ✅ `portail_lit_les_salaries` / `portail_inscrit_un_salarie` → **supprimées en v1.10 T2** (DROP en section 9, portail via `portail_lister_salaries` sans token) : vérifier l'absence de `CREATE POLICY portail_` sur `employes`
+3. ✅ `rh_lit_son_entreprise` → `rh_code_hash` → **corrigé en v1.10 T1** (colonne supprimée, `acces_rh` sans policy) : ne plus le signaler
+4. ✅ `noter_echec_connexion` → `FOR UPDATE` dans sous-requête `IN` → **pas un bug** (voir C13) : ne pas le signaler
+5. ✅ `acces_rh` présente sans policy, `REVOKE ALL` pour anon et authenticated (C3, v1.10 T1) — **à valider**
 6. ✅ Rate limiting `rattacher_compte_restaurant` → bien implémenté (C11) — **à valider, pas à corriger**
 7. ✅ `tentatives_connexion` sans policy → `REVOKE ALL` présent (C12) — **à valider**
 
-Points 1, 2, 3, 4, 5 → findings à corriger.
-Points 6, 7 → présents et corrects, à mentionner dans « ✅ Ce qui est bon ».
+Point 1 → finding à corriger (v1.10 T3).
+Points 2, 3, 4, 5, 6, 7 → corrects, à mentionner dans « ✅ Ce qui est bon ».
 
 S'il rate l'un de ces 7, renforcer la section correspondante.
 
