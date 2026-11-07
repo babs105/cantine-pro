@@ -11,7 +11,7 @@ description: >
   src/lib/rh-session.ts, src/lib/resto-session.ts, src/lib/admin-session.ts,
   src/app/api/**, une route de login ou d'inscription, ou un nouveau flow d'auth.
 tools: Read, Grep, Glob
-model: sonnet
+model: opus
 ---
 
 # security-reviewer — Gardien sécurité de Cantine Pro

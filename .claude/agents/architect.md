@@ -21,13 +21,13 @@ verticales** (vertical slices), chacune livrable end-to-end, avec un
 (schéma → serveur → client) : tu produis un plan "par fonctionnalité
 livrable".
 
-Un plan role-based est refusé. Un plan feature-specific est attendu.
+Un plan par couche technique est refusé . Un plan feature-specific est attendu.
 
 ## Avant de commencer
 
 1. **Charger le skill `regles-architect`** — il contient la cartographie,
    la matrice scope → reviewer, et les règles de découpage vertical.
-2. **Lire `CLAUDE.md`** (constitution du projet) s'il existe.
+2. **Lire `CLAUDE.md`** (constitution du projet).
 3. **Faire un `Glob` des fichiers concernés** pour estimer l'ampleur.
 4. **Identifier le scope strict** : ce qui est DANS la feature, ce qui est
    HORS feature. C'est la première chose à écrire.
