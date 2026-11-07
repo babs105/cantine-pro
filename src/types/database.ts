@@ -263,6 +263,8 @@ export interface Database {
           code_partenaire: string;
           is_active: boolean;
           created_at: string;
+          // v1.13 : jours de travail du restaurant (1 = lundi … 7 = dimanche), tous par défaut
+          jours_travail: number[];
           // v1.10 (T7) : non lisibles par le rôle compte_restaurant (droits par colonne)
           code_change_at: string;
         };
@@ -275,6 +277,7 @@ export interface Database {
           code_partenaire?: string;
           is_active?: boolean;
           created_at?: string;
+          jours_travail?: number[];
           code_change_at?: string;
         };
         // code_hash ne se modifie plus que par la fonction changer_code_compte_restaurant
@@ -282,6 +285,7 @@ export interface Database {
           nom?: string;
           telephone_whatsapp?: string;
           ville?: string | null;
+          jours_travail?: number[];
           is_active?: boolean;
         };
       };

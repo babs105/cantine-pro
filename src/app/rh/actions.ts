@@ -4,7 +4,15 @@ import { createClientRh } from "@/lib/supabase/server";
 import { messageErreur } from "@/lib/erreurs";
 import { revalidatePath } from "next/cache";
 import { generateToken, todayDakar } from "@/lib/config";
-import { ajouterJours, isDateValide, joursOuvres, lundiDeLaSemaine, normaliserJoursTravail } from "@/lib/dates";
+import {
+  ajouterJours,
+  isDateValide,
+  jourIso,
+  joursOuvres,
+  lundiDeLaSemaine,
+  normaliserJoursRestaurant,
+  normaliserJoursTravail,
+} from "@/lib/dates";
 import { getRhCompanyId } from "@/lib/rh-session";
 import { lignesVersEmployes, parseCsv, parseFichierEmployes, type LigneEmploye } from "@/lib/excel";
 import { cloturerEntreprise, rafraichirRecapCloture } from "@/lib/cloture";
@@ -275,10 +283,22 @@ export async function dupliquerSemaineAction(lundiCible: string): Promise<{
   const tous = (platsExistants || []) as any[];
   const joursDejaRemplis = new Set(tous.filter((p) => p.date >= lundi).map((p) => p.date));
 
+  // v1.13 : un plat n'est pas recopié un jour où son restaurant ne travaille pas (la base le refuserait)
+  const { data: joursRestos, error: erreurJours } = await (supabase as any).rpc("jours_travail_restaurants");
+  if (erreurJours) return { success: false, message: messageErreur("rh", erreurJours) };
+  const joursParResto = new Map<string, number[]>(
+    ((joursRestos as any[]) || []).map((r) => [r.restaurant_id, normaliserJoursRestaurant(r.jours_travail)])
+  );
+  const restoTravaille = (restaurantId: string | null, date: string) =>
+    !restaurantId || !joursParResto.has(restaurantId) || joursParResto.get(restaurantId)!.includes(jourIso(date));
+
   const aInserer = tous
     .filter((p) => p.date < lundi)
     .map((p) => ({ ...p, date: ajouterJours(p.date, 7) }))
-    .filter((p) => joursCibles.has(p.date) && p.date >= today && !joursDejaRemplis.has(p.date))
+    .filter(
+      (p) =>
+        joursCibles.has(p.date) && p.date >= today && !joursDejaRemplis.has(p.date) && restoTravaille(p.restaurant_id, p.date)
+    )
     .map((p) => ({
       company_id: companyId,
       date: p.date,

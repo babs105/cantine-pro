@@ -25,7 +25,7 @@ import {
   Wallet,
 } from "lucide-react";
 import { cn, formatFCFA } from "@/lib/utils";
-import { formatJourCourt } from "@/lib/dates";
+import { NOMS_JOURS, formatJourCourt } from "@/lib/dates";
 import { formatHeure, totalRepas } from "@/lib/recap";
 import type { RecapLigne } from "@/types/database";
 import { ConfirmButton } from "./confirm-button";
@@ -33,6 +33,7 @@ import { CarteRestaurant } from "./carte-restaurant";
 import {
   changerCodeRestoAction,
   copierCarteAction,
+  modifierJoursTravailRestoAction,
   modifierProfilRestoAction,
   type PlatCarte,
   type PlatMenuResto,
@@ -67,6 +68,8 @@ interface CompteResto {
   telephone_whatsapp: string;
   ville: string | null;
   code_partenaire: string;
+  /** v1.13 : jours de travail du restaurant (1 = lundi … 7 = dimanche), pour toutes ses entreprises */
+  jours_travail: number[];
 }
 
 interface EspaceRestaurantClientProps {
@@ -292,9 +295,11 @@ export function EspaceRestaurantClient({
           ) : (
             <MenusSemaineResto
               entreprises={entreprises}
+              joursRestaurant={compte.jours_travail}
               semaineLundi={semaineLundi}
               todayDate={todayDate}
               onAllerALaCarte={() => setOnglet("carte")}
+              onAllerAuxParametres={() => setOnglet("parametres")}
             />
           ))}
 
@@ -786,8 +791,23 @@ function OngletParametres({ compte }: { compte: CompteResto }) {
   const [ville, setVille] = useState(compte.ville || "");
   const [ancienCode, setAncienCode] = useState("");
   const [nouveauCode, setNouveauCode] = useState("");
+  const [jours, setJours] = useState<number[]>(compte.jours_travail);
   const [message, setMessage] = useState<{ ok: boolean; texte: string } | null>(null);
   const [isPending, startTransition] = useTransition();
+
+  const basculerJour = (j: number) =>
+    setJours((prev) => (prev.includes(j) ? prev.filter((x) => x !== j) : [...prev, j].sort((a, b) => a - b)));
+
+  const enregistrerJours = () => {
+    startTransition(async () => {
+      const res = await modifierJoursTravailRestoAction(jours);
+      setMessage(
+        res.success
+          ? { ok: true, texte: res.message || "Jours de travail enregistrés." }
+          : { ok: false, texte: res.message || "Erreur." }
+      );
+    });
+  };
 
   const enregistrer = (e: React.FormEvent) => {
     e.preventDefault();
@@ -886,6 +906,47 @@ function OngletParametres({ compte }: { compte: CompteResto }) {
             Changer le code
           </button>
         </form>
+
+        <div className={cn(bloc, "p-6 space-y-3 md:col-span-2")}>
+          <h2 className="text-sm font-extrabold text-neutral-900 flex items-center gap-2">
+            <CalendarDays className="w-4 h-4 text-orange-500" />
+            Jours de travail
+          </h2>
+          <div className="flex flex-wrap gap-1.5">
+            {NOMS_JOURS.map((nomJour, i) => {
+              const jour = i + 1;
+              const actif = jours.includes(jour);
+              return (
+                <button
+                  key={jour}
+                  type="button"
+                  aria-pressed={actif}
+                  onClick={() => basculerJour(jour)}
+                  className={cn(
+                    "px-3 py-1.5 rounded-xl text-xs font-bold border transition",
+                    actif
+                      ? "bg-orange-600 border-orange-600 text-white"
+                      : "bg-white border-neutral-200 text-neutral-500 hover:border-orange-300"
+                  )}
+                >
+                  {nomJour.slice(0, 3)}
+                </button>
+              );
+            })}
+          </div>
+          <p className="text-[11px] text-neutral-500">
+            Valables pour toutes vos entreprises. Les jours où vous ne travaillez pas, ni vous ni le RH ne pouvez
+            mettre vos plats au menu. Vos plats déjà prévus ces jours-là, à partir de demain, passent en rupture.
+          </p>
+          <button
+            type="button"
+            onClick={enregistrerJours}
+            disabled={isPending || jours.length === 0}
+            className="w-full sm:w-auto px-5 py-2.5 bg-orange-600 hover:bg-orange-700 disabled:opacity-50 text-white font-bold text-xs rounded-xl transition"
+          >
+            Enregistrer mes jours
+          </button>
+        </div>
       </div>
     </div>
   );
