@@ -513,6 +513,22 @@ REVOKE ALL ON public.acces_rh FROM PUBLIC, anon, authenticated;
 ALTER TABLE public.comptes_restaurant
     ADD COLUMN IF NOT EXISTS code_change_at TIMESTAMPTZ NOT NULL DEFAULT now();
 
+-- v1.11 : trace des blocages par IP tous identifiants confondus (clés rhipglob: et restoipglob:, plafond
+-- de 50 échecs / 15 min posé en v1.10 T19). tentatives_connexion repart à zéro toutes les 15 minutes :
+-- cette table garde l'historique pour régler le plafond sur des faits. Une ligne par blocage, écrite par
+-- noter_echec_plafonne (bloc final). L'IP est une donnée personnelle : lignes effacées au bout de 30 jours.
+-- Aucune politique : lue seulement depuis l'éditeur SQL (service_role / postgres).
+CREATE TABLE IF NOT EXISTS public.blocages_connexion (
+    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    cle TEXT NOT NULL, -- 'rhipglob:<ip>' ou 'restoipglob:<ip>'
+    echecs INTEGER NOT NULL,
+    bloque_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_blocages_connexion_bloque_at ON public.blocages_connexion (bloque_at);
+ALTER TABLE public.blocages_connexion ENABLE ROW LEVEL SECURITY;
+REVOKE ALL ON public.blocages_connexion FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON SEQUENCE public.blocages_connexion_id_seq FROM PUBLIC, anon, authenticated;
+
 -- 8. SÉCURITÉ : RLS ACTIVÉE SUR TOUTES LES TABLES
 -- Les politiques (section 9) n'ouvrent l'accès qu'aux requêtes portant un JWT signé par le serveur
 -- Next.js. La clé anon seule ne lit aucune table (tokens employés inclus).
@@ -2363,3 +2379,57 @@ GRANT EXECUTE ON FUNCTION public.echanger_acces_compte_restaurant(TEXT, TEXT, TE
 DROP POLICY IF EXISTS rh_lit_son_entreprise ON public.companies;
 CREATE POLICY rh_lit_son_entreprise ON public.companies FOR SELECT TO authenticated
     USING (public.jwt_role_app() = 'rh' AND id = public.jwt_company_id());
+
+
+-- ==============================================================================
+-- v1.11 : noter_echec_plafonne garde une trace de chaque blocage par IP tous identifiants confondus
+-- (table blocages_connexion), et efface les traces de plus de 30 jours. Comptage et blocage identiques à
+-- la version T13. Seul le passage « non bloqué -> bloqué » est tracé (état lu dans le RETURNING de
+-- l'upsert, ligne verrouillée) : deux appels simultanés sur la même IP (verrou par identifiant, pas par
+-- IP) ne donnent qu'une ligne. La purge tourne à chaque échec sur une clé globale.
+-- Bloc final : garder en dernier.
+-- ==============================================================================
+CREATE OR REPLACE FUNCTION public.noter_echec_plafonne(p_cle TEXT, p_max INT)
+RETURNS VOID
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = public AS $$
+DECLARE
+    v_seuil INTEGER := greatest(coalesce(p_max, 5), 1);
+    v_echecs INTEGER;
+    v_bloque_avant TIMESTAMPTZ;
+BEGIN
+    DELETE FROM public.tentatives_connexion
+    WHERE cle IN (
+        SELECT cle FROM public.tentatives_connexion
+        WHERE premier_echec_at < now() - interval '1 day'
+          AND (bloque_jusqu_a IS NULL OR bloque_jusqu_a < now())
+        LIMIT 100
+        FOR UPDATE SKIP LOCKED
+    );
+
+    INSERT INTO public.tentatives_connexion AS t (cle, echecs, premier_echec_at)
+    VALUES (p_cle, 1, now())
+    ON CONFLICT (cle) DO UPDATE SET
+        echecs = CASE WHEN t.premier_echec_at < now() - interval '15 minutes' THEN 1 ELSE t.echecs + 1 END,
+        bloque_jusqu_a = CASE WHEN t.premier_echec_at < now() - interval '15 minutes' THEN NULL ELSE t.bloque_jusqu_a END,
+        premier_echec_at = CASE WHEN t.premier_echec_at < now() - interval '15 minutes' THEN now() ELSE t.premier_echec_at END
+    RETURNING t.echecs, t.bloque_jusqu_a INTO v_echecs, v_bloque_avant;
+
+    UPDATE public.tentatives_connexion
+    SET bloque_jusqu_a = now() + interval '15 minutes'
+    WHERE cle = p_cle AND echecs >= v_seuil;
+
+    -- Clés par IP tous identifiants confondus seulement (les autres contiennent un e-mail ou un téléphone)
+    IF p_cle LIKE 'rhipglob:%' OR p_cle LIKE 'restoipglob:%' THEN
+        IF v_echecs >= v_seuil AND (v_bloque_avant IS NULL OR v_bloque_avant <= now()) THEN
+            INSERT INTO public.blocages_connexion (cle, echecs) VALUES (p_cle, v_echecs);
+        END IF;
+        DELETE FROM public.blocages_connexion
+        WHERE id IN (SELECT id FROM public.blocages_connexion
+                     WHERE bloque_at < now() - interval '30 days'
+                     LIMIT 100
+                     FOR UPDATE SKIP LOCKED);
+    END IF;
+END;
+$$;
+REVOKE EXECUTE ON FUNCTION public.noter_echec_plafonne(TEXT, INT) FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.noter_echec_plafonne(TEXT, INT) TO service_role;
