@@ -2336,3 +2336,30 @@ GRANT EXECUTE ON FUNCTION public.changer_code_compte_restaurant(TEXT, TEXT) TO a
 -- Bloc final : garder en dernier.
 -- ==============================================================================
 ALTER TABLE public.employes ALTER COLUMN token SET DEFAULT encode(gen_random_bytes(16), 'hex');
+
+-- ==============================================================================
+-- v1.10 (étape B) : retrait des accès que le code déployé n'utilise plus. Appliqué après le passage de la
+-- v1.10 sur main (2026-11-07) et la vérification en production. À partir de cette relance, ne plus revenir
+-- à un build antérieur à la v1.10 : il commanderait, se connecterait et lirait companies par ces accès.
+-- Placé en dernier : les blocs plus haut recréent ces politiques et ces GRANT à chaque relance.
+-- Bloc final : garder en dernier.
+-- ==============================================================================
+
+-- T10 B : le salarié n'écrit plus dans commandes que par passer_commande (SECURITY DEFINER).
+-- La lecture (salarie_lit_sa_commande) reste.
+DROP POLICY IF EXISTS salarie_passe_sa_commande ON public.commandes;
+DROP POLICY IF EXISTS salarie_modifie_sa_commande ON public.commandes;
+
+-- T13 B / T19 B : les connexions passent toujours par le serveur avec le JWT « connexion »
+-- (role = authenticated) ; la clé anon publique ne peut plus les appeler directement.
+-- session_rh_valide et session_compte_valide restent appelées en anon (client-serveur.ts).
+REVOKE EXECUTE ON FUNCTION public.echanger_acces_rh(TEXT, TEXT, TEXT) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.echanger_acces_rh(TEXT, TEXT, TEXT) TO authenticated, service_role;
+REVOKE EXECUTE ON FUNCTION public.echanger_acces_compte_restaurant(TEXT, TEXT, TEXT) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.echanger_acces_compte_restaurant(TEXT, TEXT, TEXT) TO authenticated, service_role;
+
+-- T14 B : le salarié et le restaurant lisent l'entreprise par entreprise_visible() ; la fiche complète
+-- de companies est réservée au RH.
+DROP POLICY IF EXISTS rh_lit_son_entreprise ON public.companies;
+CREATE POLICY rh_lit_son_entreprise ON public.companies FOR SELECT TO authenticated
+    USING (public.jwt_role_app() = 'rh' AND id = public.jwt_company_id());
