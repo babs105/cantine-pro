@@ -5,6 +5,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { createClientRh } from "@/lib/supabase/server";
 import { createRhSession, hashRhCode } from "@/lib/rh-session";
 import { DUREE_ESSAI_JOURS, isPlanId } from "@/lib/abonnement";
+import { limiterInscription } from "@/lib/limite-inscription";
 
 export interface InscriptionState {
   error?: string;
@@ -33,10 +34,10 @@ export async function inscriptionEntrepriseAction(
   formData: FormData
 ): Promise<InscriptionState> {
   const champs = {
-    nom: String(formData.get("nom") || "").trim(),
-    responsable: String(formData.get("responsable") || "").trim(),
-    email: String(formData.get("email") || "").trim().toLowerCase(),
-    telephone: String(formData.get("telephone") || "").trim(),
+    nom: String(formData.get("nom") || "").trim().slice(0, 120),
+    responsable: String(formData.get("responsable") || "").trim().slice(0, 120),
+    email: String(formData.get("email") || "").trim().toLowerCase().slice(0, 254),
+    telephone: String(formData.get("telephone") || "").trim().slice(0, 30),
     plan: String(formData.get("plan") || "pro"),
   };
   const code = String(formData.get("code") || "");
@@ -53,7 +54,10 @@ export async function inscriptionEntrepriseAction(
   if (code.trim().length < 8) return { error: "Le code d'accès doit contenir au moins 8 caractères.", champs };
   if (code !== confirmation) return { error: "Les deux codes d'accès ne correspondent pas.", champs };
 
+  // v1.10 (T16) : 5 tentatives en 15 minutes par IP, avant toute lecture (limite aussi l'énumération des e-mails)
   const supabase = createAdminClient();
+  const refus = await limiterInscription(supabase, "entreprise");
+  if (refus) return { error: refus, champs };
 
   const { data: dejaInscrite } = await supabase
     .from("companies")
