@@ -36,7 +36,7 @@ export async function inscriptionRestaurantAction(
   const telephone = normaliserTelephone(champs.telephone);
   if (champs.nom.length < 2) return { error: "Indiquez le nom du restaurant.", champs };
   if (!telephone || telephone.replace(/\D/g, "").length < 9) return { error: "Numéro WhatsApp invalide.", champs };
-  if (code.trim().length < 6) return { error: "Le code d'accès doit contenir au moins 6 caractères.", champs };
+  if (code.trim().length < 8) return { error: "Le code d'accès doit contenir au moins 8 caractères.", champs };
   if (code !== confirmation) return { error: "Les deux codes d'accès ne correspondent pas.", champs };
 
   // v1.10 (T16) : 5 tentatives en 15 minutes par IP, avant toute lecture (limite aussi l'énumération des numéros)

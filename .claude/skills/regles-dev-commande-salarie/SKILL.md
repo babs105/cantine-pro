@@ -14,8 +14,8 @@ description: >
 ## Contexte du flow
 
 Le salarié reçoit un lien magique `/p/[token]`. Le token est stocké en clair
-dans `employes.token` (16 caractères hex générés par `generateToken()` de
-`src/lib/config.ts`) : c'est le seul identifiant du salarié, il n'a ni compte
+dans `employes.token` (32 caractères hex générés par `generateToken()` de
+`src/lib/config.ts` depuis T20, 16 pour les liens plus anciens) : c'est le seul identifiant du salarié, il n'a ni compte
 ni cookie.
 
 À chaque requête serveur, le token est échangé par `echangerJetonSalarie(token)`

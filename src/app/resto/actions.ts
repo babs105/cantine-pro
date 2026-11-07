@@ -197,7 +197,7 @@ export async function changerCodeRestoAction(
   if (typeof ancienCode !== "string" || typeof nouveauCode !== "string") return { success: false, message: "Requête invalide." };
   if (!ancienCode.trim()) return { success: false, message: "Saisissez votre code actuel." };
   if (ancienCode.length > 200) return { success: false, message: "Code actuel incorrect." };
-  if (nouveauCode.trim().length < 6) return { success: false, message: "Le nouveau code doit contenir au moins 6 caractères." };
+  if (nouveauCode.trim().length < 8) return { success: false, message: "Le nouveau code doit contenir au moins 8 caractères." };
   if (nouveauCode.length > 200) return { success: false, message: "Le nouveau code est trop long (200 caractères maximum)." };
 
   const { data: change, error } = await (session.supabase as any).rpc("changer_code_compte_restaurant", {
