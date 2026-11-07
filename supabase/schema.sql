@@ -1319,3 +1319,82 @@ GRANT EXECUTE ON FUNCTION public.restaurants_visibles_salarie() TO authenticated
 ALTER TABLE public.companies
     DROP COLUMN IF EXISTS traiteur_token,
     DROP COLUMN IF EXISTS code_acces;
+
+-- ==============================================================================
+-- v1.10 (T5) : suppression du portail entreprise /c/[slug]. Son auto-inscription anonyme n'avait aucun
+-- quota (audit base, H-2) : n'importe qui connaissant le slug pouvait créer des salariés facturés.
+-- Les salariés sont désormais ajoutés uniquement par le RH (saisie ou import) et commandent depuis
+-- leur lien personnel /p/[token]. Les fonctions créées plus haut sont supprimées ici, à chaque relance,
+-- et le rôle portail perd la lecture de la fiche entreprise. Bloc final : garder en dernier.
+-- ==============================================================================
+DROP FUNCTION IF EXISTS public.portail_inscrire_salarie(TEXT, TEXT, INT);
+DROP FUNCTION IF EXISTS public.portail_lister_salaries();
+DROP FUNCTION IF EXISTS public.echanger_slug_portail(TEXT);
+
+DROP POLICY IF EXISTS rh_lit_son_entreprise ON public.companies;
+CREATE POLICY rh_lit_son_entreprise ON public.companies FOR SELECT TO authenticated
+    USING (public.jwt_role_app() IN ('rh', 'salarie', 'restaurant') AND id = public.jwt_company_id());
+
+-- ==============================================================================
+-- v1.10 (T6) : le compteur d'essais du code partenaire ne repart plus à zéro après un succès (audit base, C-1).
+-- Avant, n'importe qui pouvait créer son propre compte restaurant et intercaler son code valide entre
+-- 4 essais ratés : essais illimités sur les codes des autres comptes. Remplace rattacher_compte_restaurant
+-- (section 9, point 6), identique à une ligne près. Bloc final : garder en dernier.
+-- ==============================================================================
+CREATE OR REPLACE FUNCTION public.rattacher_compte_restaurant(p_code TEXT, p_heure_livraison TIME)
+RETURNS UUID
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = public AS $$
+DECLARE
+    v_compte public.comptes_restaurant%ROWTYPE;
+    v_company UUID := public.jwt_company_id();
+    v_cle TEXT;
+    v_id UUID;
+BEGIN
+    IF public.jwt_role_app() IS DISTINCT FROM 'rh' OR v_company IS NULL THEN
+        RAISE EXCEPTION 'Accès refusé';
+    END IF;
+    v_cle := 'partenaire:' || v_company::text;
+    PERFORM pg_advisory_xact_lock(hashtextextended(v_cle, 0));
+    PERFORM public.controler_tentatives(v_cle);
+
+    SELECT * INTO v_compte FROM public.comptes_restaurant
+    WHERE code_partenaire = upper(trim(p_code)) AND is_active;
+    IF NOT FOUND THEN
+        PERFORM public.noter_echec_connexion(v_cle);
+        RETURN NULL;
+    END IF;
+    -- Pas d'effacer_tentatives : un succès (par exemple avec son propre code partenaire) ne remet
+    -- pas le compteur à zéro ; la fenêtre de 15 min expire d'elle-même.
+
+    PERFORM set_config('cantine.rattachement', 'on', true);
+
+    SELECT id INTO v_id FROM public.restaurants WHERE company_id = v_company AND compte_id = v_compte.id;
+    IF v_id IS NOT NULL THEN
+        UPDATE public.restaurants SET is_active = true WHERE id = v_id;
+        RETURN v_id;
+    END IF;
+
+    INSERT INTO public.restaurants (company_id, nom, telephone_whatsapp, heure_livraison, compte_id)
+    VALUES (v_company, v_compte.nom, v_compte.telephone_whatsapp, COALESCE(p_heure_livraison, '12:30:00'), v_compte.id)
+    RETURNING id INTO v_id;
+    RETURN v_id;
+END;
+$$;
+REVOKE EXECUTE ON FUNCTION public.rattacher_compte_restaurant(TEXT, TIME) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.rattacher_compte_restaurant(TEXT, TIME) TO authenticated;
+
+-- ==============================================================================
+-- v1.10 (T6, suite) : régénération des codes partenaires courts (audit base, C-1). Les comptes créés
+-- avant la v1.9 ont un code de 8 caractères (4 octets), devinable par essais ; les nouveaux en ont 12
+-- (6 octets, valeur par défaut plus haut). Une seule fois, gardé par schema_migrations : les anciens codes
+-- de 8 caractères cessent de fonctionner, prévenir les restaurants concernés. Bloc final : garder en dernier.
+-- ==============================================================================
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM public.schema_migrations WHERE nom = 'v1.10-codes-partenaires-12') THEN
+        UPDATE public.comptes_restaurant
+        SET code_partenaire = upper(encode(gen_random_bytes(6), 'hex'))
+        WHERE length(code_partenaire) < 12;
+        INSERT INTO public.schema_migrations (nom) VALUES ('v1.10-codes-partenaires-12');
+    END IF;
+END $$;

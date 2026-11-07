@@ -8,7 +8,7 @@ import { signerJetonSupabase, type ClaimsCantine } from "./jeton";
 /**
  * Clients Supabase côté serveur avec la clé anon : la RLS s'applique à chaque requête.
  *
- * Pattern hybride : l'identifiant reçu (cookie RH, token salarié ou restaurant dans l'URL, slug du portail)
+ * Pattern hybride : l'identifiant reçu (cookie RH, token salarié ou restaurant dans l'URL)
  * est d'abord échangé contre des identifiants par une fonction SQL SECURITY DEFINER, puis le serveur
  * signe un JWT court dont les claims (role_app, company_id, employe_id, restaurant_id) filtrent les tables.
  * Le JWT ne quitte jamais le serveur. La clé service_role est réservée à ./admin.ts.
@@ -109,15 +109,6 @@ export async function echangerJetonRestaurant(
       restaurant_id: ligne.restaurant_id,
     }),
   };
-}
-
-/** Échange le slug du portail entreprise contre un client limité au portail de cette entreprise */
-export async function echangerSlugPortail(
-  slug: string
-): Promise<{ companyId: string; supabase: SupabaseServeur } | null> {
-  const companyId = await appelerEchange<string>("echanger_slug_portail", { p_slug: slug });
-  if (!companyId) return null;
-  return { companyId, supabase: createClientAvecClaims({ role_app: "portail", company_id: companyId }) };
 }
 
 /** Échange téléphone + code d'un compte restaurant contre l'id du compte, ou null si incorrect */

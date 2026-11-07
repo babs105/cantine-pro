@@ -34,7 +34,6 @@ reviewers. Ce n'est PAS un plan "par couche" (schéma → serveur → client).
 | `/rh/**` | RH | Cookie JWT `role_app='rh'` |
 | `/resto/**` | Restaurant | Cookie JWT `role_app='restaurant'` ou `compte_restaurant` |
 | `/p/[token]` | Salarié | JWT court `role_app='salarie'` |
-| `/c/[slug]` | Portail | JWT court `role_app='portail'` |
 | `/api/cron/**` | Système | `service_role` |
 
 ### Fichiers critiques

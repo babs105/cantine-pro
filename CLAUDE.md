@@ -31,7 +31,7 @@ Répondre et écrire en **français** : messages, commentaires de code, libellé
 - `supabase/schema.sql` : schéma complet et **idempotent** (relancé en entier dans l'éditeur SQL Supabase)
 
 Espaces : `/rh` (Espace RH, 7 onglets dans `rh-dashboard-client.tsx`), `/p/[token]` (salarié, PWA),
-`/resto` (espace restaurant multi-entreprises : `/resto/login`, `/resto/inscription`), `/resto/[token]` (lien restaurant d'une entreprise), `/c/[slug]` (portail entreprise), `/admin` (SuperAdmin), `/inscription`.
+`/resto` (espace restaurant multi-entreprises : `/resto/login`, `/resto/inscription`), `/resto/[token]` (lien restaurant d'une entreprise), `/admin` (SuperAdmin), `/inscription`.
 
 ## Règles du code
 Le processus de livraison (plan → tranche → dev → reviews → merge) est
@@ -50,7 +50,6 @@ filtrent chaque table via les politiques de `supabase/schema.sql` (section 9). L
 | Salarié `/p/[token]` | `echangerJetonSalarie(token)` → `{ supabase, employeId, companyId }` |
 | Restaurant `/resto/[token]` (une entreprise) | `echangerJetonRestaurant(token)` |
 | Compte restaurant `/resto` (cookie, plusieurs entreprises) | `createClientCompteSession()` pour la fiche et la liste des partenariats, puis `accesPartenariatCompte(restaurantId)` (JWT `restaurant` limité à une entreprise) |
-| Portail `/c/[slug]` | `echangerSlugPortail(slug)` |
 | SuperAdmin, cron, inscriptions (entreprise et restaurant), diagnostic | `createAdminClient()` (`admin.ts`, service_role, contourne la RLS) |
 
 Ne jamais utiliser `createAdminClient()` ailleurs. Le client navigateur (`client.ts`) ne lit rien : pas de politique pour `anon`.
@@ -69,7 +68,7 @@ Toute action RH suit ce modèle, dans cet ordre :
 ### Base de données
 - Nouvelle colonne ou table : ajouter un bloc `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` (ou `CREATE TABLE IF NOT EXISTS`) dans `supabase/schema.sql`, après le dernier bloc de migration et avant la section `ENABLE ROW LEVEL SECURITY` ; jamais modifier les blocs existants (skill `/migration-schema`). Puis mettre à jour `src/types/database.ts`.
 - Nouvelle table : activer la RLS et écrire ses politiques (section 9 de `schema.sql`), sinon les clients JWT n'y verront rien.
-- Nouvel accès d'un rôle (salarié, restaurant, portail) à une table : ajouter la politique correspondante.
+- Nouvel accès d'un rôle (salarié, restaurant) à une table : ajouter la politique correspondante.
 - Le schéma est appliqué à la main par l'utilisateur dans Supabase : lui rappeler de le relancer.
 
 ### Dates et heures

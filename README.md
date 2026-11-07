@@ -117,8 +117,8 @@ de confirmation `/resto/<token>`.
 Pour le pilote, **rien n'est envoyé automatiquement** : le RH déclenche chaque envoi depuis l'Espace RH.
 
 1. **Le matin** — le RH publie le menu du jour (chaque plat est rattaché au restaurant qui le prépare),
-   puis clique sur **« Envoyer sur WhatsApp »** (Suivi Live, étape 1) : le message avec le menu, le lien
-   du portail et l'heure limite est prêt à poster dans le groupe WhatsApp des salariés.
+   puis clique sur **« Envoyer sur WhatsApp »** (Suivi Live, étape 1) : le message avec le menu et l'heure
+   limite est prêt à poster dans le groupe WhatsApp des salariés, qui commandent depuis leur lien personnel.
 2. **De 08h00 à 11h10** — les salariés commandent sur la PWA. À 11h10 la commande se bloque toute seule.
 3. **Après 11h10** — le RH clique sur **« Clôturer la journée »** : un récapitulatif est figé par restaurant.
    Il envoie ensuite chaque récap avec **« Envoyer le récap »** sur la carte du restaurant (WhatsApp) ;

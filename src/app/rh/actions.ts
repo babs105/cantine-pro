@@ -2,7 +2,7 @@
 
 import { createClientRh } from "@/lib/supabase/server";
 import { revalidatePath } from "next/cache";
-import { generateToken, todayDakar, getAppBaseUrl } from "@/lib/config";
+import { generateToken, todayDakar } from "@/lib/config";
 import { ajouterJours, isDateValide, joursOuvres, lundiDeLaSemaine, normaliserJoursTravail } from "@/lib/dates";
 import { getRhCompanyId } from "@/lib/rh-session";
 import { lignesVersEmployes, parseCsv, parseFichierEmployes, type LigneEmploye } from "@/lib/excel";
@@ -637,7 +637,7 @@ export async function envoyerRelanceDernierRappelAction(): Promise<{ success: bo
   const supabase = createClientRh(companyId);
   const { data: company } = await supabase
     .from("companies")
-    .select("nom, slug, heure_limite_vote")
+    .select("nom, heure_limite_vote")
     .eq("id", companyId)
     .single();
 
@@ -672,12 +672,11 @@ export async function envoyerRelanceDernierRappelAction(): Promise<{ success: bo
   }
 
   const comp: any = company;
-  const lienPortail = `${getAppBaseUrl()}/c/${comp.slug}`;
   const heureLimite = (comp.heure_limite_vote || "11:10:00").slice(0, 5).replace(":", "h");
 
   const message = `⏰ *DERNIER RAPPEL — ${String(comp.nom).toUpperCase()}*\n` +
     `Les commandes ferment à *${heureLimite}* !\n\n` +
-    `👉 Choisissez ici : ${lienPortail}\n\n` +
+    `👉 Choisissez depuis votre lien personnel Cantine Pro.\n\n` +
     `_Sans réponse = « Ne mange pas » pour la facturation._`;
 
   const url = `https://wa.me/?text=${encodeURIComponent(message)}`;
