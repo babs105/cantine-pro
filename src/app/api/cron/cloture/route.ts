@@ -57,11 +57,18 @@ export async function GET(request: Request) {
       }
     }
 
+    // v1.12 : purge des traces de connexion (IP, identifiants hachés), indépendante du trafic.
+    // Un échec n'empêche pas les clôtures, déjà faites : il est signalé dans la réponse.
+    const { error: erreurPurge } = await (supabase as any).rpc("purger_traces_connexion");
+    // Visible dans les journaux Vercel (la réponse du cron n'est pas conservée) ; code seulement, pas le message
+    if (erreurPurge) console.error("purger_traces_connexion", erreurPurge.code);
+
     return NextResponse.json({
       status: "success",
       cloture_at: new Date().toISOString(),
       date: today,
       resultats,
+      purge_traces: erreurPurge ? "erreur" : "ok",
     });
   } catch (err: any) {
     return NextResponse.json({ error: err.message }, { status: 500 });

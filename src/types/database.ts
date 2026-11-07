@@ -325,7 +325,8 @@ export interface Database {
         Update: { cle?: string; echecs?: number; bloque_at?: string };
       };
       // v1.8 : compteur d'échecs de connexion, lu et écrit uniquement par les fonctions SQL
-      // (controler_tentatives, noter_echec_connexion, effacer_tentatives) : aucune politique RLS
+      // (controler_tentatives, noter_echec_connexion, effacer_tentatives) : aucune politique RLS.
+      // v1.12 : e-mail et téléphone hachés (md5) dans cle ; purge par purger_traces_connexion (cron)
       tentatives_connexion: {
         Row: {
           cle: string;

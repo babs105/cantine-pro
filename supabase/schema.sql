@@ -5,6 +5,13 @@
 --                 secrets hors de portée des rôles non RH (v1.10)
 -- ==============================================================================
 
+-- v1.12 : la relance prend des verrous exclusifs sur toutes les tables et les garde jusqu'à la fin du script.
+-- Si une requête longue tient déjà une table, mieux vaut échouer vite (tout est annulé, relancer plus tard)
+-- que bloquer le site : l'application ferait la queue derrière le script. Erreur attendue dans ce cas :
+-- « canceling statement due to lock timeout ». SET LOCAL : limité à la relance, la connexion de l'éditeur
+-- garde son réglage habituel pour les requêtes suivantes.
+SET LOCAL lock_timeout = '5s';
+
 -- Extension pour la génération automatique de tokens aléatoires sécurisés si besoin
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 
@@ -528,6 +535,27 @@ CREATE INDEX IF NOT EXISTS idx_blocages_connexion_bloque_at ON public.blocages_c
 ALTER TABLE public.blocages_connexion ENABLE ROW LEVEL SECURITY;
 REVOKE ALL ON public.blocages_connexion FROM PUBLIC, anon, authenticated;
 REVOKE ALL ON SEQUENCE public.blocages_connexion_id_seq FROM PUBLIC, anon, authenticated;
+
+-- v1.12 : bornes sur les textes et les prix écrits par le restaurant et le RH (le serveur coupe déjà à
+-- 120 / 300 caractères et 100 000 FCFA côté restaurant ; la base garde une marge). NOT VALID : les lignes
+-- existantes ne sont pas contrôlées, seules les écritures nouvelles.
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'menus_du_jour_bornes') THEN
+        ALTER TABLE public.menus_du_jour ADD CONSTRAINT menus_du_jour_bornes
+            CHECK (char_length(titre) <= 200 AND char_length(coalesce(description, '')) <= 1000
+                   AND prix_unitaire <= 1000000) NOT VALID;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'plats_restaurant_bornes') THEN
+        ALTER TABLE public.plats_restaurant ADD CONSTRAINT plats_restaurant_bornes
+            CHECK (char_length(titre) <= 200 AND char_length(coalesce(description, '')) <= 1000
+                   AND prix_unitaire <= 1000000) NOT VALID;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'comptes_restaurant_bornes') THEN
+        ALTER TABLE public.comptes_restaurant ADD CONSTRAINT comptes_restaurant_bornes
+            CHECK (char_length(nom) <= 200 AND char_length(coalesce(ville, '')) <= 100) NOT VALID;
+    END IF;
+END $$;
 
 -- 8. SÉCURITÉ : RLS ACTIVÉE SUR TOUTES LES TABLES
 -- Les politiques (section 9) n'ouvrent l'accès qu'aux requêtes portant un JWT signé par le serveur
@@ -2164,16 +2192,19 @@ BEGIN
 END $$;
 
 -- Format stocké : bcrypt seulement (le trigger convertit tout sha256 avant ce contrôle)
+-- v1.12 : NOT VALID, comme les autres invariants. Sur une base reconstruite qui garderait un hash historique
+-- mal formé, la validation de toute la table ferait échouer la relance (incident T19). Les écritures
+-- nouvelles restent contrôlées, et code_correspond refuse toute valeur non bcrypt.
 ALTER TABLE public.acces_rh DROP CONSTRAINT IF EXISTS acces_rh_code_hash_sha256;
 DO $$
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'acces_rh_code_hash_bcrypt') THEN
         ALTER TABLE public.acces_rh
-            ADD CONSTRAINT acces_rh_code_hash_bcrypt CHECK (code_hash ~ '^\$2[aby]\$[0-9]{2}\$.{53}$');
+            ADD CONSTRAINT acces_rh_code_hash_bcrypt CHECK (code_hash ~ '^\$2[aby]\$[0-9]{2}\$.{53}$') NOT VALID;
     END IF;
     IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'comptes_restaurant_code_hash_bcrypt') THEN
         ALTER TABLE public.comptes_restaurant
-            ADD CONSTRAINT comptes_restaurant_code_hash_bcrypt CHECK (code_hash ~ '^\$2[aby]\$[0-9]{2}\$.{53}$');
+            ADD CONSTRAINT comptes_restaurant_code_hash_bcrypt CHECK (code_hash ~ '^\$2[aby]\$[0-9]{2}\$.{53}$') NOT VALID;
     END IF;
 END $$;
 
@@ -2433,3 +2464,199 @@ END;
 $$;
 REVOKE EXECUTE ON FUNCTION public.noter_echec_plafonne(TEXT, INT) FROM PUBLIC, anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.noter_echec_plafonne(TEXT, INT) TO service_role;
+
+
+-- ==============================================================================
+-- v1.12 : durcissement issu de l'audit de la base du 2026-11-07.
+-- 1. Le restaurant ne change plus le prix, le titre, la date ni l'origine d'un plat dès que la journée est
+--    clôturée pour lui (récap envoyé), même avant sa confirmation. Le serveur le refusait déjà
+--    (verifierJourModifiable) ; la base le garantit aussi. Le RH garde la main jusqu'à la confirmation.
+-- 2. Les clés de tentatives_connexion ne contiennent plus d'e-mail ni de téléphone en clair (md5) :
+--    'rh:<md5>', 'rhip:<ip>|<md5>', 'resto:<md5>', 'restoip:<ip>|<md5>' (le commentaire de la table, plus
+--    haut, décrit l'ancien format). Pseudonymisation seulement : un md5 de téléphone se retrouve par force
+--    brute, d'où la purge à un jour. Le limiteur est inchangé ; les compteurs en cours repartent de zéro
+--    une fois, à cette relance.
+-- 3. purger_traces_connexion : purge indépendante du trafic, appelée par le cron (service_role).
+-- 4. authenticated perd les droits d'écriture qu'aucune politique n'utilise (défense en profondeur).
+-- Bloc final : garder en dernier.
+-- ==============================================================================
+
+-- 1. Vrai si une clôture existe (confirmée ou non) pour ce restaurant et ce jour, dans l'entreprise de
+--    l'appelant seulement (pas d'oracle sur les autres entreprises)
+CREATE OR REPLACE FUNCTION public.cloture_existe(p_company_id UUID, p_date DATE, p_restaurant_id UUID)
+RETURNS BOOLEAN
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public AS $$
+    SELECT p_restaurant_id IS NOT NULL AND p_company_id = public.jwt_company_id() AND EXISTS (
+        SELECT 1 FROM public.clotures cl
+        WHERE cl.company_id = p_company_id AND cl.date = p_date AND cl.restaurant_id = p_restaurant_id
+    )
+$$;
+-- Appelée par le trigger avec le rôle du client JWT
+REVOKE EXECUTE ON FUNCTION public.cloture_existe(UUID, DATE, UUID) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.cloture_existe(UUID, DATE, UUID) TO authenticated;
+
+CREATE OR REPLACE FUNCTION public.verrouiller_plat_facture()
+RETURNS TRIGGER LANGUAGE plpgsql SET search_path = public AS $$
+DECLARE
+    v_champs_factures BOOLEAN := TG_OP = 'DELETE'
+        OR NEW.prix_unitaire IS DISTINCT FROM OLD.prix_unitaire
+        OR NEW.titre IS DISTINCT FROM OLD.titre
+        OR NEW.restaurant_id IS DISTINCT FROM OLD.restaurant_id
+        OR NEW.date IS DISTINCT FROM OLD.date
+        OR NEW.company_id IS DISTINCT FROM OLD.company_id;
+BEGIN
+    IF current_user = 'authenticated' AND v_champs_factures
+       AND (public.cloture_confirmee(OLD.company_id, OLD.date, OLD.restaurant_id)
+            -- La destination compte aussi : un plat déplacé vers un restaurant déjà confirmé
+            -- ferait entrer ses repas dans une facture figée
+            OR (TG_OP = 'UPDATE' AND public.cloture_confirmee(NEW.company_id, NEW.date, NEW.restaurant_id))) THEN
+        RAISE EXCEPTION 'Ce restaurant a confirmé la commande du jour : ce plat ne peut plus être modifié.'
+            USING ERRCODE = 'CP412';
+    END IF;
+
+    IF current_user = 'authenticated' AND public.jwt_role_app() = 'restaurant' THEN
+        -- v1.12 : récap envoyé = prix figé pour le restaurant, même avant sa confirmation
+        IF v_champs_factures
+           AND (public.cloture_existe(OLD.company_id, OLD.date, OLD.restaurant_id)
+                OR (TG_OP = 'UPDATE' AND public.cloture_existe(NEW.company_id, NEW.date, NEW.restaurant_id))) THEN
+            RAISE EXCEPTION 'La commande de ce jour est déjà envoyée : ce plat ne peut plus être modifié.'
+                USING ERRCODE = 'CP412';
+        END IF;
+        -- Le restaurant ne fait pas passer un plat du RH pour le sien, ni l'inverse
+        IF TG_OP = 'UPDATE' AND NEW.ajoute_par IS DISTINCT FROM OLD.ajoute_par THEN
+            RAISE EXCEPTION 'Modification refusée' USING ERRCODE = '42501';
+        END IF;
+    END IF;
+
+    RETURN CASE WHEN TG_OP = 'DELETE' THEN OLD ELSE NEW END;
+END;
+$$;
+-- Le trigger trg_verrouiller_plat_facture (BEFORE UPDATE OR DELETE) appelle déjà cette fonction
+
+-- 2. Connexion RH : identifiant haché dans les clés (version T19 sinon identique)
+CREATE OR REPLACE FUNCTION public.echanger_acces_rh(p_identifiant TEXT, p_code_hash TEXT, p_ip TEXT DEFAULT NULL)
+RETURNS UUID
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = public AS $$
+DECLARE
+    v_ident TEXT := lower(trim(coalesce(p_identifiant, '')));
+    -- v1.12 : md5 de l'identifiant, l'e-mail n'est plus stocké en clair
+    v_ident_cle TEXT := md5(left(v_ident, 100));
+    v_cle TEXT := 'rh:' || v_ident_cle;
+    -- L'IP en tête ; elle n'est crue que si l'appel vient du serveur Next.js (JWT « connexion »)
+    v_ip TEXT := public.ip_pour_cle(CASE WHEN public.jwt_role_app() = 'connexion' THEN p_ip END);
+    v_cle_ip TEXT := 'rhip:' || v_ip || '|' || v_ident_cle;
+    -- T19 : compteur par IP tous identifiants confondus, seulement pour une IP crue
+    v_cle_glob TEXT := CASE WHEN v_ip <> 'inconnue' THEN 'rhipglob:' || v_ip END;
+    v_id UUID;
+    v_stocke TEXT;
+BEGIN
+    PERFORM pg_advisory_xact_lock(hashtextextended(v_cle, 0));
+    PERFORM public.controler_tentatives(v_cle);
+    PERFORM public.controler_tentatives(v_cle_ip);
+    IF v_cle_glob IS NOT NULL THEN
+        PERFORM public.controler_tentatives(v_cle_glob);
+    END IF;
+
+    -- T19 : la ligne d'abord, la comparaison ensuite : un seul bcrypt par tentative
+    SELECT c.id, a.code_hash INTO v_id, v_stocke
+    FROM public.companies c
+    JOIN public.acces_rh a ON a.company_id = c.id
+    WHERE CASE WHEN position('@' IN v_ident) > 0
+               THEN lower(c.email_contact) = v_ident
+               ELSE c.slug = v_ident END
+      AND c.is_active
+    LIMIT 1;
+    -- Identifiant inconnu (v_stocke NULL) : bcrypt leurre, même temps de réponse
+    IF NOT public.code_correspond(v_stocke, p_code_hash) THEN
+        v_id := NULL;
+    END IF;
+
+    IF v_id IS NULL THEN
+        IF v_cle_glob IS NOT NULL THEN
+            PERFORM public.noter_echec_plafonne(v_cle_glob, 50);
+        END IF;
+        PERFORM public.noter_echec_plafonne(v_cle_ip, 5);
+        PERFORM public.noter_echec_plafonne(v_cle, 30);
+    ELSE
+        PERFORM public.effacer_tentatives(v_cle_ip);
+    END IF;
+    RETURN v_id;
+END;
+$$;
+-- Étape B maintenue : pas d'appel direct avec la clé anon
+REVOKE EXECUTE ON FUNCTION public.echanger_acces_rh(TEXT, TEXT, TEXT) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.echanger_acces_rh(TEXT, TEXT, TEXT) TO authenticated, service_role;
+
+-- Connexion d'un compte restaurant : téléphone haché dans les clés (version T19 sinon identique)
+CREATE OR REPLACE FUNCTION public.echanger_acces_compte_restaurant(p_telephone TEXT, p_code_hash TEXT, p_ip TEXT DEFAULT NULL)
+RETURNS UUID
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = public AS $$
+DECLARE
+    v_tel_cle TEXT := md5(left(trim(coalesce(p_telephone, '')), 50));
+    v_cle TEXT := 'resto:' || v_tel_cle;
+    v_ip TEXT := public.ip_pour_cle(CASE WHEN public.jwt_role_app() = 'connexion' THEN p_ip END);
+    v_cle_ip TEXT := 'restoip:' || v_ip || '|' || v_tel_cle;
+    v_cle_glob TEXT := CASE WHEN v_ip <> 'inconnue' THEN 'restoipglob:' || v_ip END;
+    v_id UUID;
+    v_stocke TEXT;
+BEGIN
+    PERFORM pg_advisory_xact_lock(hashtextextended(v_cle, 0));
+    PERFORM public.controler_tentatives(v_cle);
+    PERFORM public.controler_tentatives(v_cle_ip);
+    IF v_cle_glob IS NOT NULL THEN
+        PERFORM public.controler_tentatives(v_cle_glob);
+    END IF;
+
+    SELECT c.id, c.code_hash INTO v_id, v_stocke FROM public.comptes_restaurant c
+    WHERE c.telephone_whatsapp = p_telephone
+      AND c.is_active
+    LIMIT 1;
+    IF NOT public.code_correspond(v_stocke, p_code_hash) THEN
+        v_id := NULL;
+    END IF;
+
+    IF v_id IS NULL THEN
+        IF v_cle_glob IS NOT NULL THEN
+            PERFORM public.noter_echec_plafonne(v_cle_glob, 50);
+        END IF;
+        PERFORM public.noter_echec_plafonne(v_cle_ip, 5);
+        PERFORM public.noter_echec_plafonne(v_cle, 30);
+    ELSE
+        PERFORM public.effacer_tentatives(v_cle_ip);
+    END IF;
+    RETURN v_id;
+END;
+$$;
+REVOKE EXECUTE ON FUNCTION public.echanger_acces_compte_restaurant(TEXT, TEXT, TEXT) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.echanger_acces_compte_restaurant(TEXT, TEXT, TEXT) TO authenticated, service_role;
+
+-- Les anciennes clés en clair (rh:, rhip:, resto:, restoip:) ne servent plus : effacées une fois.
+-- Les clés par IP seule (rhipglob:, restoipglob:, inscription-*, changecode*) restent.
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM public.schema_migrations WHERE nom = 'v1.12-cles-connexion-hachees') THEN
+        DELETE FROM public.tentatives_connexion
+        WHERE cle LIKE 'rh:%' OR cle LIKE 'rhip:%' OR cle LIKE 'resto:%' OR cle LIKE 'restoip:%';
+        INSERT INTO public.schema_migrations (nom) VALUES ('v1.12-cles-connexion-hachees');
+    END IF;
+END $$;
+
+-- 3. Purge des traces de connexion, sans attendre un nouvel échec : compteurs de plus d'un jour non
+--    bloqués, blocages par IP de plus de 30 jours
+CREATE OR REPLACE FUNCTION public.purger_traces_connexion()
+RETURNS VOID
+LANGUAGE sql VOLATILE SECURITY DEFINER SET search_path = public AS $$
+    DELETE FROM public.tentatives_connexion
+    WHERE premier_echec_at < now() - interval '1 day'
+      AND (bloque_jusqu_a IS NULL OR bloque_jusqu_a < now());
+    DELETE FROM public.blocages_connexion WHERE bloque_at < now() - interval '30 days';
+$$;
+REVOKE EXECUTE ON FUNCTION public.purger_traces_connexion() FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.purger_traces_connexion() TO service_role;
+
+-- 4. Écritures qu'aucune politique n'ouvre à authenticated : la RLS les bloque déjà, le retrait des droits
+--    protège contre une politique trop large ajoutée plus tard. Les inscriptions et le SuperAdmin passent
+--    par service_role ; le RH et le restaurant gardent leurs UPDATE de colonnes (companies, comptes_restaurant).
+REVOKE INSERT, DELETE ON public.companies FROM authenticated;
+REVOKE INSERT, DELETE ON public.comptes_restaurant FROM authenticated;
+REVOKE INSERT, UPDATE, DELETE ON public.paiements FROM authenticated;
