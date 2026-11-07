@@ -2085,7 +2085,7 @@ END $$;
 -- 5) Les quatre fonctions de connexion et de changement de code comparent avec code_correspond.
 -- pgcrypto est dans le schéma extensions sur Supabase (public ailleurs) : d'où search_path = extensions, public.
 -- 6) Les connexions lisent la ligne par l'identifiant puis comparent une seule fois (un seul bcrypt par
---    tentative), et un compteur par IP tous identifiants confondus borne le balayage d'identifiants.
+--    tentative), et un compteur par IP tous identifiants confondus (50 / 15 min) borne le balayage d'identifiants.
 -- Bloc final : garder en dernier.
 -- ==============================================================================
 
@@ -2097,7 +2097,7 @@ LANGUAGE sql VOLATILE COST 10000 SET search_path = extensions, public AS $$
         WHEN p_fourni IS NULL OR p_fourni !~ '^[0-9a-fA-F]{64}$' THEN false
         -- Identifiant inconnu : bcrypt leurre, même coût qu'un vrai contrôle, résultat toujours faux
         WHEN p_stocke IS NULL THEN crypt(lower(p_fourni), gen_salt('bf', 10)) IS NULL
-        WHEN p_stocke ~ '^\$2[aby]\$[0-9]{2}\$' THEN crypt(lower(p_fourni), p_stocke) = p_stocke
+        WHEN p_stocke ~ '^\$2[aby]\$[0-9]{2}\$.{53}$' THEN crypt(lower(p_fourni), p_stocke) = p_stocke
         -- Plus de branche sha256 : une valeur stockée non bcrypt ne vaut jamais un code
         ELSE false
     END
@@ -2170,7 +2170,8 @@ DECLARE
     -- la clé anon tombe dans le compteur partagé « inconnue », à 5 échecs
     v_ip TEXT := public.ip_pour_cle(CASE WHEN public.jwt_role_app() = 'connexion' THEN p_ip END);
     v_cle_ip TEXT := 'rhip:' || v_ip || '|' || left(v_ident, 100);
-    -- T19 : compteur par IP tous identifiants confondus (borne le balayage d'e-mails), seulement pour une IP
+    -- T19 : compteur par IP tous identifiants confondus (50 échecs / 15 min : NAT partagé des opérateurs
+    -- mobiles), il borne le balayage d'e-mails ; seulement pour une IP
     -- crue : la clé partagée « inconnue » bloquerait tous les appels anon d'un coup
     v_cle_glob TEXT := CASE WHEN v_ip <> 'inconnue' THEN 'rhipglob:' || v_ip END;
     v_id UUID;
@@ -2199,7 +2200,7 @@ BEGIN
 
     IF v_id IS NULL THEN
         IF v_cle_glob IS NOT NULL THEN
-            PERFORM public.noter_echec_plafonne(v_cle_glob, 30);
+            PERFORM public.noter_echec_plafonne(v_cle_glob, 50);
         END IF;
         PERFORM public.noter_echec_plafonne(v_cle_ip, 5);
         PERFORM public.noter_echec_plafonne(v_cle, 30);
@@ -2242,7 +2243,7 @@ BEGIN
 
     IF v_id IS NULL THEN
         IF v_cle_glob IS NOT NULL THEN
-            PERFORM public.noter_echec_plafonne(v_cle_glob, 30);
+            PERFORM public.noter_echec_plafonne(v_cle_glob, 50);
         END IF;
         PERFORM public.noter_echec_plafonne(v_cle_ip, 5);
         PERFORM public.noter_echec_plafonne(v_cle, 30);
