@@ -111,8 +111,9 @@ GROUP BY c.id, c.nom, cmd.date, m.id, m.titre;
 
 -- 6. ACCÈS RH, PASSERELLE TRAITEUR & CLÔTURES 11H05 (v1.1)
 -- Ré-exécutable sur une base existante : les colonnes sont ajoutées si absentes.
+-- v1.10 : la colonne rh_code_hash n'est plus créée ici (le hash du code RH est dans acces_rh) ;
+-- sinon chaque relance la recréerait, lisible par les rôles salarié, restaurant et portail.
 ALTER TABLE public.companies
-    ADD COLUMN IF NOT EXISTS rh_code_hash TEXT, -- sha256 hex du code d'accès RH
     ADD COLUMN IF NOT EXISTS traiteur_token TEXT UNIQUE DEFAULT encode(gen_random_bytes(12), 'hex'); -- Lien: /resto/[token]
 
 UPDATE public.companies
@@ -334,10 +335,16 @@ BEGIN
         SET token = encode(gen_random_bytes(8), 'hex'), is_active = false
         WHERE token LIKE 'token-demo-%';
 
-        UPDATE public.companies
-        SET rh_code_hash = NULL
-        WHERE slug = 'pilote-thies'
-          AND rh_code_hash = encode(digest('pilote-thies-2026', 'sha256'), 'hex');
+        -- v1.10 : la colonne n'existe plus sur une base neuve (le code RH est dans acces_rh)
+        IF EXISTS (SELECT 1 FROM information_schema.columns
+                   WHERE table_schema = 'public' AND table_name = 'companies' AND column_name = 'rh_code_hash') THEN
+            EXECUTE $q$
+                UPDATE public.companies
+                SET rh_code_hash = NULL
+                WHERE slug = 'pilote-thies'
+                  AND rh_code_hash = encode(digest('pilote-thies-2026', 'sha256'), 'hex')
+            $q$;
+        END IF;
 
         INSERT INTO public.schema_migrations (nom) VALUES ('v1.7-acces-demo');
     END IF;
@@ -494,8 +501,7 @@ CREATE INDEX IF NOT EXISTS idx_menus_restaurant ON public.menus_du_jour(restaura
 -- v1.10 (T1, étape A) : le hash du code RH quitte companies, lisible par les rôles salarié, restaurant
 -- et portail (et qui vaut le code : echanger_acces_rh accepte le hash). Table sans aucune politique :
 -- seules les fonctions SECURITY DEFINER (echanger_acces_rh, changer_code_rh) et le service_role la lisent.
--- Étape A transitoire : companies.rh_code_hash est conservée et recopiée ici par un trigger (bloc final),
--- pour que le code déjà déployé continue de fonctionner. Sa suppression est l'étape B (commit séparé).
+-- Étape B : companies.rh_code_hash est supprimée en fin de fichier, après recopie (bloc final v1.10).
 CREATE TABLE IF NOT EXISTS public.acces_rh (
     company_id UUID PRIMARY KEY REFERENCES public.companies(id) ON DELETE CASCADE,
     code_hash TEXT NOT NULL, -- sha256 hex du code d'accès RH
@@ -1093,41 +1099,60 @@ REVOKE ALL ON ALL TABLES IN SCHEMA public FROM anon;
 ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE ALL ON TABLES FROM anon;
 
 -- ==============================================================================
--- v1.10 (T1, étape A) : code d'accès RH lu dans acces_rh, plus jamais dans companies.
+-- v1.10 (T1) : code d'accès RH lu dans acces_rh, plus jamais dans companies.
 -- Bloc final : remplace echanger_acces_rh (définie plus haut). Garder en dernier.
+-- Étape B : la synchronisation transitoire et companies.rh_code_hash sont supprimées.
+-- À n'appliquer qu'une fois le code de l'étape A déployé (l'ancien code écrit encore la colonne).
 -- ==============================================================================
 
--- Synchronisation transitoire companies.rh_code_hash -> acces_rh : le code déjà déployé (inscription,
--- changement de code) écrit encore la colonne. À supprimer à l'étape B, avec la colonne.
-CREATE OR REPLACE FUNCTION public.synchroniser_acces_rh()
-RETURNS TRIGGER LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
-BEGIN
-    IF NEW.rh_code_hash IS NULL THEN
-        IF TG_OP = 'UPDATE' THEN
-            DELETE FROM public.acces_rh WHERE company_id = NEW.id;
-        END IF;
-    ELSE
-        INSERT INTO public.acces_rh (company_id, code_hash)
-        VALUES (NEW.id, lower(NEW.rh_code_hash))
-        ON CONFLICT (company_id) DO UPDATE SET code_hash = EXCLUDED.code_hash, updated_at = now();
-    END IF;
-    RETURN NULL;
-END;
-$$;
+-- Synchronisation transitoire de l'étape A : plus utile, le code déployé n'écrit plus la colonne
 DROP TRIGGER IF EXISTS trg_synchroniser_acces_rh ON public.companies;
-CREATE TRIGGER trg_synchroniser_acces_rh
-    AFTER INSERT OR UPDATE OF rh_code_hash ON public.companies
-    FOR EACH ROW EXECUTE FUNCTION public.synchroniser_acces_rh();
-REVOKE EXECUTE ON FUNCTION public.synchroniser_acces_rh() FROM PUBLIC, anon, authenticated;
+DROP FUNCTION IF EXISTS public.synchroniser_acces_rh();
 
--- Copie unique des hash existants (après le trigger : rien ne peut passer entre les deux)
+-- Copie unique des hash existants. Déjà faite sur une base passée par l'étape A ; sur une base neuve,
+-- la colonne n'existe pas et la migration est simplement marquée.
 DO $$
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM public.schema_migrations WHERE nom = 'v1.10-acces-rh-copie') THEN
-        INSERT INTO public.acces_rh (company_id, code_hash)
-        SELECT id, lower(rh_code_hash) FROM public.companies WHERE rh_code_hash IS NOT NULL
-        ON CONFLICT (company_id) DO UPDATE SET code_hash = EXCLUDED.code_hash, updated_at = now();
+        IF EXISTS (SELECT 1 FROM information_schema.columns
+                   WHERE table_schema = 'public' AND table_name = 'companies' AND column_name = 'rh_code_hash') THEN
+            EXECUTE $q$
+                INSERT INTO public.acces_rh (company_id, code_hash)
+                SELECT id, lower(rh_code_hash) FROM public.companies WHERE rh_code_hash IS NOT NULL
+                ON CONFLICT (company_id) DO UPDATE SET code_hash = EXCLUDED.code_hash, updated_at = now()
+            $q$;
+        END IF;
         INSERT INTO public.schema_migrations (nom) VALUES ('v1.10-acces-rh-copie');
+    END IF;
+END $$;
+
+-- Garde-fou : la suppression est irréversible, elle est refusée si un hash n'a pas été recopié
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM information_schema.columns
+               WHERE table_schema = 'public' AND table_name = 'companies' AND column_name = 'rh_code_hash') THEN
+        EXECUTE $q$
+            DO $verif$
+            BEGIN
+                IF EXISTS (SELECT 1 FROM public.companies c
+                           WHERE c.rh_code_hash IS NOT NULL
+                             AND NOT EXISTS (SELECT 1 FROM public.acces_rh a WHERE a.company_id = c.id)) THEN
+                    RAISE EXCEPTION 'Copie vers acces_rh incomplète : companies.rh_code_hash non supprimée';
+                END IF;
+            END $verif$
+        $q$;
+    END IF;
+END $$;
+
+-- Le hash quitte définitivement companies (irréversible : la copie ci-dessus a lieu avant)
+ALTER TABLE public.companies DROP COLUMN IF EXISTS rh_code_hash;
+
+-- Format du hash : sha256 hexadécimal en minuscules (un hash vide ouvrirait l'accès)
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'acces_rh_code_hash_sha256') THEN
+        ALTER TABLE public.acces_rh
+            ADD CONSTRAINT acces_rh_code_hash_sha256 CHECK (code_hash ~ '^[0-9a-f]{64}$') NOT VALID;
     END IF;
 END $$;
 
@@ -1150,6 +1175,8 @@ BEGIN
                THEN lower(c.email_contact) = v_ident
                ELSE c.slug = v_ident END
       AND c.is_active
+      -- Un hash historique vide ou mal formé n'ouvre jamais l'accès (contrainte NOT VALID sur l'existant)
+      AND a.code_hash ~ '^[0-9a-f]{64}$'
       AND a.code_hash = lower(coalesce(p_code_hash, ''))
     LIMIT 1;
 
@@ -1192,8 +1219,6 @@ BEGIN
     PERFORM public.effacer_tentatives(v_cle);
 
     UPDATE public.acces_rh SET code_hash = p_nouveau_hash, updated_at = now() WHERE company_id = v_company;
-    -- Étape A : double écriture tant que companies.rh_code_hash existe (retirée à l'étape B)
-    UPDATE public.companies SET rh_code_hash = p_nouveau_hash WHERE id = v_company;
     RETURN true;
 END;
 $$;
