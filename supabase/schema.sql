@@ -509,6 +509,11 @@ REVOKE ALL ON public.acces_rh FROM PUBLIC, anon, authenticated;
 -- La copie des hash existants est faite dans le bloc final, juste après la création du trigger de
 -- synchronisation : aucune écriture de l'ancien code ne peut ainsi passer entre la copie et le trigger.
 
+-- v1.10 (T7) : date du dernier changement du code d'un compte restaurant. Renseignée par
+-- changer_code_compte_restaurant (bloc final) ; servira à révoquer les sessions ouvertes avant (T8).
+ALTER TABLE public.comptes_restaurant
+    ADD COLUMN IF NOT EXISTS code_change_at TIMESTAMPTZ NOT NULL DEFAULT now();
+
 -- 8. SÉCURITÉ : RLS ACTIVÉE SUR TOUTES LES TABLES
 -- Les politiques (section 9) n'ouvrent l'accès qu'aux requêtes portant un JWT signé par le serveur
 -- Next.js. La clé anon seule ne lit aucune table (tokens employés inclus).
@@ -1398,3 +1403,77 @@ BEGIN
         INSERT INTO public.schema_migrations (nom) VALUES ('v1.10-codes-partenaires-12');
     END IF;
 END $$;
+
+-- ==============================================================================
+-- v1.10 (T7) : le compte restaurant ne lit ni n'écrit plus code_hash (audit base, C-2). Avant, ses
+-- politiques compte_lit_sa_fiche / compte_modifie_sa_fiche couvraient toutes les colonnes : un cookie
+-- volé permettait de lire le hash (qui vaut le code) ou de l'écraser sans connaître l'ancien code, et
+-- la vérification de l'ancien code se faisait en Node sans limite d'essais.
+-- 1) Changement de code par une fonction, sur le modèle de changer_code_rh : 5 mauvais anciens codes
+--    en 15 min bloquent le changement 15 min (erreur CP429).
+-- 2) Droits par colonne pour authenticated (seul le rôle compte_restaurant a des politiques sur cette
+--    table) : lecture sans code_hash ni code_change_at, écriture limitée au profil.
+-- 3) Filet si un futur GRANT rouvrait ces colonnes : proteger_fiche_compte_restaurant refuse aussi
+--    code_hash et code_change_at, mais seulement quand current_user = 'authenticated'. Dans la fonction
+--    SECURITY DEFINER, current_user est son propriétaire : le changement légitime passe, alors que
+--    jwt_role_app() y vaut toujours 'compte_restaurant'.
+-- Bloc final : garder en dernier.
+-- ==============================================================================
+CREATE OR REPLACE FUNCTION public.changer_code_compte_restaurant(p_ancien_hash TEXT, p_nouveau_hash TEXT)
+RETURNS BOOLEAN
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = public AS $$
+DECLARE
+    v_compte UUID := public.jwt_compte_id();
+    v_cle TEXT;
+BEGIN
+    IF public.jwt_role_app() IS DISTINCT FROM 'compte_restaurant' OR v_compte IS NULL THEN
+        RAISE EXCEPTION 'Accès refusé';
+    END IF;
+    IF p_nouveau_hash IS NULL OR p_nouveau_hash !~ '^[0-9a-f]{64}$' THEN
+        RAISE EXCEPTION 'Nouveau code invalide';
+    END IF;
+
+    v_cle := 'changecode-resto:' || v_compte::text;
+    PERFORM pg_advisory_xact_lock(hashtextextended(v_cle, 0));
+    PERFORM public.controler_tentatives(v_cle);
+
+    IF NOT EXISTS (SELECT 1 FROM public.comptes_restaurant
+                   WHERE id = v_compte AND is_active
+                     AND lower(code_hash) = lower(coalesce(p_ancien_hash, ''))) THEN
+        PERFORM public.noter_echec_connexion(v_cle);
+        RETURN false;
+    END IF;
+    PERFORM public.effacer_tentatives(v_cle);
+
+    UPDATE public.comptes_restaurant
+    SET code_hash = p_nouveau_hash, code_change_at = now()
+    WHERE id = v_compte;
+    RETURN true;
+END;
+$$;
+REVOKE EXECUTE ON FUNCTION public.changer_code_compte_restaurant(TEXT, TEXT) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.changer_code_compte_restaurant(TEXT, TEXT) TO authenticated;
+
+REVOKE SELECT, UPDATE ON public.comptes_restaurant FROM authenticated;
+GRANT SELECT (id, nom, telephone_whatsapp, ville, code_partenaire, is_active, created_at)
+    ON public.comptes_restaurant TO authenticated;
+GRANT UPDATE (nom, telephone_whatsapp, ville) ON public.comptes_restaurant TO authenticated;
+
+CREATE OR REPLACE FUNCTION public.proteger_fiche_compte_restaurant()
+RETURNS TRIGGER LANGUAGE plpgsql SET search_path = public AS $$
+BEGIN
+    IF public.jwt_role_app() = 'compte_restaurant'
+       AND (NEW.id IS DISTINCT FROM OLD.id
+            OR NEW.code_partenaire IS DISTINCT FROM OLD.code_partenaire
+            OR NEW.is_active IS DISTINCT FROM OLD.is_active
+            OR NEW.created_at IS DISTINCT FROM OLD.created_at) THEN
+        RAISE EXCEPTION 'Colonne réservée à la console SuperAdmin.';
+    END IF;
+    IF current_user = 'authenticated'
+       AND (NEW.code_hash IS DISTINCT FROM OLD.code_hash
+            OR NEW.code_change_at IS DISTINCT FROM OLD.code_change_at) THEN
+        RAISE EXCEPTION 'Le code d''accès se change avec changer_code_compte_restaurant.';
+    END IF;
+    RETURN NEW;
+END;
+$$;

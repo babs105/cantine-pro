@@ -2,7 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { accesPartenariatCompte, createClientCompteSession, echangerJetonRestaurant } from "@/lib/supabase/server";
-import { hashRhCode, verifyRhCode } from "@/lib/rh-session";
+import { hashRhCode } from "@/lib/rh-session";
 import { normaliserTelephone } from "@/lib/telephone";
 import { todayDakar } from "@/lib/config";
 import {
@@ -180,28 +180,32 @@ export async function modifierProfilRestoAction(champs: {
   return { success: true };
 }
 
-/** Changement du code d'accès : l'ancien code est vérifié avant */
+/**
+ * Changement du code d'accès. v1.10 (T7) : le compte ne lit plus son hash ; la fonction SQL
+ * changer_code_compte_restaurant compare l'ancien code et limite les essais (5 en 15 min, erreur CP429).
+ */
 export async function changerCodeRestoAction(
   ancienCode: string,
   nouveauCode: string
 ): Promise<{ success: boolean; message?: string }> {
   const session = await createClientCompteSession();
   if (!session) return { success: false, message: SESSION_RESTO_EXPIREE };
+  // Une Server Action peut être appelée avec n'importe quoi : types et longueurs vérifiés ici
+  if (typeof ancienCode !== "string" || typeof nouveauCode !== "string") return { success: false, message: "Requête invalide." };
+  if (!ancienCode.trim()) return { success: false, message: "Saisissez votre code actuel." };
+  if (ancienCode.length > 200) return { success: false, message: "Code actuel incorrect." };
   if (nouveauCode.trim().length < 6) return { success: false, message: "Le nouveau code doit contenir au moins 6 caractères." };
+  if (nouveauCode.length > 200) return { success: false, message: "Le nouveau code est trop long (200 caractères maximum)." };
 
-  const { data } = await session.supabase
-    .from("comptes_restaurant")
-    .select("code_hash")
-    .eq("id", session.compteId)
-    .maybeSingle();
-  if (!verifyRhCode(ancienCode, (data as any)?.code_hash ?? null)) {
-    return { success: false, message: "Code actuel incorrect." };
+  const { data: change, error } = await (session.supabase as any).rpc("changer_code_compte_restaurant", {
+    p_ancien_hash: hashRhCode(ancienCode),
+    p_nouveau_hash: hashRhCode(nouveauCode),
+  });
+  if (error?.code === "CP429") {
+    return { success: false, message: "Trop de codes actuels incorrects. Réessayez dans 15 minutes." };
   }
-
-  const { error } = await (session.supabase.from("comptes_restaurant") as any)
-    .update({ code_hash: hashRhCode(nouveauCode) })
-    .eq("id", session.compteId);
-  if (error) return { success: false, message: "Changement de code impossible." };
+  if (error) return { success: false, message: "Changement de code impossible pour le moment." };
+  if (!change) return { success: false, message: "Code actuel incorrect." };
   return { success: true };
 }
 
