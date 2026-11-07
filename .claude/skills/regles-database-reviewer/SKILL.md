@@ -42,8 +42,8 @@ Cantine Pro utilise un **pattern hybride "token URL → JWT court"** :
 | compte_restaurant | — | — | — | ✅ |
 
 **Tables sensibles** (contiennent un secret ou une donnée financière) :
-`acces_rh` (code_hash du code RH, depuis la v1.10), `companies` (traiteur_token,
-code_acces, email_contact, plan), `employes`
+`acces_rh` (code_hash du code RH, depuis la v1.10), `companies` (email_contact,
+plan, statut_abonnement ; traiteur_token et code_acces supprimés en v1.10 T4), `employes`
 (token), `restaurants` (token), `comptes_restaurant` (code_hash,
 code_partenaire), `clotures` (recap, total_repas : base de facturation),
 `paiements`.
@@ -57,7 +57,7 @@ par un rôle qui n'en a pas besoin. Deux moyens, selon le secret :
   par WhatsApp) : il reste dans sa table ; on retire aux autres rôles leur
   policy SELECT trop large et on la remplace par une fonction `SECURITY DEFINER`
   à colonnes fixes (v1.10 T2 portail : fait, `portail_lister_salaries` et
-  `portail_inscrire_salarie` ; T3 salarié : à faire). Pas de tables
+  `portail_inscrire_salarie` ; T3 salarié : fait, `restaurants_visibles_salarie`). Pas de tables
   `*_secrets` pour ces tokens : décision du plan v1.10.
 
 ---
@@ -92,7 +92,7 @@ toutes les colonnes de la ligne. Tout champ dont le nom matche `token`,
 à part **sans policy SELECT**, ou n'être lisible que par les rôles qui en ont
 besoin (voir « Cible » plus haut : `companies.rh_code_hash` est supprimée depuis
 la v1.10 T1 ; `employes.token` n'est plus lisible par le portail depuis la v1.10
-T2 ; `restaurants.token` reste exposé au salarié jusqu'à T3). Toute **nouvelle** colonne secrète ajoutée à une
+T2, ni `restaurants.token` par le salarié depuis la v1.10 T3). Toute **nouvelle** colonne secrète ajoutée à une
 table qui a une policy SELECT ouverte à un autre rôle est bloquante.
 
 ```bash
@@ -101,20 +101,25 @@ grep -nE "CREATE TABLE|ADD COLUMN" supabase/schema.sql | \
   grep -iE "(token|hash|secret|code_|password|key)"
 ```
 
-**Exemple de faille présente dans le schéma actuel :**
+**Exemple de faille (corrigée en v1.10 T3, à ne pas réintroduire) :**
 
 ```sql
--- ❌ Un salarié peut lire restaurants.token et usurper le resto
+-- ❌ Un salarié pouvait lire restaurants.token et usurper le resto
 CREATE POLICY salarie_lit_les_restaurants ON public.restaurants FOR SELECT
     USING (public.jwt_role_app() = 'salarie' AND company_id = public.jwt_company_id());
 
--- ✅ Token dans une table séparée, aucune policy SELECT
-CREATE TABLE public.restaurants_secrets (
-    restaurant_id UUID PRIMARY KEY REFERENCES public.restaurants(id) ON DELETE CASCADE,
-    token TEXT UNIQUE NOT NULL
+-- ✅ Correction retenue (v1.10 T3) : plus de policy SELECT pour le salarié, fonction à colonnes fixes
+-- restaurants_visibles_salarie() RETURNS TABLE (id, nom, is_active), SECURITY DEFINER
+
+-- ✅ Secret que personne ne lit (hash d'un code) : table à part, aucune policy (v1.10 T1)
+CREATE TABLE public.acces_rh (
+    company_id UUID PRIMARY KEY REFERENCES public.companies(id) ON DELETE CASCADE,
+    code_hash TEXT NOT NULL
 );
-ALTER TABLE public.restaurants_secrets ENABLE ROW LEVEL SECURITY;
--- Aucune policy → seul service_role (via SECURITY DEFINER) y accède
+ALTER TABLE public.acces_rh ENABLE ROW LEVEL SECURITY;
+REVOKE ALL ON public.acces_rh FROM PUBLIC, anon, authenticated;
+-- Aucune policy : seules les fonctions SECURITY DEFINER (echanger_acces_rh, changer_code_rh) y accèdent.
+-- Pas de table *_secrets pour employes.token / restaurants.token : le RH doit les lire (décision v1.10).
 ```
 
 ### C4 — SECURITY DEFINER : `SET search_path = public` obligatoire
@@ -434,7 +439,7 @@ lister **explicitement** toutes les colonnes sensibles de la table. Un trigger
 partiel donne une fausse impression de sécurité.
 
 ```sql
--- ✅ protege_colonnes_companies (v1.9) — chaque colonne sensible est listée
+-- ✅ proteger_colonnes_companies (v1.9, mise à jour v1.10 T4) — chaque colonne sensible est listée
 IF NEW.id IS DISTINCT FROM OLD.id
    OR NEW.slug IS DISTINCT FROM OLD.slug
    OR NEW.plan IS DISTINCT FROM OLD.plan
@@ -442,8 +447,6 @@ IF NEW.id IS DISTINCT FROM OLD.id
    OR NEW.abonnement_fin IS DISTINCT FROM OLD.abonnement_fin
    OR NEW.trial_ends_at IS DISTINCT FROM OLD.trial_ends_at
    OR NEW.is_active IS DISTINCT FROM OLD.is_active
-   OR NEW.traiteur_token IS DISTINCT FROM OLD.traiteur_token
-   OR NEW.code_acces IS DISTINCT FROM OLD.code_acces
    OR NEW.created_at IS DISTINCT FROM OLD.created_at THEN
     RAISE EXCEPTION 'Colonne réservée à la console SuperAdmin.';
 END IF;
@@ -458,12 +461,17 @@ colonne sensible sans mettre à jour le trigger, c'est un finding.
 grep -n "CREATE OR REPLACE FUNCTION public.proteger_" supabase/schema.sql
 ```
 
-**Attention aux colonnes droppées** : quand une colonne référencée par un
-trigger est supprimée (`DROP COLUMN`), le trigger doit être recréé **avant**
-le `DROP`, sinon `CREATE OR REPLACE FUNCTION` échoue avec
-`column does not exist`. (Cas concret : v1.10 supprime `code_acces` et
-`traiteur_token`, il faut recréer `proteger_colonnes_companies` sans ces
-références avant le `DROP COLUMN`.)
+**Colonne supprimée (« colonne morte »)** :
+- Retirer la colonne de toute fonction de trigger **avant** le `DROP` dans
+  l'ordre du fichier. plpgsql ne vérifie pas les colonnes à la création de la
+  fonction : le vrai risque est un trigger qui échoue à l'exécution
+  (`column does not exist`) sur chaque `UPDATE` de la table.
+- Retirer aussi l'`ADD COLUMN IF NOT EXISTS` (ou la ligne du `CREATE TABLE`) et
+  les `UPDATE` / `COALESCE` qui la lisent dans les blocs historiques, sinon
+  chaque relance la recrée puis la supprime.
+- Vérifier politiques, vues, fonctions et `select("*")` du code.
+- Si du code déployé lit ou écrit la colonne : expand → code → contract.
+  Sinon une seule étape suffit (cas de `traiteur_token` et `code_acces`, v1.10 T4).
 
 ---
 
@@ -529,10 +537,10 @@ grep -n "REVOKE ALL ON public\." supabase/schema.sql
 
 ## 🎯 Cas de test d'auto-évaluation
 
-Le skill est correctement calibré si, en le chargeant sur le `schema.sql` v1.10 (T1)
+Le skill est correctement calibré si, en le chargeant sur le `schema.sql` v1.10
 actuel, l'agent trouve **au minimum** :
 
-1. ✅ `salarie_lit_les_restaurants` → token exposé (C3) — **toujours présent**
+1. ✅ `salarie_lit_les_restaurants` → **supprimée en v1.10 T3** (DROP en section 9, salarié via `restaurants_visibles_salarie` sans token) : vérifier l'absence de `CREATE POLICY salarie_lit_les_restaurants`
 2. ✅ `portail_lit_les_salaries` / `portail_inscrit_un_salarie` → **supprimées en v1.10 T2** (DROP en section 9, portail via `portail_lister_salaries` sans token) : vérifier l'absence de `CREATE POLICY portail_` sur `employes`
 3. ✅ `rh_lit_son_entreprise` → `rh_code_hash` → **corrigé en v1.10 T1** (colonne supprimée, `acces_rh` sans policy) : ne plus le signaler
 4. ✅ `noter_echec_connexion` → `FOR UPDATE` dans sous-requête `IN` → **pas un bug** (voir C13) : ne pas le signaler
@@ -540,8 +548,8 @@ actuel, l'agent trouve **au minimum** :
 6. ✅ Rate limiting `rattacher_compte_restaurant` → bien implémenté (C11) — **à valider, pas à corriger**
 7. ✅ `tentatives_connexion` sans policy → `REVOKE ALL` présent (C12) — **à valider**
 
-Point 1 → finding à corriger (v1.10 T3).
-Points 2, 3, 4, 5, 6, 7 → corrects, à mentionner dans « ✅ Ce qui est bon ».
+Aucun point à corriger : CRIT-5 est fermé (v1.10 T1 à T4).
+Points 1 à 7 → corrects, à mentionner dans « ✅ Ce qui est bon ».
 
 S'il rate l'un de ces 7, renforcer la section correspondante.
 

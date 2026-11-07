@@ -41,9 +41,10 @@ serveur**. La RLS filtre ensuite chaque table.
 - `companies` : SELECT de son entreprise pour les heures et jours de travail
   (policy `rh_lit_son_entreprise`, ouverte à tout JWT portant le `company_id`)
 - `menus_du_jour` : SELECT des menus de son entreprise
-  (policy `salarie_et_restaurant_lisent_les_menus`)
-- `restaurants` : SELECT des restaurants de son entreprise
-  (policy `salarie_lit_les_restaurants`)
+  (policy `salarie_lit_les_menus`, depuis la v1.9)
+- `restaurants` : **aucun accès direct** depuis la v1.10 T3. Nom et état actif
+  des restaurants de son entreprise via la fonction `restaurants_visibles_salarie()`
+  (jamais de jointure `restaurants(...)` avec le JWT salarié : elle renverrait null)
 - `commandes` : SELECT / INSERT / UPDATE de sa ligne (policies
   `salarie_lit_sa_commande` / `salarie_passe_sa_commande` /
   `salarie_modifie_sa_commande`)

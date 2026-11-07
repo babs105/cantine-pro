@@ -644,9 +644,10 @@ DROP POLICY IF EXISTS rh_gere_ses_restaurants ON public.restaurants;
 CREATE POLICY rh_gere_ses_restaurants ON public.restaurants FOR ALL TO authenticated
     USING (public.jwt_role_app() = 'rh' AND company_id = public.jwt_company_id())
     WITH CHECK (public.jwt_role_app() = 'rh' AND company_id = public.jwt_company_id());
+-- v1.10 (T3, étape B) : le salarié n'a plus aucun accès direct à restaurants (token /resto/..., WhatsApp,
+-- compte_id). Il passe par restaurants_visibles_salarie (bloc final). Exception validée à la règle
+-- « ne pas modifier les blocs existants » : sinon chaque relance recréerait cette politique.
 DROP POLICY IF EXISTS salarie_lit_les_restaurants ON public.restaurants;
-CREATE POLICY salarie_lit_les_restaurants ON public.restaurants FOR SELECT TO authenticated
-    USING (public.jwt_role_app() = 'salarie' AND company_id = public.jwt_company_id());
 DROP POLICY IF EXISTS restaurant_lit_sa_fiche ON public.restaurants;
 CREATE POLICY restaurant_lit_sa_fiche ON public.restaurants FOR SELECT TO authenticated
     USING (public.jwt_role_app() = 'restaurant' AND id = public.jwt_restaurant_id());
@@ -1287,10 +1288,10 @@ REVOKE EXECUTE ON FUNCTION public.portail_inscrire_salarie(TEXT, TEXT, INT) FROM
 GRANT EXECUTE ON FUNCTION public.portail_inscrire_salarie(TEXT, TEXT, INT) TO authenticated;
 
 -- ==============================================================================
--- v1.10 (T3, étape A) : le salarié ne lit plus la table restaurants en direct (salarie_lit_les_restaurants
+-- v1.10 (T3) : le salarié ne lit plus la table restaurants en direct (salarie_lit_les_restaurants
 -- lui donnait toutes les colonnes, dont le token /resto/... et le WhatsApp de chaque restaurant).
 -- Fonction à colonnes fixes : nom et état actif, pour afficher le restaurant de chaque plat.
--- Étape B (commit séparé) : suppression de salarie_lit_les_restaurants. Bloc final : garder en dernier.
+-- Étape B : la politique salarie_lit_les_restaurants est supprimée (section 9). Bloc final : garder en dernier.
 -- ==============================================================================
 CREATE OR REPLACE FUNCTION public.restaurants_visibles_salarie()
 RETURNS TABLE (id UUID, nom TEXT, is_active BOOLEAN)
