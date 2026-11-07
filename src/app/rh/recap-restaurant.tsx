@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useTransition } from "react";
-import { Check, Copy, ExternalLink, PhoneCall, Send, Utensils } from "lucide-react";
+import { Check, Copy, PhoneCall, Send, Utensils } from "lucide-react";
 import { buildMessageTraiteur, formatHeure, totalRepas } from "@/lib/recap";
 import type { RecapLigne } from "@/types/database";
 import { confirmerParTelephoneAction, marquerRecapEnvoyeAction } from "./actions";
@@ -11,11 +11,9 @@ export interface RestaurantInfo {
   nom: string;
   telephone_whatsapp: string | null;
   heure_livraison: string | null;
-  token: string;
   is_active: boolean;
   /** Compte restaurant Cantine Pro relié (le restaurant gère alors son profil lui-même) */
   compte_id?: string | null;
-  lien: string;
 }
 
 export interface ClotureInfo {
@@ -64,7 +62,6 @@ export function RecapRestaurant({
     dateStr,
     recap,
     heureLivraison: restaurant.heure_livraison,
-    lienConfirmation: restaurant.lien,
   });
 
   const copier = () => {
@@ -185,16 +182,6 @@ export function RecapRestaurant({
               Confirmé par téléphone
             </button>
           )}
-          <a
-            href={`/resto/${restaurant.token}`}
-            target="_blank"
-            rel="noreferrer"
-            title="Page de confirmation du restaurant"
-            className="px-3 py-2 bg-neutral-100 hover:bg-neutral-200 active:scale-98 text-neutral-800 font-semibold text-xs rounded-xl transition flex items-center gap-1.5"
-          >
-            <ExternalLink className="w-4 h-4 text-neutral-500" />
-            Page restaurant
-          </a>
           {peutEnvoyer && (
             <button
               onClick={() => {

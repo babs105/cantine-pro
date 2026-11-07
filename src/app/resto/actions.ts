@@ -2,7 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { messageErreur } from "@/lib/erreurs";
-import { accesPartenariatCompte, createClientCompteSession, echangerJetonRestaurant } from "@/lib/supabase/server";
+import { accesPartenariatCompte, createClientCompteSession } from "@/lib/supabase/server";
 import { lireEntrepriseVisible } from "@/lib/entreprise-visible";
 import { hashRhCode } from "@/lib/rh-session";
 import { createRestoSession } from "@/lib/resto-session";
@@ -20,17 +20,17 @@ import {
 } from "@/lib/dates";
 
 /**
- * Actions communes au lien restaurant (/resto/[token], une entreprise) et au dashboard du compte
- * restaurant (/resto, plusieurs entreprises). La cible désigne le partenariat concerné.
+ * Actions du dashboard du compte restaurant (/resto, plusieurs entreprises). La cible désigne le
+ * partenariat concerné. v1.14 : le lien /resto/[token] n'existe plus, tout restaurant a un compte.
  */
-export type CibleRestaurant = { token: string } | { restaurantId: string };
+export type CibleRestaurant = { restaurantId: string };
 
 async function accesCible(cible: CibleRestaurant) {
-  return "token" in cible ? echangerJetonRestaurant(cible.token) : accesPartenariatCompte(cible.restaurantId);
+  return accesPartenariatCompte(cible.restaurantId);
 }
 
-function revaliderCible(cible: CibleRestaurant) {
-  revalidatePath("token" in cible ? `/resto/${cible.token}` : "/resto");
+function revaliderCible(_cible: CibleRestaurant) {
+  revalidatePath("/resto");
 }
 
 const LIEN_INVALIDE = "Accès restaurant invalide ou session expirée.";
@@ -299,20 +299,6 @@ export async function changerCodeRestoAction(
   if (!change) return { success: false, message: "Code actuel incorrect." };
   // v1.10 (T8) : le changement révoque les sessions ouvertes avant ; ce navigateur reçoit un cookie neuf
   await createRestoSession(session.compteId);
-  return { success: true };
-}
-
-/** Le compte connecté reprend un lien /resto/[token] reçu d'une entreprise avant son inscription */
-export async function relierLienAction(token: string): Promise<{ success: boolean; message?: string }> {
-  const session = await createClientCompteSession();
-  if (!session) return { success: false, message: SESSION_RESTO_EXPIREE };
-
-  const { data, error } = await (session.supabase as any).rpc("relier_lien_restaurant", { p_token: token });
-  if (error) return { success: false, message: error.message.includes("déjà reliée") ? error.message : "Liaison impossible." };
-  if (!data) return { success: false, message: "Ce lien est déjà relié à un autre compte restaurant." };
-
-  revalidatePath("/resto");
-  revalidatePath(`/resto/${token}`);
   return { success: true };
 }
 

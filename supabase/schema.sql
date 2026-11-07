@@ -2756,8 +2756,8 @@ GRANT EXECUTE ON FUNCTION public.jours_travail_restaurants() TO authenticated;
 
 -- ==============================================================================
 -- v1.14 : le RH n'ajoute plus de plats au menu pour un restaurant qui a un compte (il publie lui-même
--- ses menus depuis /resto). Le RH garde l'ajout pour les restaurants sans compte (lien /resto/[token]
--- seul), et peut toujours mettre en rupture ou retirer un plat existant.
+-- ses menus depuis /resto). Il peut toujours mettre en rupture ou retirer un plat existant. Depuis la suite
+-- du bloc, tout restaurant actif a un compte : le RH ne compose donc plus de menus lui-même.
 -- ==============================================================================
 CREATE OR REPLACE FUNCTION public.bloquer_ajout_rh_restaurant_avec_compte()
 RETURNS TRIGGER
@@ -2788,3 +2788,61 @@ DROP TRIGGER IF EXISTS trg_bloquer_ajout_rh_restaurant_avec_compte ON public.men
 CREATE TRIGGER trg_bloquer_ajout_rh_restaurant_avec_compte
     BEFORE INSERT OR UPDATE OF restaurant_id ON public.menus_du_jour
     FOR EACH ROW EXECUTE FUNCTION public.bloquer_ajout_rh_restaurant_avec_compte();
+
+-- v1.14 (suite) : fin des restaurants sans compte et du lien /resto/[token].
+-- 1. Les restaurants sans compte sont désactivés une seule fois (pas supprimés : la suppression effacerait
+--    leurs clôtures en cascade, donc l'historique de facturation).
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM public.schema_migrations WHERE nom = 'v1.14-desactiver-restaurants-sans-compte') THEN
+        UPDATE public.restaurants SET is_active = false WHERE compte_id IS NULL AND is_active;
+        INSERT INTO public.schema_migrations (nom) VALUES ('v1.14-desactiver-restaurants-sans-compte');
+    END IF;
+END $$;
+
+-- 2. Le RH ne crée plus de restaurant sans compte et ne réactive pas un restaurant sans compte : un
+--    restaurant s'ajoute avec son code partenaire (rattacher_compte_restaurant pose toujours compte_id).
+CREATE OR REPLACE FUNCTION public.bloquer_restaurant_sans_compte()
+RETURNS TRIGGER
+LANGUAGE plpgsql SET search_path = public AS $$
+BEGIN
+    IF public.jwt_role_app() = 'rh' AND NEW.compte_id IS NULL AND NEW.is_active
+       AND (TG_OP = 'INSERT' OR OLD.is_active IS DISTINCT FROM true) THEN
+        RAISE EXCEPTION 'Ajoutez ce restaurant avec son code partenaire : il doit avoir un espace restaurant.'
+            USING ERRCODE = 'CP403';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+REVOKE EXECUTE ON FUNCTION public.bloquer_restaurant_sans_compte() FROM PUBLIC, anon, authenticated;
+
+DROP TRIGGER IF EXISTS trg_bloquer_restaurant_sans_compte ON public.restaurants;
+CREATE TRIGGER trg_bloquer_restaurant_sans_compte
+    BEFORE INSERT OR UPDATE OF is_active ON public.restaurants
+    FOR EACH ROW EXECUTE FUNCTION public.bloquer_restaurant_sans_compte();
+
+-- 3. Compte supprimé (FK compte_id ON DELETE SET NULL) : le partenariat est désactivé au lieu de rester
+--    actif sans compte (personne ne pourrait plus confirmer ses récaps).
+CREATE OR REPLACE FUNCTION public.desactiver_restaurant_sans_compte()
+RETURNS TRIGGER
+LANGUAGE plpgsql SET search_path = public AS $$
+BEGIN
+    IF OLD.compte_id IS NOT NULL AND NEW.compte_id IS NULL THEN
+        NEW.is_active := false;
+    END IF;
+    RETURN NEW;
+END;
+$$;
+REVOKE EXECUTE ON FUNCTION public.desactiver_restaurant_sans_compte() FROM PUBLIC, anon, authenticated;
+
+DROP TRIGGER IF EXISTS trg_desactiver_restaurant_sans_compte ON public.restaurants;
+CREATE TRIGGER trg_desactiver_restaurant_sans_compte
+    BEFORE UPDATE OF compte_id ON public.restaurants
+    FOR EACH ROW EXECUTE FUNCTION public.desactiver_restaurant_sans_compte();
+
+-- 4. Le lien /resto/[token] n'existe plus : son échange et sa reprise par un compte sont supprimés. Les
+--    blocs plus haut les recréent à chaque relance, ce DROP en fin de fichier les retire aussitôt
+--    (même méthode que pour les fonctions portail_* en v1.10). La colonne restaurants.token reste :
+--    des blocs historiques l'écrivent.
+DROP FUNCTION IF EXISTS public.echanger_jeton_restaurant(TEXT);
+DROP FUNCTION IF EXISTS public.relier_lien_restaurant(TEXT);

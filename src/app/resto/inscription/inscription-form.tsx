@@ -8,7 +8,7 @@ import { inscriptionRestaurantAction } from "./actions";
 const champ =
   "w-full text-xs px-3 py-2.5 rounded-xl border border-neutral-200 focus:outline-none focus:ring-2 focus:ring-orange-500";
 
-export function InscriptionRestoForm({ lien }: { lien: string }) {
+export function InscriptionRestoForm() {
   const [state, formAction, isPending] = useActionState(inscriptionRestaurantAction, undefined);
   const v = state?.champs || {};
 
@@ -25,18 +25,11 @@ export function InscriptionRestoForm({ lien }: { lien: string }) {
           </p>
         </div>
 
-        {lien && (
-          <div className="p-3 bg-orange-50 border border-orange-200 text-orange-800 rounded-2xl text-xs">
-            L&apos;entreprise qui vous a envoyé ce lien sera automatiquement ajoutée à votre espace.
-          </div>
-        )}
-
         {state?.error && (
           <div className="p-3 bg-red-50 border border-red-200 text-red-700 rounded-2xl text-xs">{state.error}</div>
         )}
 
         <form action={formAction} className="space-y-3">
-          <input type="hidden" name="lien" value={lien} />
           <input type="text" name="site_web" tabIndex={-1} autoComplete="off" className="hidden" aria-hidden />
           <div>
             <label className="block text-xs font-bold text-neutral-700 mb-1">Nom du restaurant</label>

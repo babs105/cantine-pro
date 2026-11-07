@@ -921,7 +921,7 @@ export function RhDashboardClient({
         )}
 
         {activeTab === "restaurants" && (
-          <RestaurantsPanel restaurants={restaurants} appBaseUrl={appBaseUrl} onError={setActionError} />
+          <RestaurantsPanel restaurants={restaurants} onError={setActionError} />
         )}
 
         {/* ============================================================ */}

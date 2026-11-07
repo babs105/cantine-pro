@@ -63,9 +63,8 @@ export function buildMessageTraiteur(params: {
   dateStr: string;
   recap: RecapLigne[];
   heureLivraison?: string | null;
-  lienConfirmation: string;
 }): string {
-  const { companyNom, dateStr, recap, heureLivraison, lienConfirmation } = params;
+  const { companyNom, dateStr, recap, heureLivraison } = params;
   let msg = `🍽️ *COMMANDE CANTINE PRO — ${companyNom.toUpperCase()}*\n`;
   msg += `📅 Date : ${dateStr} (commande clôturée)\n`;
   msg += `--------------------------------------\n`;
@@ -79,6 +78,7 @@ export function buildMessageTraiteur(params: {
   msg += `--------------------------------------\n`;
   msg += `👉 Total repas : *${totalRepas(recap)}*\n`;
   msg += `⏰ Livraison demandée : ${formatHeure(heureLivraison)}\n`;
-  msg += `🔗 Confirmer la réception : ${lienConfirmation}`;
+  // v1.14 : plus de lien /resto/[token] ; le restaurant confirme depuis son espace restaurant
+  msg += `✅ Confirmez la réception depuis votre espace restaurant Cantine Pro.`;
   return msg;
 }

@@ -24,7 +24,7 @@ export interface PlatSemaine {
   ajoute_par?: "rh" | "restaurant";
 }
 
-/** Plat de la carte d'un restaurant (saisi par le restaurant depuis son lien) */
+/** Plat de la carte d'un restaurant (saisi par le restaurant depuis son espace restaurant) */
 export interface PlatCarteRestaurant {
   id: string;
   restaurant_id: string;
@@ -75,7 +75,7 @@ export function MenusSemaine({
   const [titre, setTitre] = useState("");
   const [prix, setPrix] = useState("1500");
   const [desc, setDesc] = useState("");
-  // Seuls les restaurants sans compte (lien restaurant seul) reçoivent des plats ajoutés par le RH
+  // Seuls les restaurants sans compte (cas résiduel : compte supprimé) reçoivent des plats ajoutés par le RH
   const restaurantsAjout = restaurants.filter((r) => !r.compte_id);
   const restaurantsAutonomes = restaurants.filter((r) => r.compte_id);
   const [restaurantId, setRestaurantId] = useState<string>(restaurantsAjout[0]?.id || "");
@@ -309,7 +309,7 @@ export function MenusSemaine({
                   </div>
                 ) : (
                   <p className="text-[11px] text-neutral-500">
-                    Ce restaurant n&apos;a pas encore rempli sa carte : il peut le faire depuis son lien restaurant.
+                    Ce restaurant n&apos;a pas encore rempli sa carte.
                   </p>
                 )}
 

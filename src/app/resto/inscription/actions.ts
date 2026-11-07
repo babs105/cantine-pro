@@ -14,8 +14,7 @@ export interface InscriptionRestoState {
 
 /**
  * Inscription d'un restaurant en libre-service (client service_role : la fiche n'appartient encore
- * à aucune entreprise). Si l'inscription part d'un lien /resto/[token] déjà reçu d'une entreprise,
- * ce partenariat est relié au nouveau compte.
+ * à aucune entreprise). Il donne ensuite son code partenaire à chaque entreprise qu'il livre.
  */
 export async function inscriptionRestaurantAction(
   _prev: InscriptionRestoState | undefined,
@@ -25,7 +24,6 @@ export async function inscriptionRestaurantAction(
     nom: String(formData.get("nom") || "").trim().slice(0, 120),
     telephone: String(formData.get("telephone") || "").trim(),
     ville: String(formData.get("ville") || "").trim().slice(0, 60),
-    lien: String(formData.get("lien") || "").trim(),
   };
   const code = String(formData.get("code") || "");
   const confirmation = String(formData.get("confirmation") || "");
@@ -65,18 +63,6 @@ export async function inscriptionRestaurantAction(
       return { error: "Un restaurant est déjà inscrit avec ce numéro : connectez-vous.", champs };
     }
     return { error: "Inscription impossible pour le moment, réessayez dans quelques minutes.", champs };
-  }
-
-  // Reprise du lien déjà utilisé avec une entreprise : il devient un partenariat du compte
-  // Format revalidé ici (une Server Action s'appelle sans passer par la page) ; un partenariat désactivé
-  // par le RH ne se reprend pas
-  const lien = /^[a-f0-9]{8,64}$/i.test(champs.lien) ? champs.lien.toLowerCase() : "";
-  if (lien) {
-    await (supabase.from("restaurants") as any)
-      .update({ compte_id: compte.id, nom: champs.nom, telephone_whatsapp: telephone })
-      .eq("token", lien)
-      .eq("is_active", true)
-      .is("compte_id", null);
   }
 
   await createRestoSession(compte.id);

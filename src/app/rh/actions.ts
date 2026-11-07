@@ -23,7 +23,8 @@ import { normaliserTelephone } from "@/lib/telephone";
 
 const CHAMPS_EMPLOYE = "id, nom, telephone, service, token, is_active";
 const CHAMPS_PLAT = "id, date, titre, description, prix_unitaire, is_available, restaurant_id, ajoute_par";
-const CHAMPS_RESTAURANT = "id, nom, telephone_whatsapp, heure_livraison, token, is_active, compte_id";
+// v1.14 : plus de token restaurant côté navigateur (le lien /resto/[token] n'existe plus)
+const CHAMPS_RESTAURANT = "id, nom, telephone_whatsapp, heure_livraison, is_active, compte_id";
 const SERVICE_DEFAUT = "Général";
 
 const SESSION_EXPIREE = "Session RH expirée, reconnectez-vous.";
@@ -487,39 +488,6 @@ export async function togglePlatDisponibiliteAction(
   } catch {
     return { success: false };
   }
-}
-
-/**
- * Ajout d'un restaurant partenaire (il reçoit le récapitulatif de ses plats à la clôture)
- */
-export async function addRestaurantAction(
-  nom: string,
-  telephone?: string,
-  heureLivraison?: string
-): Promise<{ success: boolean; message?: string; restaurant?: any }> {
-  const nomPropre = nom.trim().slice(0, 80);
-  if (nomPropre.length < 2) return { success: false, message: "Renseignez le nom du restaurant." };
-  const heure = /^\d{2}:\d{2}/.test(heureLivraison || "") ? heureLivraison!.slice(0, 5) : "12:30";
-
-  const companyId = await getRhCompanyId();
-  if (!companyId) return { success: false, message: SESSION_EXPIREE };
-
-  const supabase = createClientRh(companyId);
-  const { data, error } = await (supabase.from("restaurants") as any)
-    .insert({
-      company_id: companyId,
-      nom: nomPropre,
-      telephone_whatsapp: normaliserTelephone(telephone),
-      heure_livraison: heure,
-      token: generateToken(12),
-    })
-    .select(CHAMPS_RESTAURANT)
-    .single();
-
-  if (error) return { success: false, message: messageErreur("rh", error) };
-
-  revalidatePath("/rh");
-  return { success: true, restaurant: data };
 }
 
 /**

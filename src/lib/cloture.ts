@@ -1,7 +1,6 @@
 import "server-only";
 import { erreurAvecCode, messageErreur } from "@/lib/erreurs";
 import type { SupabaseServeur } from "@/lib/supabase/server";
-import { getAppBaseUrl } from "@/lib/config";
 import { buildMessageTraiteur, buildRecap, recapUneLigne, totalRepas } from "@/lib/recap";
 import { envoyerWhatsApp } from "@/lib/whatsapp";
 import type { Database, RecapLigne } from "@/types/database";
@@ -61,10 +60,6 @@ export function formatDateLongue(date: string): string {
   }).format(new Date(`${date}T12:00:00Z`));
 }
 
-export function lienRestaurant(restaurant: Pick<Restaurant, "token">): string {
-  return `${getAppBaseUrl()}/resto/${restaurant.token}`;
-}
-
 /** Restaurants qui proposent au moins un plat au menu du jour : ce sont eux qui reçoivent un récapitulatif */
 async function getRestaurantsDuJour(supabase: Supabase, companyId: string, date: string): Promise<Restaurant[]> {
   const { data: plats } = await supabase
@@ -77,7 +72,14 @@ async function getRestaurantsDuJour(supabase: Supabase, companyId: string, date:
   const ids = Array.from(new Set((plats || []).map((p: any) => p.restaurant_id as string)));
   if (ids.length === 0) return [];
 
-  const { data } = await supabase.from("restaurants").select("*").in("id", ids).eq("company_id", companyId).order("nom");
+  // v1.14 : un restaurant désactivé ne reçoit pas de récap (il ne pourrait pas le confirmer)
+  const { data } = await supabase
+    .from("restaurants")
+    .select("*")
+    .in("id", ids)
+    .eq("company_id", companyId)
+    .eq("is_active", true)
+    .order("nom");
   return (data || []) as Restaurant[];
 }
 
@@ -114,13 +116,11 @@ export async function cloturerEntreprise(
     }
 
     const recap: RecapLigne[] = buildRecap(commandes.filter((c) => c.restaurant_id === restaurant.id));
-    const lien = lienRestaurant(restaurant);
     const message = buildMessageTraiteur({
       companyNom: company.nom,
       dateStr: formatDateLongue(date),
       recap,
       heureLivraison: restaurant.heure_livraison,
-      lienConfirmation: lien,
     });
 
     const resultat =
@@ -128,14 +128,14 @@ export async function cloturerEntreprise(
         ? await envoyerWhatsApp({
             to: restaurant.telephone_whatsapp,
             message,
-            templateParams: [company.nom, recapUneLigne(recap), lien],
+            // Le modèle Meta garde 3 paramètres : le 3e n'est plus un lien (v1.14)
+            templateParams: [company.nom, recapUneLigne(recap), "votre espace restaurant Cantine Pro"],
             meta: {
               company: company.nom,
               restaurant: restaurant.nom,
               date,
               total_repas: totalRepas(recap),
               recap,
-              lien,
             },
           })
         : ({ statut: "manuel" } as const);
@@ -177,7 +177,7 @@ export async function rafraichirRecapCloture(
 ): Promise<string[]> {
   const { data: clotures } = await supabase
     .from("clotures")
-    .select("id, restaurant_id, recap, envoi_statut, confirme_at, restaurants(nom, token, heure_livraison)")
+    .select("id, restaurant_id, recap, envoi_statut, confirme_at, restaurants(nom, heure_livraison)")
     .eq("company_id", companyId)
     .eq("date", date);
   if (!clotures || clotures.length === 0) return [];
@@ -205,7 +205,6 @@ export async function rafraichirRecapCloture(
           dateStr: formatDateLongue(date),
           recap,
           heureLivraison: restaurant?.heure_livraison ?? null,
-          lienConfirmation: restaurant ? lienRestaurant(restaurant) : "",
         }),
         ...(dejaEnvoye
           ? {
