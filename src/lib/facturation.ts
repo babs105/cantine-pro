@@ -1,4 +1,5 @@
 import "server-only";
+import { erreurAvecCode } from "@/lib/erreurs";
 import type { SupabaseServeur } from "@/lib/supabase/server";
 
 type Supabase = SupabaseServeur;
@@ -55,7 +56,7 @@ export async function getLignesFacturation(
       .lte("date", fin)
       .not("confirme_at", "is", null),
   ]);
-  if (error) throw new Error(error.message);
+  if (error) throw erreurAvecCode("Lecture des commandes", error);
 
   const joursConfirmes = new Set(((confirmees as any[]) || []).map((c) => `${c.restaurant_id}|${c.date}`));
 

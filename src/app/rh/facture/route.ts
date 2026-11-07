@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { messageErreur } from "@/lib/erreurs";
 import { createClientRh } from "@/lib/supabase/server";
 import { todayDakar } from "@/lib/config";
 import { getRhCompanyId } from "@/lib/rh-session";
@@ -45,6 +46,6 @@ export async function GET(request: Request) {
       },
     });
   } catch (err: any) {
-    return NextResponse.json({ error: err.message }, { status: 500 });
+    return NextResponse.json({ error: messageErreur("rh/facture", err, "Téléchargement impossible pour le moment, réessayez.") }, { status: 500 });
   }
 }

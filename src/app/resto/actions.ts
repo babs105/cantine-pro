@@ -1,6 +1,7 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import { messageErreur } from "@/lib/erreurs";
 import { accesPartenariatCompte, createClientCompteSession, echangerJetonRestaurant } from "@/lib/supabase/server";
 import { lireEntrepriseVisible } from "@/lib/entreprise-visible";
 import { hashRhCode } from "@/lib/rh-session";
@@ -51,7 +52,7 @@ export async function confirmerPreparationAction(
     .select("id, confirme_at");
 
   if (error) {
-    return { success: false, message: error.message };
+    return { success: false, message: messageErreur("resto/confirmation", error, "Confirmation impossible pour le moment, réessayez.") };
   }
   if (!data || data.length === 0) {
     return { success: false, message: "La commande du jour n'est pas encore clôturée par l'entreprise." };
@@ -173,7 +174,7 @@ export async function modifierProfilRestoAction(champs: {
   if (error) {
     return {
       success: false,
-      message: /duplicate|unique/i.test(error.message) ? "Ce numéro est déjà utilisé par un autre restaurant." : "Enregistrement impossible.",
+      message: messageErreur("resto/profil", error, "Enregistrement impossible.", "Ce numéro est déjà utilisé par un autre restaurant."),
     };
   }
 
