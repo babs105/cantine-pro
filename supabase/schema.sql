@@ -1568,3 +1568,124 @@ DROP TRIGGER IF EXISTS trg_horodater_changement_code_compte ON public.comptes_re
 CREATE TRIGGER trg_horodater_changement_code_compte
     BEFORE UPDATE ON public.comptes_restaurant
     FOR EACH ROW EXECUTE FUNCTION public.horodater_changement_code_compte();
+
+-- ==============================================================================
+-- v1.10 (T10, étape A) : la commande du salarié passe par une seule fonction qui vérifie tout en base
+-- (audit base, H-2). Avant, les politiques salarie_passe_sa_commande / salarie_modifie_sa_commande
+-- laissaient écrire n'importe quelle date, n'importe quel plat et modifie_par_rh : seules les vérifications
+-- de submitVoteAction (Node) protégeaient l'heure limite, le menu du jour et le restaurant actif.
+-- Contrôles : salarié et entreprise actifs, jour de travail, heures d'ouverture et limite (Africa/Dakar,
+-- mêmes bornes que isApresHeureLimite : fermé à partir de l'heure limite incluse), plat du menu du jour de
+-- l'entreprise, disponible et d'un restaurant actif, journée du restaurant non clôturée, commande non
+-- corrigée par le RH (verrouillée pour le salarié).
+-- Erreurs, au message lisible par le salarié : CP423 (commandes fermées), CP404 (plat indisponible),
+-- CP403 (commande verrouillée). submitVoteAction affiche ces messages tels quels : n'y mettre que du
+-- texte destiné au salarié, jamais de donnée interne.
+-- Étape B (plus tard, après le déploiement du code) : suppression des politiques INSERT / UPDATE du salarié.
+-- Bloc final : garder en dernier.
+-- ==============================================================================
+CREATE OR REPLACE FUNCTION public.passer_commande(p_statut TEXT, p_plat_id UUID)
+RETURNS TIMESTAMPTZ
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = public AS $$
+DECLARE
+    v_employe UUID := public.jwt_employe_id();
+    v_company UUID := public.jwt_company_id();
+    v_jour DATE := (now() AT TIME ZONE 'Africa/Dakar')::date;
+    v_heure TIME := (now() AT TIME ZONE 'Africa/Dakar')::time;
+    v_ouverture TIME;
+    v_limite TIME;
+    v_jours SMALLINT[];
+    v_existante public.commandes%ROWTYPE;
+    v_resto_existant UUID;
+    v_resto_nouveau UUID;
+    v_enregistre TIMESTAMPTZ;
+    v_lignes INTEGER;
+BEGIN
+    IF public.jwt_role_app() IS DISTINCT FROM 'salarie' OR v_employe IS NULL OR v_company IS NULL THEN
+        RAISE EXCEPTION 'Accès refusé';
+    END IF;
+    IF p_statut IS NULL OR p_statut NOT IN ('choisi', 'absent', 'ne_mange_pas') THEN
+        RAISE EXCEPTION 'Statut invalide';
+    END IF;
+
+    SELECT c.heure_ouverture_vote, c.heure_limite_vote, c.jours_travail
+      INTO v_ouverture, v_limite, v_jours
+      FROM public.companies c
+      JOIN public.employes e ON e.company_id = c.id
+     WHERE c.id = v_company AND c.is_active AND e.id = v_employe AND e.is_active;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Accès refusé';
+    END IF;
+
+    -- Jours de travail : seulement 1..7, et lundi → vendredi si rien de valide, comme normaliserJoursTravail
+    v_jours := ARRAY(SELECT DISTINCT j FROM unnest(v_jours) AS j WHERE j BETWEEN 1 AND 7);
+    IF coalesce(cardinality(v_jours), 0) = 0 THEN
+        v_jours := '{1,2,3,4,5}';
+    END IF;
+    IF NOT (extract(isodow FROM v_jour)::smallint = ANY (v_jours)) THEN
+        RAISE EXCEPTION 'Pas de service cantine aujourd''hui.' USING ERRCODE = 'CP423';
+    END IF;
+    IF v_heure < v_ouverture THEN
+        RAISE EXCEPTION 'Les commandes ouvrent à %.', replace(to_char(v_ouverture, 'HH24:MI'), ':', 'h')
+            USING ERRCODE = 'CP423';
+    END IF;
+    IF v_heure >= v_limite THEN
+        RAISE EXCEPTION 'Les commandes sont clôturées depuis %.', replace(to_char(v_limite, 'HH24:MI'), ':', 'h')
+            USING ERRCODE = 'CP423';
+    END IF;
+
+    -- Une commande à la fois par salarié et par jour : la vérification et l'écriture ne se croisent pas
+    PERFORM pg_advisory_xact_lock(hashtextextended('commande:' || v_employe::text || ':' || v_jour::text, 0));
+
+    -- FOR UPDATE : une correction du RH en cours attend la fin de cette transaction, et inversement
+    SELECT * INTO v_existante FROM public.commandes WHERE employe_id = v_employe AND date = v_jour FOR UPDATE;
+    IF FOUND THEN
+        IF v_existante.modifie_par_rh THEN
+            RAISE EXCEPTION 'Votre RH a saisi votre commande du jour : contactez-le pour la changer.'
+                USING ERRCODE = 'CP403';
+        END IF;
+        IF v_existante.plat_id IS NOT NULL THEN
+            SELECT m.restaurant_id INTO v_resto_existant FROM public.menus_du_jour m WHERE m.id = v_existante.plat_id;
+        END IF;
+    END IF;
+
+    IF p_statut = 'choisi' THEN
+        SELECT m.restaurant_id INTO v_resto_nouveau
+          FROM public.menus_du_jour m
+          LEFT JOIN public.restaurants r ON r.id = m.restaurant_id
+         WHERE m.id = p_plat_id AND m.company_id = v_company AND m.date = v_jour AND m.is_available
+           AND (m.restaurant_id IS NULL OR r.is_active);
+        IF NOT FOUND THEN
+            RAISE EXCEPTION 'Ce plat n''est plus disponible, choisissez-en un autre.' USING ERRCODE = 'CP404';
+        END IF;
+    END IF;
+
+    -- Le récapitulatif d'un restaurant déjà clôturé ne bouge plus : ni retirer, ni ajouter un repas
+    IF EXISTS (SELECT 1 FROM public.clotures cl
+               WHERE cl.company_id = v_company AND cl.date = v_jour
+                 AND cl.restaurant_id IS NOT NULL
+                 AND cl.restaurant_id IN (v_resto_existant, v_resto_nouveau)) THEN
+        RAISE EXCEPTION 'La commande de ce restaurant est déjà envoyée : contactez votre RH.'
+            USING ERRCODE = 'CP403';
+    END IF;
+
+    -- Heure réelle d'écriture (now() serait l'heure de début de transaction, avant l'attente des verrous)
+    v_enregistre := clock_timestamp();
+    INSERT INTO public.commandes (company_id, employe_id, plat_id, date, statut, modifie_par_rh, updated_at)
+    VALUES (v_company, v_employe, CASE WHEN p_statut = 'choisi' THEN p_plat_id END, v_jour, p_statut, false, v_enregistre)
+    ON CONFLICT (employe_id, date) DO UPDATE
+        SET plat_id = EXCLUDED.plat_id,
+            statut = EXCLUDED.statut,
+            updated_at = EXCLUDED.updated_at
+        WHERE public.commandes.modifie_par_rh = false;
+    -- Aucune ligne écrite : le RH a créé une commande verrouillée entre la lecture et l'insertion
+    GET DIAGNOSTICS v_lignes = ROW_COUNT;
+    IF v_lignes = 0 THEN
+        RAISE EXCEPTION 'Votre RH a saisi votre commande du jour : contactez-le pour la changer.'
+            USING ERRCODE = 'CP403';
+    END IF;
+    RETURN v_enregistre;
+END;
+$$;
+REVOKE EXECUTE ON FUNCTION public.passer_commande(TEXT, UUID) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.passer_commande(TEXT, UUID) TO authenticated;
