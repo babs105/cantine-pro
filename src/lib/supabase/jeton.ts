@@ -9,7 +9,10 @@ export type ClaimsCantine =
   | { role_app: "rh"; company_id: string }
   | { role_app: "salarie"; company_id: string; employe_id: string }
   | { role_app: "restaurant"; company_id: string; restaurant_id: string }
-  | { role_app: "compte_restaurant"; compte_id: string };
+  | { role_app: "compte_restaurant"; compte_id: string }
+  // v1.10 (T13) : appel des fonctions de connexion par le serveur. Ce rôle n'ouvre aucune table ; il
+  // atteste seulement que l'appel (et donc l'IP transmise) vient de Next.js et pas d'un appel direct.
+  | { role_app: "connexion" };
 
 function base64url(valeur: string | Buffer): string {
   return Buffer.from(valeur).toString("base64url");
@@ -60,7 +63,9 @@ export function signerJetonSupabase(claims: ClaimsCantine): string {
         ? claims.restaurant_id
         : claims.role_app === "compte_restaurant"
           ? claims.compte_id
-          : claims.company_id;
+          : claims.role_app === "connexion"
+            ? "connexion"
+            : claims.company_id;
 
   const entete = base64url(JSON.stringify({ alg: "ES256", typ: "JWT", kid }));
   const contenu = base64url(

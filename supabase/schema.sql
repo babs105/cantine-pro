@@ -1839,3 +1839,158 @@ DROP TRIGGER IF EXISTS trg_verrouiller_suppression_salarie ON public.employes;
 CREATE TRIGGER trg_verrouiller_suppression_salarie
     BEFORE DELETE ON public.employes
     FOR EACH ROW EXECUTE FUNCTION public.verrouiller_suppression_salarie();
+
+-- ==============================================================================
+-- v1.10 (T13) : le blocage de connexion ne permet plus de verrouiller le compte d'un autre (audit base,
+-- H-5). Avant, 5 échecs sur un identifiant (slug RH, e-mail, téléphone restaurant, console SuperAdmin)
+-- le bloquaient 15 min pour tout le monde : il suffisait de connaître un slug public pour empêcher une
+-- entreprise de se connecter.
+-- Deux compteurs par identifiant :
+--   <type>ip:<ip>|<identifiant> : 5 échecs en 15 min bloquent cette IP sur cet identifiant ;
+--   <identifiant>      : 30 échecs en 15 min, toutes IP confondues, le bloquent (brute force réparti).
+-- Une connexion réussie efface le compteur de son IP seulement. L'IP n'est crue que si l'appel porte le JWT
+-- court « connexion » signé par le serveur Next.js : un appelant direct (clé anon) ne peut pas la falsifier.
+-- Étape B (après le déploiement du code qui signe ce JWT) : remplacer les deux GRANT de ce bloc par
+-- « TO authenticated, service_role » (un REVOKE placé plus haut serait annulé à chaque relance). Ne pas
+-- retirer authenticated : le JWT « connexion » est signé avec role = authenticated.
+-- Les échanges gagnent un paramètre p_ip (DEFAULT NULL : l'ancien code à 2 arguments continue de marcher) ;
+-- l'ancienne signature est supprimée pour éviter toute ambiguïté d'appel.
+-- Bloc final : garder en dernier.
+-- ==============================================================================
+
+-- Comme noter_echec_connexion, avec un plafond choisi (noter_echec_connexion reste à 5 pour ses appelants)
+CREATE OR REPLACE FUNCTION public.noter_echec_plafonne(p_cle TEXT, p_max INT)
+RETURNS VOID
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = public AS $$
+BEGIN
+    DELETE FROM public.tentatives_connexion
+    WHERE cle IN (
+        SELECT cle FROM public.tentatives_connexion
+        WHERE premier_echec_at < now() - interval '1 day'
+          AND (bloque_jusqu_a IS NULL OR bloque_jusqu_a < now())
+        LIMIT 100
+        FOR UPDATE SKIP LOCKED
+    );
+
+    INSERT INTO public.tentatives_connexion AS t (cle, echecs, premier_echec_at)
+    VALUES (p_cle, 1, now())
+    ON CONFLICT (cle) DO UPDATE SET
+        echecs = CASE WHEN t.premier_echec_at < now() - interval '15 minutes' THEN 1 ELSE t.echecs + 1 END,
+        bloque_jusqu_a = CASE WHEN t.premier_echec_at < now() - interval '15 minutes' THEN NULL ELSE t.bloque_jusqu_a END,
+        premier_echec_at = CASE WHEN t.premier_echec_at < now() - interval '15 minutes' THEN now() ELSE t.premier_echec_at END;
+
+    UPDATE public.tentatives_connexion
+    SET bloque_jusqu_a = now() + interval '15 minutes'
+    WHERE cle = p_cle AND echecs >= greatest(coalesce(p_max, 5), 1);
+END;
+$$;
+REVOKE EXECUTE ON FUNCTION public.noter_echec_plafonne(TEXT, INT) FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.noter_echec_plafonne(TEXT, INT) TO service_role;
+
+-- IP lisible pour une clé : chiffres, lettres hexadécimales, points et deux-points ; sinon « inconnue »
+CREATE OR REPLACE FUNCTION public.ip_pour_cle(p_ip TEXT)
+RETURNS TEXT
+LANGUAGE sql IMMUTABLE SET search_path = public AS $$
+    SELECT CASE WHEN p_ip ~ '^[0-9A-Fa-f:.]{2,45}$' THEN lower(p_ip) ELSE 'inconnue' END
+$$;
+REVOKE EXECUTE ON FUNCTION public.ip_pour_cle(TEXT) FROM PUBLIC, anon, authenticated;
+
+-- Connexion RH
+DROP FUNCTION IF EXISTS public.echanger_acces_rh(TEXT, TEXT);
+CREATE OR REPLACE FUNCTION public.echanger_acces_rh(p_identifiant TEXT, p_code_hash TEXT, p_ip TEXT DEFAULT NULL)
+RETURNS UUID
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = public AS $$
+DECLARE
+    v_ident TEXT := lower(trim(coalesce(p_identifiant, '')));
+    v_cle TEXT := 'rh:' || left(v_ident, 100);
+    -- L'IP en tête : elle ne peut pas contenir « | », alors que l'identifiant est saisi librement
+    -- L'IP n'est crue que si l'appel vient du serveur Next.js (JWT « connexion ») ; un appel direct avec
+    -- la clé anon tombe dans le compteur partagé « inconnue », à 5 échecs
+    v_cle_ip TEXT := 'rhip:' || public.ip_pour_cle(CASE WHEN public.jwt_role_app() = 'connexion' THEN p_ip END)
+                     || '|' || left(v_ident, 100);
+    v_id UUID;
+BEGIN
+    PERFORM pg_advisory_xact_lock(hashtextextended(v_cle, 0));
+    PERFORM public.controler_tentatives(v_cle);
+    PERFORM public.controler_tentatives(v_cle_ip);
+
+    SELECT c.id INTO v_id
+    FROM public.companies c
+    JOIN public.acces_rh a ON a.company_id = c.id
+    WHERE CASE WHEN position('@' IN v_ident) > 0
+               THEN lower(c.email_contact) = v_ident
+               ELSE c.slug = v_ident END
+      AND c.is_active
+      AND a.code_hash ~ '^[0-9a-f]{64}$'
+      AND a.code_hash = lower(coalesce(p_code_hash, ''))
+    LIMIT 1;
+
+    IF v_id IS NULL THEN
+        PERFORM public.noter_echec_plafonne(v_cle_ip, 5);
+        PERFORM public.noter_echec_plafonne(v_cle, 30);
+    ELSE
+        PERFORM public.effacer_tentatives(v_cle_ip);
+    END IF;
+    RETURN v_id;
+END;
+$$;
+REVOKE EXECUTE ON FUNCTION public.echanger_acces_rh(TEXT, TEXT, TEXT) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.echanger_acces_rh(TEXT, TEXT, TEXT) TO anon, authenticated, service_role;
+
+-- Connexion d'un compte restaurant
+DROP FUNCTION IF EXISTS public.echanger_acces_compte_restaurant(TEXT, TEXT);
+CREATE OR REPLACE FUNCTION public.echanger_acces_compte_restaurant(p_telephone TEXT, p_code_hash TEXT, p_ip TEXT DEFAULT NULL)
+RETURNS UUID
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = public AS $$
+DECLARE
+    v_cle TEXT := 'resto:' || left(trim(coalesce(p_telephone, '')), 50);
+    v_cle_ip TEXT := 'restoip:' || public.ip_pour_cle(CASE WHEN public.jwt_role_app() = 'connexion' THEN p_ip END)
+                     || '|' || left(trim(coalesce(p_telephone, '')), 50);
+    v_id UUID;
+BEGIN
+    PERFORM pg_advisory_xact_lock(hashtextextended(v_cle, 0));
+    PERFORM public.controler_tentatives(v_cle);
+    PERFORM public.controler_tentatives(v_cle_ip);
+
+    SELECT c.id INTO v_id FROM public.comptes_restaurant c
+    WHERE c.telephone_whatsapp = p_telephone
+      AND c.is_active
+      AND lower(c.code_hash) = lower(p_code_hash)
+    LIMIT 1;
+
+    IF v_id IS NULL THEN
+        PERFORM public.noter_echec_plafonne(v_cle_ip, 5);
+        PERFORM public.noter_echec_plafonne(v_cle, 30);
+    ELSE
+        PERFORM public.effacer_tentatives(v_cle_ip);
+    END IF;
+    RETURN v_id;
+END;
+$$;
+REVOKE EXECUTE ON FUNCTION public.echanger_acces_compte_restaurant(TEXT, TEXT, TEXT) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.echanger_acces_compte_restaurant(TEXT, TEXT, TEXT) TO anon, authenticated, service_role;
+
+-- Console SuperAdmin : le code est vérifié par Next.js (SUPERADMIN_CODE), mais le contrôle et le comptage
+-- se font ici en une seule transaction sous verrou : une rafale de requêtes parallèles ne peut plus passer
+-- le contrôle avant qu'aucun échec ne soit compté. Réservée au service_role (l'IP vient du serveur).
+CREATE OR REPLACE FUNCTION public.tentative_connexion_admin(p_code_correct BOOLEAN, p_ip TEXT)
+RETURNS BOOLEAN
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = public AS $$
+DECLARE
+    v_cle TEXT := 'admin';
+    v_cle_ip TEXT := 'adminip:' || public.ip_pour_cle(p_ip);
+BEGIN
+    PERFORM pg_advisory_xact_lock(hashtextextended(v_cle, 0));
+    PERFORM public.controler_tentatives(v_cle);
+    PERFORM public.controler_tentatives(v_cle_ip);
+    IF p_code_correct IS NOT TRUE THEN
+        PERFORM public.noter_echec_plafonne(v_cle_ip, 5);
+        PERFORM public.noter_echec_plafonne(v_cle, 30);
+        RETURN false;
+    END IF;
+    PERFORM public.effacer_tentatives(v_cle_ip);
+    RETURN true;
+END;
+$$;
+REVOKE EXECUTE ON FUNCTION public.tentative_connexion_admin(BOOLEAN, TEXT) FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.tentative_connexion_admin(BOOLEAN, TEXT) TO service_role;
