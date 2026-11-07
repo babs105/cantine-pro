@@ -7,38 +7,29 @@ import { todayDakar } from "@/lib/config";
 import { createAdminSession, destroyAdminSession, isAdmin, verifyAdminCode } from "@/lib/admin-session";
 import { isPlanId } from "@/lib/abonnement";
 import type { StatutAbonnement } from "@/types/database";
-
-/** Clé du compteur d'échecs de la console (table tentatives_connexion, v1.8 du schéma) */
-const CLE_TENTATIVES_ADMIN = "admin";
+import { ipVisiteur } from "@/lib/ip";
 
 export async function loginAdminAction(
   _prev: { error?: string } | undefined,
   formData: FormData
 ): Promise<{ error?: string }> {
-  // Même limite que l'Espace RH : 5 échecs en 15 minutes bloquent la console 15 minutes
+  // v1.10 (T13) : 5 échecs par IP bloquent cette IP, 30 toutes IP confondues bloquent la console (15 minutes).
+  // Le code est vérifié ici ; le contrôle et le comptage se font en une transaction sous verrou
+  // (tentative_connexion_admin), pour qu'une rafale de requêtes parallèles ne dépasse pas le plafond.
+  const codeCorrect = verifyAdminCode(String(formData.get("code") || "").slice(0, 200));
   const supabase = createAdminClient() as any;
-  const { error: blocage } = await supabase.rpc("controler_tentatives", { p_cle: CLE_TENTATIVES_ADMIN });
-  if (blocage) {
-    if (blocage.code === "CP429") return { error: blocage.message };
-    // Détail réservé aux logs serveur : la page de connexion ne doit rien dire de l'architecture.
-    // PGRST202 = fonction introuvable, le schéma v1.8 n'a pas été relancé dans Supabase.
-    console.error("[admin] controler_tentatives :", blocage.code);
+  const { data: accepte, error } = await supabase.rpc("tentative_connexion_admin", {
+    p_code_correct: codeCorrect,
+    p_ip: await ipVisiteur(),
+  });
+  if (error) {
+    if (error.code === "CP429") return { error: error.message };
+    // Échec fermé. Détail réservé aux logs : PGRST202 = fonction introuvable, schéma pas encore relancé.
+    console.error("[admin] tentative_connexion_admin :", error.code);
     return { error: "Connexion indisponible, réessayez plus tard." };
   }
+  if (accepte !== true) return { error: "Code incorrect." };
 
-  if (!verifyAdminCode(String(formData.get("code") || "").slice(0, 200))) {
-    // Échec fermé : un échec non compté rendrait la limite inopérante
-    const { error: comptage } = await supabase.rpc("noter_echec_connexion", { p_cle: CLE_TENTATIVES_ADMIN });
-    if (comptage) {
-      console.error("[admin] noter_echec_connexion :", comptage.code);
-      return { error: "Connexion indisponible, réessayez plus tard." };
-    }
-    return { error: "Code incorrect." };
-  }
-
-  // Le code est bon : un compteur non effacé n'est pas une faille, on se contente de le journaliser
-  const { error: effacement } = await supabase.rpc("effacer_tentatives", { p_cle: CLE_TENTATIVES_ADMIN });
-  if (effacement) console.error("[admin] effacer_tentatives :", effacement.code);
   await createAdminSession();
   redirect("/admin");
 }
