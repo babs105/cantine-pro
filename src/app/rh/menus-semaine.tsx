@@ -40,7 +40,8 @@ interface MenusSemaineProps {
   todayDate: string;
   /** Jours de service de l'entreprise (1 = lundi … 7 = dimanche) */
   joursTravail?: number[] | null;
-  restaurants: Array<{ id: string; nom: string }>;
+  /** compte_id renseigné : le restaurant publie lui-même ses menus, le RH ne peut pas en ajouter (v1.14) */
+  restaurants: Array<{ id: string; nom: string; compte_id?: string | null }>;
   onError: (message: string | null) => void;
 }
 
@@ -74,12 +75,15 @@ export function MenusSemaine({
   const [titre, setTitre] = useState("");
   const [prix, setPrix] = useState("1500");
   const [desc, setDesc] = useState("");
-  const [restaurantId, setRestaurantId] = useState<string>(restaurants[0]?.id || "");
+  // Seuls les restaurants sans compte (lien restaurant seul) reçoivent des plats ajoutés par le RH
+  const restaurantsAjout = restaurants.filter((r) => !r.compte_id);
+  const restaurantsAutonomes = restaurants.filter((r) => r.compte_id);
+  const [restaurantId, setRestaurantId] = useState<string>(restaurantsAjout[0]?.id || "");
   const nomRestaurant = (id?: string | null) => restaurants.find((r) => r.id === id)?.nom;
 
   useEffect(() => {
-    if (!restaurants.some((r) => r.id === restaurantId)) setRestaurantId(restaurants[0]?.id || "");
-  }, [restaurants, restaurantId]);
+    if (!restaurantsAjout.some((r) => r.id === restaurantId)) setRestaurantId(restaurantsAjout[0]?.id || "");
+  }, [restaurantsAjout, restaurantId]);
 
   useEffect(() => setPlats(platsSemaine), [platsSemaine]);
   useEffect(() => {
@@ -177,7 +181,7 @@ export function MenusSemaine({
           </button>
         </div>
 
-        {joursModifiables.length > 0 && (
+        {joursModifiables.length > 0 && restaurantsAjout.length > 0 && (
           <button
             type="button"
             disabled={isPending}
@@ -204,8 +208,20 @@ export function MenusSemaine({
             <p className="text-xs text-neutral-500">
               Ajoutez d&apos;abord un restaurant partenaire dans l&apos;onglet « Restaurants ».
             </p>
+          ) : restaurantsAjout.length === 0 ? (
+            <p className="text-xs text-neutral-500">
+              Vos restaurants publient eux-mêmes leurs menus depuis leur espace restaurant. Vous pouvez mettre un
+              plat en rupture ou le retirer depuis la grille.
+            </p>
           ) : (
             <>
+              {restaurantsAutonomes.length > 0 && (
+                <p className="text-[11px] text-neutral-500 bg-neutral-50 border border-neutral-200 rounded-xl px-3 py-2">
+                  {restaurantsAutonomes.map((r) => r.nom).join(", ")}{" "}
+                  {restaurantsAutonomes.length > 1 ? "publient" : "publie"} {restaurantsAutonomes.length > 1 ? "leurs" : "ses"}{" "}
+                  menus depuis {restaurantsAutonomes.length > 1 ? "leur" : "son"} espace restaurant.
+                </p>
+              )}
               {carteDuRestaurant.length === 0 && (
               <div className="flex flex-wrap gap-1.5">
                 {SUGGESTIONS.map((s) => (
@@ -248,7 +264,7 @@ export function MenusSemaine({
                     onChange={(e) => setRestaurantId(e.target.value)}
                     className="w-full text-xs px-3 py-2 rounded-xl border border-neutral-200 bg-white focus:outline-none focus:ring-2 focus:ring-orange-500"
                   >
-                    {restaurants.map((r) => (
+                    {restaurantsAjout.map((r) => (
                       <option key={r.id} value={r.id}>
                         {r.nom}
                       </option>

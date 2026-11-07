@@ -218,13 +218,17 @@ export async function addMenuPlatAction(
     const supabase = createClientRh(companyId);
     const { data: resto } = await supabase
       .from("restaurants")
-      .select("id")
+      .select("id, compte_id")
       .eq("id", restaurantId ?? "")
       .eq("company_id", companyId)
       .eq("is_active", true)
       .maybeSingle();
     if (!resto) {
       return { success: false, message: "Choisissez le restaurant qui prépare ce plat." };
+    }
+    // v1.14 : un restaurant avec compte publie lui-même ses menus (la base le refuse aussi, code CP403)
+    if ((resto as any).compte_id) {
+      return { success: false, message: "Ce restaurant publie lui-même ses menus depuis son espace restaurant." };
     }
 
     const { data, error } = await (supabase.from("menus_du_jour") as any)
@@ -289,6 +293,14 @@ export async function dupliquerSemaineAction(lundiCible: string): Promise<{
   const joursParResto = new Map<string, number[]>(
     ((joursRestos as any[]) || []).map((r) => [r.restaurant_id, normaliserJoursRestaurant(r.jours_travail)])
   );
+  // v1.14 : les plats des restaurants avec compte ne sont pas recopiés, ils publient eux-mêmes leurs menus
+  const { data: restosAvecCompte, error: erreurRestos } = await supabase
+    .from("restaurants")
+    .select("id")
+    .eq("company_id", companyId)
+    .not("compte_id", "is", null);
+  if (erreurRestos) return { success: false, message: messageErreur("rh", erreurRestos) };
+  const publientEuxMemes = new Set(((restosAvecCompte as Array<{ id: string }> | null) || []).map((r) => r.id));
   const restoTravaille = (restaurantId: string | null, date: string) =>
     !restaurantId || !joursParResto.has(restaurantId) || joursParResto.get(restaurantId)!.includes(jourIso(date));
 
@@ -297,7 +309,11 @@ export async function dupliquerSemaineAction(lundiCible: string): Promise<{
     .map((p) => ({ ...p, date: ajouterJours(p.date, 7) }))
     .filter(
       (p) =>
-        joursCibles.has(p.date) && p.date >= today && !joursDejaRemplis.has(p.date) && restoTravaille(p.restaurant_id, p.date)
+        joursCibles.has(p.date) &&
+        p.date >= today &&
+        !joursDejaRemplis.has(p.date) &&
+        !publientEuxMemes.has(p.restaurant_id) &&
+        restoTravaille(p.restaurant_id, p.date)
     )
     .map((p) => ({
       company_id: companyId,

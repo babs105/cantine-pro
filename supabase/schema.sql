@@ -2753,3 +2753,38 @@ LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public AS $$
 $$;
 REVOKE EXECUTE ON FUNCTION public.jours_travail_restaurants() FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION public.jours_travail_restaurants() TO authenticated;
+
+-- ==============================================================================
+-- v1.14 : le RH n'ajoute plus de plats au menu pour un restaurant qui a un compte (il publie lui-même
+-- ses menus depuis /resto). Le RH garde l'ajout pour les restaurants sans compte (lien /resto/[token]
+-- seul), et peut toujours mettre en rupture ou retirer un plat existant.
+-- ==============================================================================
+CREATE OR REPLACE FUNCTION public.bloquer_ajout_rh_restaurant_avec_compte()
+RETURNS TRIGGER
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
+BEGIN
+    IF public.jwt_role_app() IS DISTINCT FROM 'rh' OR NEW.restaurant_id IS NULL THEN
+        RETURN NEW;
+    END IF;
+    -- UPDATE sans changement de restaurant : rupture, prix... sur un plat existant restent permis
+    IF TG_OP = 'UPDATE' AND NEW.restaurant_id IS NOT DISTINCT FROM OLD.restaurant_id THEN
+        RETURN NEW;
+    END IF;
+    -- Borné à l'entreprise de la ligne : aucune information sur un restaurant d'une autre entreprise
+    IF EXISTS (SELECT 1 FROM public.restaurants r
+               WHERE r.id = NEW.restaurant_id
+                 AND r.company_id = NEW.company_id
+                 AND r.compte_id IS NOT NULL) THEN
+        -- Même texte que addMenuPlatAction (src/app/rh/actions.ts) : changer les deux ensemble
+        RAISE EXCEPTION 'Ce restaurant publie lui-même ses menus depuis son espace restaurant.'
+            USING ERRCODE = 'CP403';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+REVOKE EXECUTE ON FUNCTION public.bloquer_ajout_rh_restaurant_avec_compte() FROM PUBLIC, anon, authenticated;
+
+DROP TRIGGER IF EXISTS trg_bloquer_ajout_rh_restaurant_avec_compte ON public.menus_du_jour;
+CREATE TRIGGER trg_bloquer_ajout_rh_restaurant_avec_compte
+    BEFORE INSERT OR UPDATE OF restaurant_id ON public.menus_du_jour
+    FOR EACH ROW EXECUTE FUNCTION public.bloquer_ajout_rh_restaurant_avec_compte();
