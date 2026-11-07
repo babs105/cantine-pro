@@ -272,6 +272,8 @@ export interface Database {
           code_partenaire: string;
           is_active: boolean;
           created_at: string;
+          // v1.10 (T7) : non lisibles par le rôle compte_restaurant (droits par colonne)
+          code_change_at: string;
         };
         Insert: {
           id?: string;
@@ -282,12 +284,13 @@ export interface Database {
           code_partenaire?: string;
           is_active?: boolean;
           created_at?: string;
+          code_change_at?: string;
         };
+        // code_hash ne se modifie plus que par la fonction changer_code_compte_restaurant
         Update: {
           nom?: string;
           telephone_whatsapp?: string;
           ville?: string | null;
-          code_hash?: string;
           is_active?: boolean;
         };
       };
