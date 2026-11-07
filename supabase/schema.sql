@@ -2026,3 +2026,30 @@ ALTER TABLE public.companies
     DROP COLUMN IF EXISTS traiteur_nom,
     DROP COLUMN IF EXISTS traiteur_telephone,
     DROP COLUMN IF EXISTS heure_livraison_souhaitee;
+
+-- ==============================================================================
+-- v1.10 (T16) : limite de débit sur les inscriptions en libre-service (audit base, moyenne). /inscription
+-- (entreprise) et /resto/inscription (restaurant) créaient des comptes sans limite, protégées seulement par
+-- un champ piège : multiplicateur pour les attaques par code (une entreprise ou un compte de plus par essai)
+-- et énumération des e-mails et numéros déjà inscrits.
+-- Chaque tentative arrivée au serveur compte, réussie ou non : 5 en 15 min depuis une même IP bloquent
+-- les inscriptions de ce type pour cette IP 15 min (erreur CP429). Appelée par les Server Actions
+-- d'inscription en service_role ; l'IP vient des en-têtes posés par Vercel. Bloc final : garder en dernier.
+-- ==============================================================================
+CREATE OR REPLACE FUNCTION public.limiter_inscription(p_type TEXT, p_ip TEXT)
+RETURNS VOID
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = public AS $$
+DECLARE
+    v_cle TEXT;
+BEGIN
+    IF p_type IS NULL OR p_type NOT IN ('entreprise', 'restaurant') THEN
+        RAISE EXCEPTION 'Type d''inscription invalide';
+    END IF;
+    v_cle := 'inscription-' || p_type || ':' || public.ip_pour_cle(p_ip);
+    PERFORM pg_advisory_xact_lock(hashtextextended(v_cle, 0));
+    PERFORM public.controler_tentatives(v_cle);
+    PERFORM public.noter_echec_plafonne(v_cle, 5);
+END;
+$$;
+REVOKE EXECUTE ON FUNCTION public.limiter_inscription(TEXT, TEXT) FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.limiter_inscription(TEXT, TEXT) TO service_role;
