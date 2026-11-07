@@ -29,13 +29,12 @@ export default async function CompanyPortalPage({ params }: PageProps) {
     notFound();
   }
 
-  // Jamais le token : ce composant serveur passe la liste au navigateur, et le portail est public
-  const { data: emps } = await supabase
-    .from("employes")
-    .select("id, nom, service")
-    .eq("company_id", comp.id)
-    .eq("is_active", true)
-    .order("nom");
+  // v1.10 : le portail ne lit plus la table employes ; la fonction ne renvoie que id, nom et service
+  // des salariés actifs de cette entreprise (jamais le token : la liste part au navigateur)
+  const { data: emps, error } = await (supabase as any).rpc("portail_lister_salaries");
+  if (error) console.error("[portail] liste des salariés :", error.code);
+  // Colonnes recopiées une à une : une colonne ajoutée plus tard à la fonction ne partirait pas au navigateur
+  const employes = ((emps as any[]) || []).map((e) => ({ id: e.id, nom: e.nom, service: e.service ?? null }));
 
-  return <EnterprisePortalClient company={comp} employes={emps || []} />;
+  return <EnterprisePortalClient company={comp} employes={employes} />;
 }
