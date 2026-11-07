@@ -33,7 +33,7 @@ Deux mécanismes distincts, à ne pas confondre :
 
 Les identifiants des pages publiques sont dans l'URL et ré-échangés à chaque
 requête par une fonction SQL `SECURITY DEFINER` : token salarié (`/p/[token]`),
-token restaurant (`/resto/[token]`), slug du portail (`/c/[slug]`).
+token restaurant (`/resto/[token]`).
 
 **Il n'y a pas de `src/middleware.ts`.** Chaque page et chaque Server Action
 vérifie elle-même sa session (`getRhCompanyId()`, `getRestoCompteId()`,
@@ -102,7 +102,6 @@ Pas de middleware : vérifier dans **chaque** fichier touché.
 | `/resto/[token]` | `echangerJetonRestaurant(token)` |
 | `/admin/**` | `isAdmin()` dans la page **et** dans chaque action |
 | `/p/[token]` | `echangerJetonSalarie(token)` dans la page **et** dans l'action |
-| `/c/[slug]` | `echangerSlugPortail(slug)` |
 | `/api/cron/cloture` | `Authorization: Bearer CRON_SECRET`, refus si absent en production |
 
 **Routes publiques assumées** : `/`, `/inscription`, `/resto/inscription`,
@@ -156,7 +155,7 @@ await createRhSession(companyId);
 redirect("/rh");
 ```
 
-**Exception** : `/p/[token]`, `/resto/[token]` et `/c/[slug]` portent leur
+**Exception** : `/p/[token]` et `/resto/[token]` portent leur
 identifiant dans l'URL par conception (liens WhatsApp). Le token doit rester
 aléatoire (`generateToken()`, 8 octets minimum) et révocable (`is_active`).
 

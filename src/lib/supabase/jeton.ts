@@ -9,7 +9,6 @@ export type ClaimsCantine =
   | { role_app: "rh"; company_id: string }
   | { role_app: "salarie"; company_id: string; employe_id: string }
   | { role_app: "restaurant"; company_id: string; restaurant_id: string }
-  | { role_app: "portail"; company_id: string }
   | { role_app: "compte_restaurant"; compte_id: string };
 
 function base64url(valeur: string | Buffer): string {

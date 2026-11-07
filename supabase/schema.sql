@@ -1319,3 +1319,19 @@ GRANT EXECUTE ON FUNCTION public.restaurants_visibles_salarie() TO authenticated
 ALTER TABLE public.companies
     DROP COLUMN IF EXISTS traiteur_token,
     DROP COLUMN IF EXISTS code_acces;
+
+-- ==============================================================================
+-- v1.10 (T5) : suppression du portail entreprise /c/[slug]. Son auto-inscription anonyme n'avait aucun
+-- quota (audit base, H-2) : n'importe qui connaissant le slug pouvait créer des salariés facturés.
+-- Les salariés sont désormais ajoutés uniquement par le RH (saisie ou import) et commandent depuis
+-- leur lien personnel /p/[token]. Les fonctions créées plus haut sont supprimées ici, à chaque relance,
+-- et le rôle portail perd la lecture de la fiche entreprise. Bloc final : garder en dernier.
+-- ==============================================================================
+DROP FUNCTION IF EXISTS public.portail_inscrire_salarie(TEXT, TEXT, INT);
+DROP FUNCTION IF EXISTS public.portail_lister_salaries();
+DROP FUNCTION IF EXISTS public.echanger_slug_portail(TEXT);
+
+DROP POLICY IF EXISTS rh_lit_son_entreprise ON public.companies;
+CREATE POLICY rh_lit_son_entreprise ON public.companies FOR SELECT TO authenticated
+    USING (public.jwt_role_app() IN ('rh', 'salarie', 'restaurant') AND id = public.jwt_company_id());
+

@@ -20,8 +20,6 @@ import {
   Pencil,
   PhoneCall,
   Store,
-  ExternalLink,
-  Link2,
   Megaphone,
   Lock,
   History,
@@ -203,17 +201,6 @@ export function RhDashboardClient({
   );
   const nomRestaurant = (id?: string | null) => restaurants.find((r) => r.id === id)?.nom;
 
-  // Lien global de l'entreprise : chaque salarié choisit son nom (à poster dans le groupe WhatsApp)
-  const lienPortail = `${appBaseUrl}/c/${company.slug}`;
-  const messagePortail =
-    `🍽️ Cantine ${company.nom} : choisissez votre repas du jour ici, avant ` +
-    `${company.heure_limite_vote.slice(0, 5).replace(":", "h")} 👉 ${lienPortail}`;
-  const copierLienPortail = () => {
-    navigator.clipboard.writeText(lienPortail);
-    setCopiedToken("__portail__");
-    setTimeout(() => setCopiedToken(null), 2500);
-  };
-
   // Étape 1 (matin) : message du menu du jour à poster dans le groupe WhatsApp des salariés
   const menusDuJour = restaurantsDuJour
     .map((r) => ({ restaurant: r.nom, plats: plats.filter((p) => p.restaurant_id === r.id && p.is_available) }))
@@ -228,7 +215,6 @@ export function RhDashboardClient({
     }).format(new Date()),
     heureLimite: company.heure_limite_vote,
     menus: menusDuJour,
-    lienPortail,
   });
   const copierMenuDuJour = () => {
     navigator.clipboard.writeText(messageMenuDuJour);
@@ -541,8 +527,8 @@ export function RhDashboardClient({
                       1. Envoyer le menu du jour aux salariés
                     </h2>
                     <p className="text-xs text-neutral-500 mt-0.5">
-                      Postez ce message dans le groupe WhatsApp de l&apos;entreprise : menu, lien du portail et heure
-                      limite ({company.heure_limite_vote.slice(0, 5).replace(":", "h")}).
+                      Postez ce message dans le groupe WhatsApp de l&apos;entreprise : menu et heure
+                      limite. Chaque salarié commande depuis son lien personnel ({company.heure_limite_vote.slice(0, 5).replace(":", "h")}).
                     </p>
                   </div>
                   {menusDuJour.length > 0 && (
@@ -943,57 +929,6 @@ export function RhDashboardClient({
         {/* ============================================================ */}
         {activeTab === "employes" && (
           <div className="space-y-6">
-            {/* LIEN PORTAIL ENTREPRISE (À POSTER DANS LE GROUPE WHATSAPP) */}
-            <div className="bg-orange-50 border border-orange-200 rounded-3xl p-5 space-y-3">
-              <div>
-                <h2 className="text-sm font-extrabold text-neutral-900 flex items-center gap-2">
-                  <Link2 className="w-4 h-4 text-orange-600" />
-                  Lien du portail entreprise
-                </h2>
-                <p className="text-xs text-neutral-600 mt-0.5">
-                  Un seul lien pour tout le monde : postez-le dans le groupe WhatsApp de l&apos;entreprise. Chaque
-                  salarié choisit son nom (ou s&apos;inscrit) puis commande.
-                </p>
-              </div>
-              <div className="flex flex-col sm:flex-row gap-2">
-                <code className="flex-1 text-xs bg-white border border-orange-200 rounded-xl px-3 py-2 break-all">
-                  {lienPortail}
-                </code>
-                <div className="flex flex-wrap gap-2">
-                  <a
-                    href={`/c/${company.slug}`}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="px-3 py-2 bg-white hover:bg-orange-100 border border-orange-200 text-neutral-800 font-semibold text-xs rounded-xl transition flex items-center gap-1.5"
-                  >
-                    <ExternalLink className="w-4 h-4" />
-                    Ouvrir
-                  </a>
-                  <button
-                    type="button"
-                    onClick={copierLienPortail}
-                    className="px-3 py-2 bg-white hover:bg-orange-100 border border-orange-200 text-neutral-800 font-semibold text-xs rounded-xl transition flex items-center gap-1.5"
-                  >
-                    {copiedToken === "__portail__" ? (
-                      <Check className="w-4 h-4 text-emerald-600" />
-                    ) : (
-                      <Copy className="w-4 h-4" />
-                    )}
-                    {copiedToken === "__portail__" ? "Copié !" : "Copier"}
-                  </button>
-                  <a
-                    href={`https://wa.me/?text=${encodeURIComponent(messagePortail)}`}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="px-3 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-xl transition flex items-center gap-1.5"
-                  >
-                    <Send className="w-4 h-4" />
-                    Partager sur WhatsApp
-                  </a>
-                </div>
-              </div>
-            </div>
-
             {/* Actions Rapides Collaborateurs */}
             <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
               <div>

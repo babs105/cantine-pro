@@ -42,9 +42,8 @@ export function buildMessageMenuDuJour(params: {
   dateStr: string;
   heureLimite: string;
   menus: Array<{ restaurant: string; plats: Array<{ titre: string; prix_unitaire: number }> }>;
-  lienPortail: string;
 }): string {
-  const { companyNom, dateStr, heureLimite, menus, lienPortail } = params;
+  const { companyNom, dateStr, heureLimite, menus } = params;
   let msg = `🍽️ *MENU DU JOUR — ${companyNom.toUpperCase()}*\n`;
   msg += `📅 ${dateStr}\n\n`;
   for (const menu of menus) {
@@ -54,8 +53,7 @@ export function buildMessageMenuDuJour(params: {
     }
     msg += `\n`;
   }
-  msg += `⏰ Choisissez votre plat avant *${formatHeure(heureLimite)}* :\n`;
-  msg += `👉 ${lienPortail}`;
+  msg += `⏰ Choisissez votre plat avant *${formatHeure(heureLimite)}*, depuis votre lien personnel Cantine Pro.`;
   return msg;
 }
 

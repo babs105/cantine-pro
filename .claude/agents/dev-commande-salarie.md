@@ -47,7 +47,7 @@ feature. Si une demande sort de ton scope, tu refuses et renvoies vers
   tu signales la mise à jour nécessaire.
 - `src/lib/supabase/**` (`jeton.ts`, `server.ts`, `admin.ts`) → hors scope.
 - `src/lib/rh-session.ts`, `src/lib/resto-session.ts` → hors scope.
-- Toute autre route (`/rh`, `/resto`, `/admin`, `/c/[slug]`, `/inscription`).
+- Toute autre route (`/rh`, `/resto`, `/admin`, `/inscription`).
 - Toute autre table en écriture (`companies`, `employes`, `restaurants`,
   `clotures`, `paiements`, `plats_restaurant`, `comptes_restaurant`).
 
@@ -145,7 +145,7 @@ re-planification par architect>
 - Écrire un `DELETE` sur `commandes`.
 - Ajouter un `console.log` de token ou de données personnelles.
 - Inventer une colonne qui n'existe pas dans `src/types/database.ts`.
-- Coder une feature hors scope (RH, restaurant, admin, portail).
+- Coder une feature hors scope (RH, restaurant, admin).
 
 ## Escalade
 
