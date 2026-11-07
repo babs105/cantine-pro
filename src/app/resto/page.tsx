@@ -5,7 +5,7 @@ import { todayDakar } from "@/lib/config";
 import { getCommandesDuJour } from "@/lib/cloture";
 import { periodeMois } from "@/lib/facturation";
 import { buildRecap } from "@/lib/recap";
-import { ajouterJours, isApresHeureLimite, isDateValide, lundiDeLaSemaine, normaliserJoursTravail } from "@/lib/dates";
+import { ajouterJours, isApresHeureLimite, isDateValide, lundiDeLaSemaine, normaliserJoursRestaurant, normaliserJoursTravail } from "@/lib/dates";
 import type { RecapLigne } from "@/types/database";
 import type { PlatCarte, PlatMenuResto } from "./actions";
 import { EspaceRestaurantClient, type EntrepriseResto } from "./espace-client";
@@ -28,7 +28,7 @@ export default async function EspaceRestaurantPage({ searchParams }: PageProps) 
   const mois = periodeMois(moisParam || "") ? moisParam! : today.slice(0, 7);
   const periode = periodeMois(mois)!;
 
-  const [{ data: rawCompte }, { data: rawPartenariats }] = await Promise.all([
+  const [{ data: rawCompte }, { data: rawPartenariats }, { data: rawJours }] = await Promise.all([
     supabase
       .from("comptes_restaurant")
       .select("id, nom, telephone_whatsapp, ville, code_partenaire")
@@ -40,10 +40,13 @@ export default async function EspaceRestaurantPage({ searchParams }: PageProps) 
       .eq("compte_id", compteId)
       .eq("is_active", true)
       .order("created_at"),
+    // v1.13 : lu à part pour que la page reste ouverte si la colonne n'existe pas encore (schéma non relancé)
+    supabase.from("comptes_restaurant").select("jours_travail").eq("id", compteId).maybeSingle(),
   ]);
 
-  const compte: any = rawCompte;
-  if (!compte) redirect("/resto/login");
+  const rawCompteObj: any = rawCompte;
+  if (!rawCompteObj) redirect("/resto/login");
+  const compte = { ...rawCompteObj, jours_travail: normaliserJoursRestaurant((rawJours as any)?.jours_travail) };
 
   // Chaque entreprise est lue avec un JWT « restaurant » limité à ce partenariat (politiques RLS existantes)
   const entreprises: EntrepriseResto[] = await Promise.all(

@@ -557,6 +557,21 @@ BEGIN
     END IF;
 END $$;
 
+-- v1.13 : jours de travail du restaurant (1 = lundi … 7 = dimanche), réglés par le compte pour toutes ses
+-- entreprises. Par défaut tous les jours : rien ne change pour les restaurants existants. Un plat de ce
+-- restaurant ne peut pas être mis au menu un jour où il ne travaille pas (trigger du bloc final).
+ALTER TABLE public.comptes_restaurant
+    ADD COLUMN IF NOT EXISTS jours_travail SMALLINT[] NOT NULL DEFAULT '{1,2,3,4,5,6,7}';
+
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'comptes_restaurant_jours_travail_valides') THEN
+        ALTER TABLE public.comptes_restaurant ADD CONSTRAINT comptes_restaurant_jours_travail_valides
+            CHECK (cardinality(jours_travail) BETWEEN 1 AND 7
+                   AND jours_travail <@ ARRAY[1,2,3,4,5,6,7]::SMALLINT[]);
+    END IF;
+END $$;
+
 -- 8. SÉCURITÉ : RLS ACTIVÉE SUR TOUTES LES TABLES
 -- Les politiques (section 9) n'ouvrent l'accès qu'aux requêtes portant un JWT signé par le serveur
 -- Next.js. La clé anon seule ne lit aucune table (tokens employés inclus).
@@ -2672,3 +2687,69 @@ END $$;
 REVOKE INSERT, DELETE ON public.companies FROM authenticated;
 REVOKE INSERT, DELETE ON public.comptes_restaurant FROM authenticated;
 REVOKE INSERT, UPDATE, DELETE ON public.paiements FROM authenticated;
+
+-- ==============================================================================
+-- v1.13 : jours de travail du restaurant (colonne comptes_restaurant.jours_travail, créée avant la section 8)
+-- ==============================================================================
+
+-- 1. Le compte lit et modifie ses jours (les droits par colonne sont reposés ici, après le REVOKE de la v1.10
+--    qui retire à chaque relance les droits par colonne de comptes_restaurant)
+GRANT SELECT (jours_travail) ON public.comptes_restaurant TO authenticated;
+GRANT UPDATE (jours_travail) ON public.comptes_restaurant TO authenticated;
+
+-- 2. Aucun plat d'un restaurant au menu un jour où il ne travaille pas, quel que soit l'auteur (RH ou
+--    restaurant). SECURITY DEFINER : le RH n'a pas accès à comptes_restaurant. Un restaurant sans compte
+--    (lien /resto/[token] seul) n'a pas de jours de travail : aucune restriction. Seuls l'ajout et le
+--    changement de date ou de restaurant sont contrôlés : les plats déjà au menu restent modifiables.
+CREATE OR REPLACE FUNCTION public.verifier_jour_travail_restaurant()
+RETURNS TRIGGER
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
+DECLARE
+    v_jours SMALLINT[];
+    v_jour SMALLINT;
+BEGIN
+    IF NEW.restaurant_id IS NULL THEN
+        RETURN NEW;
+    END IF;
+    -- UPDATE OF se déclenche même si la valeur est identique : sans changement de date ni de restaurant,
+    -- le plat déjà au menu reste modifiable
+    IF TG_OP = 'UPDATE'
+       AND NEW.date IS NOT DISTINCT FROM OLD.date
+       AND NEW.restaurant_id IS NOT DISTINCT FROM OLD.restaurant_id THEN
+        RETURN NEW;
+    END IF;
+    -- Borné à l'entreprise de la ligne : aucune lecture des jours d'un restaurant d'une autre entreprise
+    SELECT c.jours_travail INTO v_jours
+    FROM public.restaurants r
+    JOIN public.comptes_restaurant c ON c.id = r.compte_id
+    WHERE r.id = NEW.restaurant_id
+      AND r.company_id = NEW.company_id;
+    v_jour := EXTRACT(ISODOW FROM NEW.date)::SMALLINT;
+    IF v_jours IS NOT NULL AND NOT (v_jour = ANY (v_jours)) THEN
+        RAISE EXCEPTION 'Ce restaurant ne travaille pas le %.',
+            (ARRAY['lundi', 'mardi', 'mercredi', 'jeudi', 'vendredi', 'samedi', 'dimanche'])[v_jour]
+            USING ERRCODE = 'CP422';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+REVOKE EXECUTE ON FUNCTION public.verifier_jour_travail_restaurant() FROM PUBLIC, anon, authenticated;
+
+DROP TRIGGER IF EXISTS trg_verifier_jour_travail_restaurant ON public.menus_du_jour;
+CREATE TRIGGER trg_verifier_jour_travail_restaurant
+    BEFORE INSERT OR UPDATE OF date, restaurant_id ON public.menus_du_jour
+    FOR EACH ROW EXECUTE FUNCTION public.verifier_jour_travail_restaurant();
+
+-- 3. Le RH lit les jours de travail des restaurants de son entreprise (duplication de semaine), sans
+--    accès à comptes_restaurant. Restaurant sans compte : absent du résultat (tous les jours permis).
+CREATE OR REPLACE FUNCTION public.jours_travail_restaurants()
+RETURNS TABLE (restaurant_id UUID, jours_travail SMALLINT[])
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public AS $$
+    SELECT r.id, c.jours_travail
+    FROM public.restaurants r
+    JOIN public.comptes_restaurant c ON c.id = r.compte_id
+    WHERE public.jwt_role_app() = 'rh'
+      AND r.company_id = public.jwt_company_id();
+$$;
+REVOKE EXECUTE ON FUNCTION public.jours_travail_restaurants() FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.jours_travail_restaurants() TO authenticated;

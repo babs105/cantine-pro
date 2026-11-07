@@ -13,7 +13,9 @@ import {
   isApresHeureLimite,
   isDateValide,
   joursOuvres,
+  jourIso,
   lundiDeLaSemaine,
+  normaliserJoursRestaurant,
   normaliserJoursTravail,
 } from "@/lib/dates";
 
@@ -181,6 +183,92 @@ export async function modifierProfilRestoAction(champs: {
   await (session.supabase as any).rpc("synchroniser_compte_restaurant");
   revalidatePath("/resto");
   return { success: true };
+}
+
+/**
+ * v1.13 : jours de travail du restaurant, valables pour toutes ses entreprises. La base refuse ensuite
+ * tout plat de ce restaurant au menu un jour où il ne travaille pas (trigger, code CP422).
+ */
+export async function modifierJoursTravailRestoAction(jours: number[]): Promise<{ success: boolean; message?: string }> {
+  const session = await createClientCompteSession();
+  if (!session) return { success: false, message: SESSION_RESTO_EXPIREE };
+  // Une Server Action peut être appelée avec n'importe quoi : on ne garde que des jours 1 à 7
+  if (!Array.isArray(jours) || jours.length > 7) return { success: false, message: "Requête invalide." };
+  const valides = jours.filter((j) => Number.isInteger(j) && j >= 1 && j <= 7);
+  if (valides.length === 0) return { success: false, message: "Choisissez au moins un jour de travail." };
+
+  const { data, error } = await (session.supabase.from("comptes_restaurant") as any)
+    .update({ jours_travail: normaliserJoursRestaurant(valides) })
+    .eq("id", session.compteId)
+    .select("id");
+  if (error) return { success: false, message: messageErreur("resto/jours", error, "Enregistrement impossible.") };
+  // Ligne filtrée par la RLS : aucune erreur mais rien d'écrit
+  if (!data || data.length === 0) return { success: false, message: "Enregistrement impossible." };
+
+  // Les plats déjà prévus à partir de demain un jour désormais fermé passent en rupture (ni supprimés, ni
+  // commandes touchées). Aujourd'hui n'est pas concerné : des salariés ont pu déjà commander.
+  const joursOuverts = normaliserJoursRestaurant(valides);
+  const demain = ajouterJours(todayDakar(), 1);
+  let masques = 0;
+  let echec = false;
+  const { data: partenariats } = await session.supabase
+    .from("restaurants")
+    .select("id")
+    .eq("compte_id", session.compteId)
+    .eq("is_active", true);
+  for (const p of ((partenariats as Array<{ id: string }> | null) || [])) {
+    const acces = await accesPartenariatCompte(p.id);
+    if (!acces) continue;
+    const { data: platsFuturs } = await acces.supabase
+      .from("menus_du_jour")
+      .select("id, date")
+      .eq("company_id", acces.companyId)
+      .eq("restaurant_id", acces.restaurantId)
+      .eq("is_available", true)
+      .gte("date", demain);
+    const ids = ((platsFuturs as Array<{ id: string; date: string }> | null) || [])
+      .filter((plat) => !joursOuverts.includes(jourIso(plat.date)))
+      .map((plat) => plat.id);
+    if (ids.length === 0) continue;
+    const { error: erreurRupture } = await (acces.supabase.from("menus_du_jour") as any)
+      .update({ is_available: false })
+      .in("id", ids)
+      .eq("restaurant_id", acces.restaurantId);
+    if (erreurRupture) {
+      console.error("[resto/jours] rupture :", erreurRupture.code);
+      echec = true;
+    } else {
+      masques += ids.length;
+    }
+  }
+
+  revalidatePath("/resto");
+  revalidatePath("/rh");
+  if (echec) {
+    return {
+      success: true,
+      message: "Jours enregistrés, mais certains plats prévus ces jours-là n'ont pas pu passer en rupture : vérifiez vos menus.",
+    };
+  }
+  return {
+    success: true,
+    message:
+      masques > 0
+        ? `Jours enregistrés. ${masques} plat(s) prévu(s) un jour où vous ne travaillez plus passé(s) en rupture.`
+        : "Jours de travail enregistrés.",
+  };
+}
+
+/** Jours de travail du compte connecté ; null si illisibles (on ne suppose rien) */
+async function lireJoursTravailCompte(): Promise<number[] | null> {
+  const session = await createClientCompteSession();
+  if (!session) return null;
+  const { data } = await session.supabase
+    .from("comptes_restaurant")
+    .select("jours_travail")
+    .eq("id", session.compteId)
+    .maybeSingle();
+  return data ? normaliserJoursRestaurant((data as any).jours_travail) : null;
 }
 
 /**
@@ -353,7 +441,8 @@ export async function ajouterPlatMenuRestoAction(
     })
     .select(CHAMPS_PLAT_MENU)
     .single();
-  if (error) return { success: false, message: "Impossible d'ajouter le plat au menu." };
+  // CP422 : le restaurant ne travaille pas ce jour-là (trigger de la base)
+  if (error) return { success: false, message: messageErreur("resto/menu", error, "Impossible d'ajouter le plat au menu.") };
 
   revalidatePath("/resto");
   revalidatePath("/rh");
@@ -442,7 +531,12 @@ export async function copierSemainePrecedenteRestoAction(
   const comp = await lireEntrepriseVisible(acces.supabase);
   // Jours de travail inconnus : on ne copie pas sur des jours supposés
   if (!comp) return { success: false, message: "Entreprise momentanément indisponible, réessayez." };
-  const joursCibles = new Set(joursOuvres(lundi, normaliserJoursTravail(comp.jours_travail)));
+  const joursRestaurant = await lireJoursTravailCompte();
+  if (!joursRestaurant) return { success: false, message: "Vos jours de travail sont illisibles, réessayez." };
+  // Jours de travail de l'entreprise où le restaurant travaille aussi (v1.13)
+  const joursCibles = new Set(
+    joursOuvres(lundi, normaliserJoursTravail(comp.jours_travail)).filter((j) => joursRestaurant.includes(jourIso(j)))
+  );
 
   const { data: existants } = await acces.supabase
     .from("menus_du_jour")
@@ -489,7 +583,7 @@ export async function copierSemainePrecedenteRestoAction(
   const { data, error } = await (acces.supabase.from("menus_du_jour") as any)
     .insert(aInserer)
     .select(CHAMPS_PLAT_MENU);
-  if (error) return { success: false, message: "Copie de la semaine impossible." };
+  if (error) return { success: false, message: messageErreur("resto/menu", error, "Copie de la semaine impossible.") };
 
   revalidatePath("/resto");
   revalidatePath("/rh");

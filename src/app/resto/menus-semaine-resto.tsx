@@ -4,7 +4,7 @@ import { useEffect, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { Building2, ChevronLeft, ChevronRight, CopyPlus, Lock, Plus, ToggleLeft, ToggleRight, Trash2 } from "lucide-react";
 import { cn, formatFCFA } from "@/lib/utils";
-import { ajouterJours, formatJourCourt, joursOuvres } from "@/lib/dates";
+import { NOMS_JOURS, ajouterJours, formatJourCourt, jourIso, joursOuvres, lundiDeLaSemaine } from "@/lib/dates";
 import {
   ajouterPlatMenuRestoAction,
   basculerPlatMenuRestoAction,
@@ -26,16 +26,26 @@ export interface EntrepriseMenus {
 
 interface MenusSemaineRestoProps {
   entreprises: EntrepriseMenus[];
+  /** v1.13 : jours de travail du restaurant (1 = lundi … 7 = dimanche) */
+  joursRestaurant: number[];
   semaineLundi: string;
   todayDate: string;
   onAllerALaCarte: () => void;
+  onAllerAuxParametres: () => void;
 }
 
 /**
  * Menus de la semaine publiés par le restaurant, entreprise par entreprise.
  * Chaque plat ajouté ici apparaît aussitôt dans les menus de l'entreprise (Espace RH et page des salariés).
  */
-export function MenusSemaineResto({ entreprises, semaineLundi, todayDate, onAllerALaCarte }: MenusSemaineRestoProps) {
+export function MenusSemaineResto({
+  entreprises,
+  joursRestaurant,
+  semaineLundi,
+  todayDate,
+  onAllerALaCarte,
+  onAllerAuxParametres,
+}: MenusSemaineRestoProps) {
   const router = useRouter();
   const [restaurantId, setRestaurantId] = useState(entreprises[0].restaurantId);
   const entreprise = entreprises.find((e) => e.restaurantId === restaurantId) || entreprises[0];
@@ -47,18 +57,29 @@ export function MenusSemaineResto({ entreprises, semaineLundi, todayDate, onAlle
 
   useEffect(() => setPlats(entreprise.menusSemaine), [entreprise.menusSemaine]);
 
-  const jours = joursOuvres(semaineLundi, entreprise.joursTravail);
+  const joursEntreprise = joursOuvres(semaineLundi, entreprise.joursTravail);
+  // Jours de service de l'entreprise où le restaurant travaille, plus ceux où il a déjà des plats (à retirer au besoin)
+  const travaille = (jour: string) => joursRestaurant.includes(jourIso(jour));
+  const jours = joursEntreprise.filter((j) => travaille(j) || plats.some((p) => p.date === j));
+  const joursFermes = Array.from(new Set(entreprise.joursTravail.filter((j) => !joursRestaurant.includes(j))));
   const carteActive = entreprise.carte.filter((p) => p.is_active);
   const estModifiable = (jour: string) =>
     jour > todayDate || (jour === todayDate && entreprise.aujourdhuiModifiable);
-  const auMoinsUnJourModifiable = jours.some(estModifiable);
+  const peutAjouter = (jour: string) => estModifiable(jour) && travaille(jour);
+  const auMoinsUnJourModifiable = jours.some(peutAjouter);
 
-  const changerSemaine = (decalage: number) => {
+  // Semaine à préparer quand celle affichée est terminée (ex. le week-end) : la semaine en cours
+  // s'il lui reste un jour modifiable, sinon la suivante
+  const lundiCourant = lundiDeLaSemaine(todayDate);
+  const lundiAPreparer = joursOuvres(lundiCourant, entreprise.joursTravail).some(peutAjouter)
+    ? lundiCourant
+    : ajouterJours(lundiCourant, 7);
+
+  const allerALaSemaine = (lundi: string) => {
     setMessage(null);
-    startTransition(() =>
-      router.replace(`/resto?onglet=menus&semaine=${ajouterJours(semaineLundi, decalage * 7)}`, { scroll: false })
-    );
+    startTransition(() => router.replace(`/resto?onglet=menus&semaine=${lundi}`, { scroll: false }));
   };
+  const changerSemaine = (decalage: number) => allerALaSemaine(ajouterJours(semaineLundi, decalage * 7));
 
   const resultat = (res: { success: boolean; message?: string }, succes?: string) =>
     setMessage(res.success ? (succes ? { ok: true, texte: succes } : null) : { ok: false, texte: res.message || "Erreur, réessayez." });
@@ -143,7 +164,7 @@ export function MenusSemaineResto({ entreprises, semaineLundi, todayDate, onAlle
             <ChevronLeft className="w-4 h-4" />
           </button>
           <h2 className="text-base font-extrabold text-neutral-900">
-            Semaine du {formatJourCourt(jours[0])} au {formatJourCourt(jours[jours.length - 1])}
+            Semaine du {formatJourCourt(joursEntreprise[0])} au {formatJourCourt(joursEntreprise[joursEntreprise.length - 1])}
           </h2>
           <button
             type="button"
@@ -172,6 +193,41 @@ export function MenusSemaineResto({ entreprises, semaineLundi, todayDate, onAlle
         <strong>{entreprise.companyNom}</strong> : le RH les voit et les salariés peuvent les commander. Le menu
         d&apos;aujourd&apos;hui se ferme à {entreprise.heureLimite.slice(0, 5).replace(":", "h")}.
       </p>
+
+      {joursFermes.length > 0 && (
+        <div className="p-3 rounded-2xl bg-neutral-100 border border-neutral-200 text-xs text-neutral-700 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+          <span>
+            {entreprise.companyNom} est servie le{" "}
+            {joursFermes.map((j) => NOMS_JOURS[j - 1].toLowerCase()).join(", ")}, mais vous ne travaillez pas ce
+            jour-là : aucun de vos plats ne peut y être proposé.
+          </span>
+          <button
+            type="button"
+            onClick={onAllerAuxParametres}
+            className="shrink-0 px-3 py-1.5 bg-white hover:bg-neutral-50 border border-neutral-300 font-bold rounded-xl transition"
+          >
+            Mes jours de travail
+          </button>
+        </div>
+      )}
+
+      {!auMoinsUnJourModifiable && jours.length > 0 && lundiAPreparer !== semaineLundi && (
+        <div className="p-4 rounded-2xl bg-orange-50 border border-orange-200 text-xs text-orange-900 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+          <span className="flex items-center gap-1.5">
+            <Lock className="w-3.5 h-3.5 shrink-0" />
+            Les jours de cette semaine sont passés ou clôturés : leurs menus ne sont plus modifiables.
+          </span>
+          <button
+            type="button"
+            disabled={isPending}
+            onClick={() => allerALaSemaine(lundiAPreparer)}
+            className="shrink-0 px-3 py-1.5 bg-orange-600 hover:bg-orange-700 disabled:opacity-50 text-white font-bold rounded-xl transition flex items-center justify-center gap-1"
+          >
+            Préparer la semaine du {formatJourCourt(joursOuvres(lundiAPreparer, entreprise.joursTravail)[0])}
+            <ChevronRight className="w-4 h-4" />
+          </button>
+        </div>
+      )}
 
       {message && (
         <div
@@ -217,6 +273,7 @@ export function MenusSemaineResto({ entreprises, semaineLundi, todayDate, onAlle
                 <h3 className="text-sm font-extrabold text-neutral-900 capitalize">{formatJourCourt(jour)}</h3>
                 <span className="text-[11px] text-neutral-500 flex items-center gap-1">
                   {estAujourdhui && <span className="text-orange-600 font-bold">Aujourd&apos;hui •</span>}
+                  {!travaille(jour) && <span className="text-neutral-700 font-bold">Fermé •</span>}
                   {!modifiable && <Lock className="w-3 h-3" />}
                   {platsDuJour.length} plat(s)
                 </span>
@@ -280,7 +337,7 @@ export function MenusSemaineResto({ entreprises, semaineLundi, todayDate, onAlle
                 </div>
               )}
 
-              {modifiable && proposables.length > 0 && (
+              {modifiable && travaille(jour) && proposables.length > 0 && (
                 <div className="flex gap-2 pt-1">
                   <select
                     value={choix[jour] || ""}

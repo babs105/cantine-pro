@@ -69,6 +69,14 @@ export function normaliserJoursTravail(valeur: unknown): number[] {
   return jours.length > 0 ? jours : JOURS_TRAVAIL_DEFAUT;
 }
 
+/** Jours de travail d'un restaurant : tous les jours si la valeur est vide ou invalide (v1.13) */
+export function normaliserJoursRestaurant(valeur: unknown): number[] {
+  const jours = Array.isArray(valeur)
+    ? Array.from(new Set(valeur.map(Number).filter((j) => Number.isInteger(j) && j >= 1 && j <= 7))).sort((a, b) => a - b)
+    : [];
+  return jours.length > 0 ? jours : [1, 2, 3, 4, 5, 6, 7];
+}
+
 /** Jour ISO d'une date YYYY-MM-DD : 1 = lundi … 7 = dimanche */
 export function jourIso(date: string): number {
   const jour = new Date(`${date}T12:00:00Z`).getUTCDay();
