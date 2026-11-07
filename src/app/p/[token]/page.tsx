@@ -162,23 +162,34 @@ export default async function EmployeVotePage({ params }: PageProps) {
   const todayDate = todayDakar();
 
   // 2. Plats du jour disponibles
-  const { data: plats } = await supabase
-    .from("menus_du_jour")
-    .select("id, titre, description, prix_unitaire, is_available, created_at, restaurants(nom, is_active)")
-    .eq("company_id", employe.company_id)
-    .eq("date", todayDate)
-    .eq("is_available", true);
+  // v1.10 : le salarié ne lit plus la table restaurants (token, WhatsApp) ; la fonction ne renvoie que
+  // id, nom et is_active des restaurants de son entreprise, joints ici aux plats par restaurant_id
+  const [{ data: plats }, { data: restos, error: erreurRestos }] = await Promise.all([
+    supabase
+      .from("menus_du_jour")
+      .select("id, titre, description, prix_unitaire, is_available, created_at, restaurant_id")
+      .eq("company_id", employe.company_id)
+      .eq("date", todayDate)
+      .eq("is_available", true),
+    (supabase as any).rpc("restaurants_visibles_salarie"),
+  ]);
+  if (erreurRestos) console.error("[salarié] restaurants :", erreurRestos.code);
+  const restaurantsParId = new Map<string, { nom: string; is_active: boolean }>(
+    ((restos as any[]) || []).map((r) => [r.id, { nom: r.nom, is_active: r.is_active }])
+  );
 
-  // Sans menu publié, l'employé voit "menu pas encore publié"
+  // Sans menu publié, l'employé voit "menu pas encore publié". Filtre fermé : un plat rattaché à un restaurant
+  // ne s'affiche que si ce restaurant est connu ET actif (si la fonction échoue, on ne montre pas les plats
+  // d'un restaurant peut-être désactivé). Un plat sans restaurant reste visible, comme avant.
   const platsDisponibles = ((plats || []) as any[])
-    .filter((p) => p.restaurants?.is_active !== false)
+    .filter((p) => !p.restaurant_id || restaurantsParId.get(p.restaurant_id)?.is_active === true)
     .map((p) => ({
       id: p.id,
       titre: p.titre,
       description: p.description,
       prix_unitaire: p.prix_unitaire,
       is_available: p.is_available,
-      restaurant_nom: p.restaurants?.nom || "Restaurant",
+      restaurant_nom: (p.restaurant_id && restaurantsParId.get(p.restaurant_id)?.nom) || "Restaurant",
     }));
 
   // 3. Commande existante pour aujourd'hui

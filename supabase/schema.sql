@@ -1289,3 +1289,25 @@ END;
 $$;
 REVOKE EXECUTE ON FUNCTION public.portail_inscrire_salarie(TEXT, TEXT, INT) FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION public.portail_inscrire_salarie(TEXT, TEXT, INT) TO authenticated;
+
+-- ==============================================================================
+-- v1.10 (T3, étape A) : le salarié ne lit plus la table restaurants en direct (salarie_lit_les_restaurants
+-- lui donnait toutes les colonnes, dont le token /resto/... et le WhatsApp de chaque restaurant).
+-- Fonction à colonnes fixes : nom et état actif, pour afficher le restaurant de chaque plat.
+-- Étape B (commit séparé) : suppression de salarie_lit_les_restaurants. Bloc final : garder en dernier.
+-- ==============================================================================
+CREATE OR REPLACE FUNCTION public.restaurants_visibles_salarie()
+RETURNS TABLE (id UUID, nom TEXT, is_active BOOLEAN)
+LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = public AS $$
+BEGIN
+    IF public.jwt_role_app() IS DISTINCT FROM 'salarie' OR public.jwt_company_id() IS NULL THEN
+        RAISE EXCEPTION 'Accès refusé';
+    END IF;
+    RETURN QUERY
+        SELECT r.id, r.nom, r.is_active
+        FROM public.restaurants r
+        WHERE r.company_id = public.jwt_company_id();
+END;
+$$;
+REVOKE EXECUTE ON FUNCTION public.restaurants_visibles_salarie() FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.restaurants_visibles_salarie() TO authenticated;
