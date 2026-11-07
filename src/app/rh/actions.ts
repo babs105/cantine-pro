@@ -197,6 +197,15 @@ export async function addMenuPlatAction(
   const companyId = await getRhCompanyId();
   if (!companyId) return { success: false, message: SESSION_EXPIREE };
 
+  // v1.12 : mêmes bornes que côté restaurant (la base refuse au-delà de 200 caractères et 1 000 000 FCFA)
+  const titreNettoye = String(titre ?? "").trim().slice(0, 120);
+  const descNettoyee = description?.trim().slice(0, 300) || null;
+  const prix = Math.round(Number(prixUnitaire));
+  if (!titreNettoye) return { success: false, message: "Indiquez le nom du plat." };
+  if (!Number.isFinite(prix) || prix < 0 || prix > 1000000) {
+    return { success: false, message: "Prix invalide (entre 0 et 1 000 000 FCFA)." };
+  }
+
   try {
     const supabase = createClientRh(companyId);
     const { data: resto } = await supabase
@@ -214,9 +223,9 @@ export async function addMenuPlatAction(
       .insert({
         company_id: companyId,
         restaurant_id: restaurantId,
-        titre,
-        description: description || null,
-        prix_unitaire: prixUnitaire,
+        titre: titreNettoye,
+        description: descNettoyee,
+        prix_unitaire: prix,
         is_available: true,
         date: targetDate,
       })
