@@ -13,7 +13,7 @@ export async function loginRhAction(_prevState: { error?: string } | undefined,f
   }
 
   // Identifiant entreprise (slug) ou e-mail du responsable saisi à l'inscription, vérifiés par echanger_acces_rh
-  // (5 échecs en 15 minutes bloquent l'identifiant 15 minutes)
+  // (5 échecs en 15 minutes depuis une même IP bloquent cette IP 15 minutes ; 30 toutes IP confondues, l'identifiant)
   let companyId: string | null;
   try {
     companyId = await echangerAccesRh(slug, code);

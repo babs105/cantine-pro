@@ -27,9 +27,6 @@ export interface Database {
           slug: string;
           heure_limite_vote: string; // e.g. "11:10:00"
           heure_ouverture_vote: string; // e.g. "08:00:00"
-          heure_livraison_souhaitee: string | null;
-          traiteur_nom: string | null;
-          traiteur_telephone: string | null;
           trial_ends_at: string;
           is_active: boolean;
           responsable_nom: string | null;
@@ -47,9 +44,6 @@ export interface Database {
           slug: string;
           heure_limite_vote?: string;
           heure_ouverture_vote?: string;
-          heure_livraison_souhaitee?: string | null;
-          traiteur_nom?: string | null;
-          traiteur_telephone?: string | null;
           trial_ends_at?: string;
           is_active?: boolean;
           responsable_nom?: string | null;
@@ -67,9 +61,6 @@ export interface Database {
           slug?: string;
           heure_limite_vote?: string;
           heure_ouverture_vote?: string;
-          heure_livraison_souhaitee?: string | null;
-          traiteur_nom?: string | null;
-          traiteur_telephone?: string | null;
           trial_ends_at?: string;
           is_active?: boolean;
           responsable_nom?: string | null;
@@ -294,7 +285,7 @@ export interface Database {
           is_active?: boolean;
         };
       };
-      // v1.10 : hash du code d'accès RH, hors de companies. Aucune politique RLS : écrit par l'inscription
+      // v1.10 : bcrypt du sha256 du code d'accès RH (T19), hors de companies. Aucune politique RLS : écrit par l'inscription
       // (client admin), lu et modifié uniquement par echanger_acces_rh et changer_code_rh
       acces_rh: {
         Row: {

@@ -1,6 +1,7 @@
 "use server";
 
 import { createClientRh } from "@/lib/supabase/server";
+import { messageErreur } from "@/lib/erreurs";
 import { revalidatePath } from "next/cache";
 import { generateToken, todayDakar } from "@/lib/config";
 import { ajouterJours, isDateValide, joursOuvres, lundiDeLaSemaine, normaliserJoursTravail } from "@/lib/dates";
@@ -49,13 +50,13 @@ export async function addEmployeAction(
       .single();
 
     if (error) {
-      return { success: false, message: error.message };
+      return { success: false, message: messageErreur("rh", error) };
     }
 
     revalidatePath("/rh");
     return { success: true, employe: data };
   } catch (err: any) {
-    return { success: false, message: err.message };
+    return { success: false, message: messageErreur("rh", err) };
   }
 }
 
@@ -66,6 +67,10 @@ export async function addEmployeAction(
 export async function importEmployesAction(
   formData: FormData
 ): Promise<{ success: boolean; message?: string; employes?: any[]; ignores?: number }> {
+  // Session vérifiée avant de lire le fichier : un visiteur non connecté ne fait rien analyser au serveur
+  const companyId = await getRhCompanyId();
+  if (!companyId) return { success: false, message: SESSION_EXPIREE };
+
   let lignes: LigneEmploye[];
   try {
     const fichier = formData.get("fichier");
@@ -79,7 +84,7 @@ export async function importEmployesAction(
       lignes = lignesVersEmployes(parseCsv(texte));
     }
   } catch (err: any) {
-    return { success: false, message: err.message || "Fichier illisible." };
+    return { success: false, message: messageErreur("rh/import", err, "Fichier illisible.") };
   }
 
   if (lignes.length === 0) {
@@ -94,8 +99,6 @@ export async function importEmployesAction(
     is_active: true,
   });
 
-  const companyId = await getRhCompanyId();
-  if (!companyId) return { success: false, message: SESSION_EXPIREE };
 
   try {
     const supabase = createClientRh(companyId);
@@ -128,13 +131,13 @@ export async function importEmployesAction(
       .select(CHAMPS_EMPLOYE);
 
     if (error) {
-      return { success: false, message: error.message };
+      return { success: false, message: messageErreur("rh", error) };
     }
 
     revalidatePath("/rh");
     return { success: true, employes: data, ignores: lignes.length - nouveaux.length };
   } catch (err: any) {
-    return { success: false, message: err.message };
+    return { success: false, message: messageErreur("rh", err) };
   }
 }
 
@@ -221,13 +224,13 @@ export async function addMenuPlatAction(
       .single();
 
     if (error) {
-      return { success: false, message: error.message };
+      return { success: false, message: messageErreur("rh", error) };
     }
 
     revalidatePath("/rh");
     return { success: true, plat: data };
   } catch (err: any) {
-    return { success: false, message: err.message };
+    return { success: false, message: messageErreur("rh", err) };
   }
 }
 
@@ -290,7 +293,7 @@ export async function dupliquerSemaineAction(lundiCible: string): Promise<{
     .insert(aInserer)
     .select(CHAMPS_PLAT);
 
-  if (error) return { success: false, message: error.message };
+  if (error) return { success: false, message: messageErreur("rh", error) };
 
   revalidatePath("/rh");
   return { success: true, plats: data };
@@ -307,6 +310,7 @@ export async function supprimerPlatAction(platId: string): Promise<{ success: bo
   const { count } = await supabase
     .from("commandes")
     .select("id", { count: "exact", head: true })
+    .eq("company_id", companyId)
     .eq("plat_id", platId);
 
   if (count && count > 0) {
@@ -319,7 +323,7 @@ export async function supprimerPlatAction(platId: string): Promise<{ success: bo
     .eq("company_id", companyId);
 
   revalidatePath("/rh");
-  return { success: !error, message: error?.message };
+  return { success: !error, message: error ? messageErreur("rh", error) : undefined };
 }
 
 /**
@@ -356,11 +360,12 @@ export async function modifierCommandeRhAction(
     const { data: actuelle } = await supabase
       .from("commandes")
       .select("menus_du_jour(restaurant_id)")
+      .eq("company_id", companyId)
       .eq("employe_id", employeId)
       .eq("date", today)
       .maybeSingle();
     const { data: nouveauPlat } = platId
-      ? await supabase.from("menus_du_jour").select("restaurant_id").eq("id", platId).maybeSingle()
+      ? await supabase.from("menus_du_jour").select("restaurant_id").eq("id", platId).eq("company_id", companyId).maybeSingle()
       : { data: null };
     const touches = [
       (actuelle as any)?.menus_du_jour?.restaurant_id,
@@ -378,9 +383,10 @@ export async function modifierCommandeRhAction(
   if (statut === "en_attente") {
     const { error } = await (supabase.from("commandes") as any)
       .delete()
+      .eq("company_id", companyId)
       .eq("employe_id", employeId)
       .eq("date", today);
-    if (error) return { success: false, message: error.message };
+    if (error) return { success: false, message: messageErreur("rh", error) };
   } else {
     if (statut === "choisi") {
       const { data: plat } = await supabase
@@ -405,7 +411,7 @@ export async function modifierCommandeRhAction(
       },
       { onConflict: "employe_id,date" }
     );
-    if (error) return { success: false, message: error.message };
+    if (error) return { success: false, message: messageErreur("rh", error) };
   }
 
   // Journée déjà clôturée : les récaps des restaurants non confirmés suivent la modification
@@ -465,7 +471,7 @@ export async function addRestaurantAction(
     .select(CHAMPS_RESTAURANT)
     .single();
 
-  if (error) return { success: false, message: error.message };
+  if (error) return { success: false, message: messageErreur("rh", error) };
 
   revalidatePath("/rh");
   return { success: true, restaurant: data };
@@ -534,7 +540,7 @@ export async function modifierRestaurantAction(
     .eq("company_id", companyId);
 
   revalidatePath("/rh");
-  return { success: !error, message: error?.message };
+  return { success: !error, message: error ? messageErreur("rh", error) : undefined };
 }
 
 /**
@@ -573,7 +579,7 @@ export async function cloturerJourneeAction(): Promise<{ success: boolean; messa
       return { success: false, message: "Aucun menu publié aujourd'hui : rien à clôturer." };
     }
   } catch (err: any) {
-    return { success: false, message: err.message };
+    return { success: false, message: messageErreur("rh", err) };
   }
 
   revalidatePath("/rh");
@@ -617,7 +623,7 @@ export async function confirmerParTelephoneAction(
     .is("confirme_at", null)
     .select("id");
 
-  if (error) return { success: false, message: error.message };
+  if (error) return { success: false, message: messageErreur("rh", error) };
   if (!data || data.length === 0) {
     return { success: false, message: "Rien à confirmer : la journée n'est pas clôturée ou c'est déjà confirmé." };
   }

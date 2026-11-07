@@ -51,12 +51,12 @@ export function InscriptionRestoForm({ lien }: { lien: string }) {
             <input type="text" name="ville" defaultValue={v.ville} placeholder="Thiès" className={champ} />
           </div>
           <div>
-            <label className="block text-xs font-bold text-neutral-700 mb-1">Code d&apos;accès (6 caractères min.)</label>
-            <input type="password" name="code" required minLength={6} autoComplete="new-password" className={champ} />
+            <label className="block text-xs font-bold text-neutral-700 mb-1">Code d&apos;accès (8 caractères min.)</label>
+            <input type="password" name="code" required minLength={8} autoComplete="new-password" className={champ} />
           </div>
           <div>
             <label className="block text-xs font-bold text-neutral-700 mb-1">Confirmer le code</label>
-            <input type="password" name="confirmation" required minLength={6} autoComplete="new-password" className={champ} />
+            <input type="password" name="confirmation" required minLength={8} autoComplete="new-password" className={champ} />
           </div>
           <button
             type="submit"

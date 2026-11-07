@@ -49,7 +49,7 @@ interface VoteClientProps {
     token: string,
     statut: "choisi" | "absent" | "ne_mange_pas",
     platId: string | null
-  ) => Promise<{ success: boolean; message?: string; enregistreAt?: string }>;
+  ) => Promise<{ success: boolean; message?: string; enregistreAt?: string; aReessayer?: boolean }>;
 }
 
 function formatTempsRestant(secondes: number): string {
@@ -151,6 +151,8 @@ export function VoteClient({
         setIsModifying(false);
         return "ok";
       }
+      // Erreur passagère du serveur : traitée comme une coupure réseau, le choix reste en attente
+      if (res.aReessayer) return "hors_ligne";
       setErrorMessage(res.message || "Une erreur est survenue.");
       return "refuse";
     } catch {
@@ -207,7 +209,13 @@ export function VoteClient({
     };
     synchroniser();
     window.addEventListener("online", synchroniser);
-    return () => window.removeEventListener("online", synchroniser);
+    // Erreur passagère du serveur : aucun événement "online" ne viendra, on retente toutes les 30 s.
+    // Sans choix en attente, synchroniser ne fait rien ; après l'heure limite, le refus du serveur vide l'attente.
+    const relance = window.setInterval(synchroniser, 30_000);
+    return () => {
+      window.removeEventListener("online", synchroniser);
+      window.clearInterval(relance);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cleAttente]);
 
@@ -271,7 +279,7 @@ export function VoteClient({
           <div className="mb-4 p-3 bg-amber-50 border border-amber-200 text-amber-900 rounded-2xl text-xs flex items-start gap-2">
             <WifiOff className="w-4 h-4 shrink-0 mt-0.5" />
             <span>
-              Pas de réseau : votre choix «{" "}
+              Connexion impossible pour le moment : votre choix «{" "}
               {enAttente.statut === "choisi"
                 ? enAttente.platTitre || "Plat du jour"
                 : enAttente.statut === "absent"

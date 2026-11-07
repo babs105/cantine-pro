@@ -84,9 +84,14 @@ npm run dev
 | `NEXT_PUBLIC_APP_URL` | oui | URL publique utilisée dans les liens envoyés |
 | `SUPERADMIN_CODE` | pour `/admin` | Code de la console SuperAdmin (12 caractères min.) |
 | `CRON_SECRET` | en production | Protège `/api/cron/cloture` |
+| `DIAGNOSTIC_SECRET` | en production | Protège `/api/diagnostic` (en-tête `x-diagnostic-secret`) |
 | `WAVE_NUMERO_PAIEMENT`, `WHATSAPP_*` | non | Paiement Wave affiché, envoi WhatsApp automatique |
 
-En production, `/api/diagnostic` indique pour chaque variable si elle est présente (sans afficher sa valeur).
+En production, `/api/diagnostic` indique pour chaque variable si elle est présente (sans afficher sa valeur) et si le schéma est à jour. Il faut l'appeler avec le secret, sinon la route répond 404 :
+
+```bash
+curl -H "x-diagnostic-secret: $DIAGNOSTIC_SECRET" https://<votre-domaine>/api/diagnostic
+```
 
 ---
 

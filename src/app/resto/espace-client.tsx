@@ -867,11 +867,11 @@ function OngletParametres({ compte }: { compte: CompteResto }) {
             />
           </div>
           <div>
-            <label className="block text-xs font-bold text-neutral-700 mb-1">Nouveau code (6 caractères min.)</label>
+            <label className="block text-xs font-bold text-neutral-700 mb-1">Nouveau code (8 caractères min.)</label>
             <input
               type="password"
               required
-              minLength={6}
+              minLength={8}
               autoComplete="new-password"
               value={nouveauCode}
               onChange={(e) => setNouveauCode(e.target.value)}

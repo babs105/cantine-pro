@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { echangerJetonSalarie } from "@/lib/supabase/server";
+import { lireEntrepriseVisible } from "@/lib/entreprise-visible";
 import { VoteClient } from "./vote-client";
 import { notFound } from "next/navigation";
 import { NOMS_JOURS, jourIso, normaliserJoursTravail } from "@/lib/dates";
@@ -17,99 +18,56 @@ async function submitVoteAction(
   token: string,
   statut: "choisi" | "absent" | "ne_mange_pas",
   platId: string | null
-): Promise<{ success: boolean; message?: string; enregistreAt?: string }> {
+): Promise<{ success: boolean; message?: string; enregistreAt?: string; aReessayer?: boolean }> {
   "use server";
 
 
   try {
-    // 1. Échanger le token contre un JWT court limité à ce salarié (politiques RLS)
+    // 1. Validation manuelle des entrées
+    if (typeof token !== "string" || token.length < 8 || token.length > 128) {
+      return { success: false, message: "Employé introuvable ou inactif." };
+    }
+    if (statut !== "choisi" && statut !== "absent" && statut !== "ne_mange_pas") {
+      return { success: false, message: "Choix invalide." };
+    }
+    const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    if (statut === "choisi") {
+      if (typeof platId !== "string" || !UUID_RE.test(platId)) {
+        return { success: false, message: "Ce plat n'est plus disponible, choisissez-en un autre." };
+      }
+    } else if (platId !== null) {
+      return { success: false, message: "Choix invalide." };
+    }
+
+    // 2. Échanger le token contre un JWT court limité à ce salarié (politiques RLS)
     const acces = await echangerJetonSalarie(token);
     if (!acces) {
       return { success: false, message: "Employé introuvable ou inactif." };
     }
-    const { supabase } = acces;
 
-    const { data: rawEmploye, error: empError } = await supabase
-      .from("employes")
-      .select("id, company_id, companies(heure_ouverture_vote, heure_limite_vote, jours_travail)")
-      .eq("id", acces.employeId)
-      .single();
+    // 3. Toutes les vérifications (jour, heures, plat, clôture, verrou RH) et l'upsert
+    // sont faits par la fonction SQL passer_commande
+    const { data, error } = await (acces.supabase as any).rpc("passer_commande", {
+      p_statut: statut,
+      p_plat_id: platId,
+    });
 
-    const employe: any = rawEmploye;
-
-    if (empError || !employe) {
-      return { success: false, message: "Employé introuvable ou inactif." };
-    }
-
-    const companyData: any = employe.companies;
-    const heureLimite = companyData?.heure_limite_vote || "11:10:00";
-    const heureOuverture = companyData?.heure_ouverture_vote || "08:00:00";
-
-    // Pas de commande les jours sans service (jours de travail de l'entreprise)
-    if (!normaliserJoursTravail(companyData?.jours_travail).includes(jourIso(todayDakar()))) {
-      return { success: false, message: "Pas de service cantine aujourd'hui." };
-    }
-
-    if (!isApresHeureLimite(heureOuverture)) {
-      return {
-        success: false,
-        message: `Les commandes ouvrent à ${heureOuverture.slice(0, 5).replace(":", "h")}.`,
-      };
-    }
-
-    // 2. Vérification heure de clôture (fuseau Thiès/Dakar GMT)
-    if (isApresHeureLimite(heureLimite)) {
-      return {
-        success: false,
-        message: `Les commandes sont clôturées depuis ${heureLimite.slice(0, 5)}.`,
-      };
-    }
-
-    const todayDate = todayDakar();
-
-    // 3. Le plat doit appartenir au menu du jour de l'entreprise et être disponible
-    if (statut === "choisi") {
-      const { data: plat } = await supabase
-        .from("menus_du_jour")
-        .select("id")
-        .eq("id", platId ?? "")
-        .eq("company_id", employe.company_id)
-        .eq("date", todayDate)
-        .eq("is_available", true)
-        .maybeSingle();
-
-      if (!plat) {
-        return { success: false, message: "Ce plat n'est plus disponible, choisissez-en un autre." };
+    if (error) {
+      // Codes métier : le message est déjà écrit en français pour le salarié
+      if (error.code === "CP423" || error.code === "CP404" || error.code === "CP403") {
+        return { success: false, message: error.message };
       }
+      console.error("[salarié] passer_commande :", error.code);
+      // Erreur passagère (réseau, base) : le téléphone garde le choix et le renvoie plus tard
+      return { success: false, message: "Erreur lors de l'enregistrement de la commande.", aReessayer: true };
     }
 
-    const enregistreAt = new Date().toISOString();
-
-    // 4. Upsert du vote (choix unique par date)
-    const { error: upsertError } = await (supabase.from("commandes") as any).upsert(
-      {
-        company_id: employe.company_id,
-        employe_id: employe.id,
-        plat_id: statut === "choisi" ? platId : null,
-        date: todayDate,
-        statut,
-        modifie_par_rh: false,
-        updated_at: enregistreAt,
-      },
-      { onConflict: "employe_id,date" }
-    );
-
-    if (upsertError) {
-      return {
-        success: false,
-        message: "Erreur lors de l'enregistrement de la commande.",
-      };
-    }
+    const enregistreAt = typeof data === "string" ? new Date(data).toISOString() : new Date().toISOString();
 
     revalidatePath(`/p/${token}`);
     return { success: true, enregistreAt };
-  } catch (err: any) {
-    return { success: false, message: err.message || "Erreur serveur." };
+  } catch {
+    return { success: false, message: "Erreur serveur.", aReessayer: true };
   }
 }
 
@@ -142,7 +100,7 @@ export default async function EmployeVotePage({ params }: PageProps) {
 
   const { data: rawEmp, error: empError } = await supabase
     .from("employes")
-    .select("id, nom, company_id, companies(nom, heure_ouverture_vote, heure_limite_vote, jours_travail)")
+    .select("id, nom, company_id")
     .eq("id", acces.employeId)
     .single();
 
@@ -153,11 +111,20 @@ export default async function EmployeVotePage({ params }: PageProps) {
   }
 
   const employeNom = employe.nom;
-  const comp: any = employe.companies;
-  const companyNom = comp?.nom || "Entreprise Pilote";
-  const heureLimite = comp?.heure_limite_vote || "11:10:00";
-  const heureOuverture = comp?.heure_ouverture_vote || "08:00:00";
-  const joursTravail = normaliserJoursTravail(comp?.jours_travail);
+  // v1.10 (T14) : nom et heures de l'entreprise par entreprise_visible, plus par la table companies
+  const comp = await lireEntrepriseVisible(supabase);
+  // Fiche entreprise indisponible : pas d'heures inventées (le salarié croirait pouvoir commander)
+  if (!comp) {
+    return (
+      <div className="min-h-screen flex items-center justify-center p-6 text-center text-sm text-neutral-600">
+        Service momentanément indisponible. Réessayez dans un instant.
+      </div>
+    );
+  }
+  const companyNom = comp.nom;
+  const heureLimite = comp.heure_limite_vote;
+  const heureOuverture = comp.heure_ouverture_vote;
+  const joursTravail = normaliserJoursTravail(comp.jours_travail);
 
   const todayDate = todayDakar();
 

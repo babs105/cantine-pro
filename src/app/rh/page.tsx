@@ -38,9 +38,13 @@ export default async function RhDashboardPage({ searchParams }: PageProps) {
     .eq("id", companyId)
     .maybeSingle();
 
-  // Erreur de lecture (ex : base pas à jour) : on l'affiche au lieu de renvoyer en boucle vers la connexion
+  // Erreur de lecture (ex : base pas à jour) : page d'explication au lieu de renvoyer en boucle vers la
+  // connexion. v1.10 (T17) : le message Postgres reste dans les journaux, le détail est dans /api/diagnostic
   if (compError) {
-    return <ErreurBase message={compError.message} />;
+    console.error("[rh/page] lecture de l'entreprise :", compError.code ?? "erreur");
+    // 42703 / 42P01 : colonne ou table absente ; PGRST204 / PGRST202 : schéma pas encore relancé
+    const migrationManquante = ["42703", "42P01", "PGRST204", "PGRST202"].includes(compError.code ?? "");
+    return <ErreurBase migrationManquante={migrationManquante} />;
   }
 
   const comp: any = rawComp;
@@ -128,8 +132,7 @@ export default async function RhDashboardPage({ searchParams }: PageProps) {
   );
 }
 
-function ErreurBase({ message }: { message: string }) {
-  const migrationManquante = /does not exist|schema cache|column/i.test(message);
+function ErreurBase({ migrationManquante }: { migrationManquante: boolean }) {
   return (
     <div className="min-h-screen bg-neutral-50 px-4 py-10 max-w-md mx-auto flex flex-col justify-center">
       <div className="bg-white rounded-3xl p-6 shadow-sm border border-red-200 space-y-3">
@@ -143,7 +146,6 @@ function ErreurBase({ message }: { message: string }) {
         ) : (
           <p className="text-sm text-neutral-700">Impossible de charger les données de l&apos;entreprise.</p>
         )}
-        <p className="text-[11px] text-neutral-400 font-mono break-words">{message}</p>
       </div>
     </div>
   );

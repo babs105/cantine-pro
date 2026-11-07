@@ -5,6 +5,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { hashRhCode } from "@/lib/rh-session";
 import { createRestoSession } from "@/lib/resto-session";
 import { normaliserTelephone } from "@/lib/telephone";
+import { limiterInscription } from "@/lib/limite-inscription";
 
 export interface InscriptionRestoState {
   error?: string;
@@ -35,10 +36,13 @@ export async function inscriptionRestaurantAction(
   const telephone = normaliserTelephone(champs.telephone);
   if (champs.nom.length < 2) return { error: "Indiquez le nom du restaurant.", champs };
   if (!telephone || telephone.replace(/\D/g, "").length < 9) return { error: "Numéro WhatsApp invalide.", champs };
-  if (code.trim().length < 6) return { error: "Le code d'accès doit contenir au moins 6 caractères.", champs };
+  if (code.trim().length < 8) return { error: "Le code d'accès doit contenir au moins 8 caractères.", champs };
   if (code !== confirmation) return { error: "Les deux codes d'accès ne correspondent pas.", champs };
 
+  // v1.10 (T16) : 5 tentatives en 15 minutes par IP, avant toute lecture (limite aussi l'énumération des numéros)
   const supabase = createAdminClient();
+  const refus = await limiterInscription(supabase, "restaurant");
+  if (refus) return { error: refus, champs };
 
   const { data: existant } = await supabase
     .from("comptes_restaurant")
@@ -54,14 +58,24 @@ export async function inscriptionRestaurantAction(
     .select("id")
     .single();
   if (error || !compte) {
-    return { error: `Inscription impossible : ${error?.message || "erreur inconnue"}`, champs };
+    // Pas de message Postgres au visiteur (noms de contraintes, colonnes)
+    console.error("[resto] inscription :", error?.code);
+    // 23505 : numéro inscrit entre la vérification et l'insertion
+    if (error?.code === "23505") {
+      return { error: "Un restaurant est déjà inscrit avec ce numéro : connectez-vous.", champs };
+    }
+    return { error: "Inscription impossible pour le moment, réessayez dans quelques minutes.", champs };
   }
 
   // Reprise du lien déjà utilisé avec une entreprise : il devient un partenariat du compte
-  if (champs.lien) {
+  // Format revalidé ici (une Server Action s'appelle sans passer par la page) ; un partenariat désactivé
+  // par le RH ne se reprend pas
+  const lien = /^[a-f0-9]{8,64}$/i.test(champs.lien) ? champs.lien.toLowerCase() : "";
+  if (lien) {
     await (supabase.from("restaurants") as any)
       .update({ compte_id: compte.id, nom: champs.nom, telephone_whatsapp: telephone })
-      .eq("token", champs.lien)
+      .eq("token", lien)
+      .eq("is_active", true)
       .is("compte_id", null);
   }
 

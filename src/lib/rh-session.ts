@@ -25,14 +25,12 @@ export function safeEqual(a: string, b: string): boolean {
   return bufA.length === bufB.length && timingSafeEqual(bufA, bufB);
 }
 
-/** Empreinte sha256 hex du code d'accès RH (identique à encode(digest(code,'sha256'),'hex') en SQL) */
+/**
+ * Empreinte sha256 hex du code d'accès RH, envoyée à la base qui la stocke en bcrypt (v1.10 T19).
+ * Jamais comparée en Node : la comparaison se fait en SQL (code_correspond).
+ */
 export function hashRhCode(code: string): string {
   return createHash("sha256").update(code.trim()).digest("hex");
-}
-
-export function verifyRhCode(code: string, expectedHash: string | null): boolean {
-  if (!expectedHash) return false;
-  return safeEqual(hashRhCode(code), expectedHash.toLowerCase());
 }
 
 /**

@@ -40,9 +40,8 @@ CREATE TABLE IF NOT EXISTS public.companies (
     nom TEXT NOT NULL,
     slug TEXT UNIQUE NOT NULL,
     heure_limite_vote TIME NOT NULL DEFAULT '11:10:00', -- Fin des votes = envoi aux restaurants
-    heure_livraison_souhaitee TIME DEFAULT '12:30:00',
-    traiteur_nom TEXT,
-    traiteur_telephone TEXT, -- Format E.164 ex: +221770000000
+    -- v1.10 (T15) : heure_livraison_souhaitee, traiteur_nom et traiteur_telephone (ancien traiteur unique,
+    -- repris par la table restaurants en v1.2) ne sont plus créées ; supprimées dans le bloc final.
     trial_ends_at TIMESTAMPTZ DEFAULT (NOW() + INTERVAL '14 days'),
     is_active BOOLEAN DEFAULT true,
     created_at TIMESTAMPTZ DEFAULT timezone('utc'::text, now()) NOT NULL
@@ -182,13 +181,13 @@ ALTER TABLE public.clotures
 DO $$
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM public.schema_migrations WHERE nom = 'v1.2-traiteur-vers-restaurant') THEN
-        INSERT INTO public.restaurants (company_id, nom, telephone_whatsapp, heure_livraison, token)
+        -- v1.10 : plus aucune reprise des anciennes colonnes traiteur_* et heure_livraison_souhaitee de
+        -- companies (supprimées en T4 et T15) ; heure_livraison prend la valeur par défaut de restaurants.
+        -- Ce bloc ne s'exécute que sur une base neuve, où il n'y a aucune entreprise.
+        INSERT INTO public.restaurants (company_id, nom, telephone_whatsapp, token)
         SELECT c.id,
-               COALESCE(c.traiteur_nom, 'Restaurant partenaire'),
-               c.traiteur_telephone,
-               COALESCE(c.heure_livraison_souhaitee, '12:30:00'),
-               -- v1.10 : plus de reprise de companies.traiteur_token (colonne supprimée). Ce bloc ne
-               -- s'exécute que sur une base neuve, où il n'y a aucune entreprise.
+               'Restaurant partenaire',
+               NULL,
                encode(gen_random_bytes(12), 'hex')
         FROM public.companies c
         WHERE NOT EXISTS (SELECT 1 FROM public.restaurants r WHERE r.company_id = c.id);
@@ -294,7 +293,7 @@ CREATE TABLE IF NOT EXISTS public.comptes_restaurant (
     nom TEXT NOT NULL,
     telephone_whatsapp TEXT UNIQUE NOT NULL, -- Format E.164, sert aussi d'identifiant de connexion
     ville TEXT,
-    code_hash TEXT NOT NULL, -- sha256 hex du code d'accès
+    code_hash TEXT NOT NULL, -- bcrypt du sha256 du code d'accès (v1.10 T19)
     code_partenaire TEXT UNIQUE NOT NULL DEFAULT upper(encode(gen_random_bytes(4), 'hex')),
     is_active BOOLEAN NOT NULL DEFAULT true,
     created_at TIMESTAMPTZ DEFAULT timezone('utc'::text, now()) NOT NULL
@@ -502,7 +501,7 @@ CREATE INDEX IF NOT EXISTS idx_menus_restaurant ON public.menus_du_jour(restaura
 -- Étape B : companies.rh_code_hash est supprimée en fin de fichier, après recopie (bloc final v1.10).
 CREATE TABLE IF NOT EXISTS public.acces_rh (
     company_id UUID PRIMARY KEY REFERENCES public.companies(id) ON DELETE CASCADE,
-    code_hash TEXT NOT NULL, -- sha256 hex du code d'accès RH
+    code_hash TEXT NOT NULL, -- bcrypt du sha256 du code d'accès RH (v1.10 T19)
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 REVOKE ALL ON public.acces_rh FROM PUBLIC, anon, authenticated;
@@ -1149,14 +1148,8 @@ END $$;
 -- Le hash quitte définitivement companies (irréversible : la copie ci-dessus a lieu avant)
 ALTER TABLE public.companies DROP COLUMN IF EXISTS rh_code_hash;
 
--- Format du hash : sha256 hexadécimal en minuscules (un hash vide ouvrirait l'accès)
-DO $$
-BEGIN
-    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'acces_rh_code_hash_sha256') THEN
-        ALTER TABLE public.acces_rh
-            ADD CONSTRAINT acces_rh_code_hash_sha256 CHECK (code_hash ~ '^[0-9a-f]{64}$') NOT VALID;
-    END IF;
-END $$;
+-- Format du hash : la contrainte sha256 d'origine est remplacée par acces_rh_code_hash_bcrypt (v1.10 T19,
+-- bloc final). Elle n'est plus recréée ici : sa recréation à chaque relance verrouillait acces_rh.
 
 -- Connexion RH : même contrôle qu'en v1.9 (limite de tentatives, e-mail sans casse), hash lu dans acces_rh
 CREATE OR REPLACE FUNCTION public.echanger_acces_rh(p_identifiant TEXT, p_code_hash TEXT)
@@ -1568,3 +1561,775 @@ DROP TRIGGER IF EXISTS trg_horodater_changement_code_compte ON public.comptes_re
 CREATE TRIGGER trg_horodater_changement_code_compte
     BEFORE UPDATE ON public.comptes_restaurant
     FOR EACH ROW EXECUTE FUNCTION public.horodater_changement_code_compte();
+
+-- ==============================================================================
+-- v1.10 (T10, étape A) : la commande du salarié passe par une seule fonction qui vérifie tout en base
+-- (audit base, H-2). Avant, les politiques salarie_passe_sa_commande / salarie_modifie_sa_commande
+-- laissaient écrire n'importe quelle date, n'importe quel plat et modifie_par_rh : seules les vérifications
+-- de submitVoteAction (Node) protégeaient l'heure limite, le menu du jour et le restaurant actif.
+-- Contrôles : salarié et entreprise actifs, jour de travail, heures d'ouverture et limite (Africa/Dakar,
+-- mêmes bornes que isApresHeureLimite : fermé à partir de l'heure limite incluse), plat du menu du jour de
+-- l'entreprise, disponible et d'un restaurant actif, journée du restaurant non clôturée, commande non
+-- corrigée par le RH (verrouillée pour le salarié).
+-- Erreurs, au message lisible par le salarié : CP423 (commandes fermées), CP404 (plat indisponible),
+-- CP403 (commande verrouillée). submitVoteAction affiche ces messages tels quels : n'y mettre que du
+-- texte destiné au salarié, jamais de donnée interne.
+-- Étape B (plus tard, après le déploiement du code) : suppression des politiques INSERT / UPDATE du salarié.
+-- Bloc final : garder en dernier.
+-- ==============================================================================
+CREATE OR REPLACE FUNCTION public.passer_commande(p_statut TEXT, p_plat_id UUID)
+RETURNS TIMESTAMPTZ
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = public AS $$
+DECLARE
+    v_employe UUID := public.jwt_employe_id();
+    v_company UUID := public.jwt_company_id();
+    v_jour DATE := (now() AT TIME ZONE 'Africa/Dakar')::date;
+    v_heure TIME := (now() AT TIME ZONE 'Africa/Dakar')::time;
+    v_ouverture TIME;
+    v_limite TIME;
+    v_jours SMALLINT[];
+    v_existante public.commandes%ROWTYPE;
+    v_resto_existant UUID;
+    v_resto_nouveau UUID;
+    v_enregistre TIMESTAMPTZ;
+    v_lignes INTEGER;
+BEGIN
+    IF public.jwt_role_app() IS DISTINCT FROM 'salarie' OR v_employe IS NULL OR v_company IS NULL THEN
+        RAISE EXCEPTION 'Accès refusé';
+    END IF;
+    IF p_statut IS NULL OR p_statut NOT IN ('choisi', 'absent', 'ne_mange_pas') THEN
+        RAISE EXCEPTION 'Statut invalide';
+    END IF;
+
+    SELECT c.heure_ouverture_vote, c.heure_limite_vote, c.jours_travail
+      INTO v_ouverture, v_limite, v_jours
+      FROM public.companies c
+      JOIN public.employes e ON e.company_id = c.id
+     WHERE c.id = v_company AND c.is_active AND e.id = v_employe AND e.is_active;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Accès refusé';
+    END IF;
+
+    -- Jours de travail : seulement 1..7, et lundi → vendredi si rien de valide, comme normaliserJoursTravail
+    v_jours := ARRAY(SELECT DISTINCT j FROM unnest(v_jours) AS j WHERE j BETWEEN 1 AND 7);
+    IF coalesce(cardinality(v_jours), 0) = 0 THEN
+        v_jours := '{1,2,3,4,5}';
+    END IF;
+    IF NOT (extract(isodow FROM v_jour)::smallint = ANY (v_jours)) THEN
+        RAISE EXCEPTION 'Pas de service cantine aujourd''hui.' USING ERRCODE = 'CP423';
+    END IF;
+    IF v_heure < v_ouverture THEN
+        RAISE EXCEPTION 'Les commandes ouvrent à %.', replace(to_char(v_ouverture, 'HH24:MI'), ':', 'h')
+            USING ERRCODE = 'CP423';
+    END IF;
+    IF v_heure >= v_limite THEN
+        RAISE EXCEPTION 'Les commandes sont clôturées depuis %.', replace(to_char(v_limite, 'HH24:MI'), ':', 'h')
+            USING ERRCODE = 'CP423';
+    END IF;
+
+    -- Une commande à la fois par salarié et par jour : la vérification et l'écriture ne se croisent pas
+    PERFORM pg_advisory_xact_lock(hashtextextended('commande:' || v_employe::text || ':' || v_jour::text, 0));
+
+    -- FOR UPDATE : une correction du RH en cours attend la fin de cette transaction, et inversement
+    SELECT * INTO v_existante FROM public.commandes WHERE employe_id = v_employe AND date = v_jour FOR UPDATE;
+    IF FOUND THEN
+        IF v_existante.modifie_par_rh THEN
+            RAISE EXCEPTION 'Votre RH a saisi votre commande du jour : contactez-le pour la changer.'
+                USING ERRCODE = 'CP403';
+        END IF;
+        IF v_existante.plat_id IS NOT NULL THEN
+            SELECT m.restaurant_id INTO v_resto_existant FROM public.menus_du_jour m WHERE m.id = v_existante.plat_id;
+        END IF;
+    END IF;
+
+    IF p_statut = 'choisi' THEN
+        SELECT m.restaurant_id INTO v_resto_nouveau
+          FROM public.menus_du_jour m
+          LEFT JOIN public.restaurants r ON r.id = m.restaurant_id
+         WHERE m.id = p_plat_id AND m.company_id = v_company AND m.date = v_jour AND m.is_available
+           AND (m.restaurant_id IS NULL OR r.is_active);
+        IF NOT FOUND THEN
+            RAISE EXCEPTION 'Ce plat n''est plus disponible, choisissez-en un autre.' USING ERRCODE = 'CP404';
+        END IF;
+    END IF;
+
+    -- Le récapitulatif d'un restaurant déjà clôturé ne bouge plus : ni retirer, ni ajouter un repas
+    IF EXISTS (SELECT 1 FROM public.clotures cl
+               WHERE cl.company_id = v_company AND cl.date = v_jour
+                 AND cl.restaurant_id IS NOT NULL
+                 AND cl.restaurant_id IN (v_resto_existant, v_resto_nouveau)) THEN
+        RAISE EXCEPTION 'La commande de ce restaurant est déjà envoyée : contactez votre RH.'
+            USING ERRCODE = 'CP403';
+    END IF;
+
+    -- Heure réelle d'écriture (now() serait l'heure de début de transaction, avant l'attente des verrous)
+    v_enregistre := clock_timestamp();
+    INSERT INTO public.commandes (company_id, employe_id, plat_id, date, statut, modifie_par_rh, updated_at)
+    VALUES (v_company, v_employe, CASE WHEN p_statut = 'choisi' THEN p_plat_id END, v_jour, p_statut, false, v_enregistre)
+    ON CONFLICT (employe_id, date) DO UPDATE
+        SET plat_id = EXCLUDED.plat_id,
+            statut = EXCLUDED.statut,
+            updated_at = EXCLUDED.updated_at
+        WHERE public.commandes.modifie_par_rh = false;
+    -- Aucune ligne écrite : le RH a créé une commande verrouillée entre la lecture et l'insertion
+    GET DIAGNOSTICS v_lignes = ROW_COUNT;
+    IF v_lignes = 0 THEN
+        RAISE EXCEPTION 'Votre RH a saisi votre commande du jour : contactez-le pour la changer.'
+            USING ERRCODE = 'CP403';
+    END IF;
+    RETURN v_enregistre;
+END;
+$$;
+REVOKE EXECUTE ON FUNCTION public.passer_commande(TEXT, UUID) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.passer_commande(TEXT, UUID) TO authenticated;
+
+-- ==============================================================================
+-- v1.10 (T11) : une clôture confirmée fige ce qui sera facturé (audit base, H-1). La facture se calcule
+-- depuis commandes et menus_du_jour.prix_unitaire : avant, le RH (politiques FOR ALL) ou le restaurant
+-- pouvaient modifier après coup une clôture confirmée, ses commandes ou le prix des plats, et changer
+-- ainsi une facture passée. Seul le code de l'Espace RH l'empêchait, et seulement pour le jour même.
+-- Quatre triggers, limités aux clients JWT (current_user = 'authenticated') : le cron et la console
+-- SuperAdmin (service_role) gardent la main pour corriger, et passer_commande (SECURITY DEFINER) refuse
+-- déjà toute commande dès qu'une clôture existe. Erreur CP412, au message lisible par le RH.
+-- Bloc final : garder en dernier.
+-- ==============================================================================
+
+-- Vrai si le restaurant a confirmé sa clôture pour cette entreprise et ce jour
+CREATE OR REPLACE FUNCTION public.cloture_confirmee(p_company_id UUID, p_date DATE, p_restaurant_id UUID)
+RETURNS BOOLEAN
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public AS $$
+    -- Seulement pour l'entreprise de l'appelant : la fonction ne sert pas d'oracle sur les autres
+    SELECT p_restaurant_id IS NOT NULL AND p_company_id = public.jwt_company_id() AND EXISTS (
+        SELECT 1 FROM public.clotures cl
+        WHERE cl.company_id = p_company_id AND cl.date = p_date
+          AND cl.restaurant_id = p_restaurant_id AND cl.confirme_at IS NOT NULL
+    )
+$$;
+-- Appelée par les triggers ci-dessous avec le rôle du client JWT : authenticated doit pouvoir l'exécuter
+REVOKE EXECUTE ON FUNCTION public.cloture_confirmee(UUID, DATE, UUID) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.cloture_confirmee(UUID, DATE, UUID) TO authenticated;
+
+-- Restaurant d'un plat, lu sans la RLS : un plat invisible pour l'appelant ne doit pas faire sauter le contrôle
+CREATE OR REPLACE FUNCTION public.restaurant_du_plat(p_plat_id UUID)
+RETURNS UUID
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public AS $$
+    SELECT m.restaurant_id FROM public.menus_du_jour m
+    WHERE m.id = p_plat_id AND m.company_id = public.jwt_company_id()
+$$;
+REVOKE EXECUTE ON FUNCTION public.restaurant_du_plat(UUID) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.restaurant_du_plat(UUID) TO authenticated;
+
+-- 1. Clôture confirmée : ni suppression, ni modification, sauf le suivi d'envoi WhatsApp.
+--    Liste blanche : toute colonne ajoutée plus tard à clotures est figée après confirmation par défaut.
+CREATE OR REPLACE FUNCTION public.verrouiller_cloture_confirmee()
+RETURNS TRIGGER LANGUAGE plpgsql SET search_path = public AS $$
+BEGIN
+    IF current_user = 'authenticated' AND OLD.confirme_at IS NOT NULL THEN
+        IF TG_OP = 'DELETE' THEN
+            RAISE EXCEPTION 'Cette journée est confirmée par le restaurant : elle ne peut plus être supprimée.'
+                USING ERRCODE = 'CP412';
+        END IF;
+        IF (to_jsonb(NEW) - 'envoi_statut' - 'envoi_erreur' - 'envoye_at')
+           IS DISTINCT FROM (to_jsonb(OLD) - 'envoi_statut' - 'envoi_erreur' - 'envoye_at') THEN
+            RAISE EXCEPTION 'Cette journée est confirmée par le restaurant : elle ne peut plus être modifiée.'
+                USING ERRCODE = 'CP412';
+        END IF;
+    END IF;
+    RETURN CASE WHEN TG_OP = 'DELETE' THEN OLD ELSE NEW END;
+END;
+$$;
+DROP TRIGGER IF EXISTS trg_verrouiller_cloture_confirmee ON public.clotures;
+CREATE TRIGGER trg_verrouiller_cloture_confirmee
+    BEFORE UPDATE OR DELETE ON public.clotures
+    FOR EACH ROW EXECUTE FUNCTION public.verrouiller_cloture_confirmee();
+
+-- 2. Commandes : un jour passé ne se modifie plus, ni une commande d'un restaurant confirmé
+CREATE OR REPLACE FUNCTION public.verrouiller_commande_facturee()
+RETURNS TRIGGER LANGUAGE plpgsql SET search_path = public AS $$
+DECLARE
+    v_aujourdhui DATE := (now() AT TIME ZONE 'Africa/Dakar')::date;
+    v_resto UUID;
+BEGIN
+    IF current_user <> 'authenticated' THEN
+        RETURN CASE WHEN TG_OP = 'DELETE' THEN OLD ELSE NEW END;
+    END IF;
+
+    IF TG_OP IN ('UPDATE', 'DELETE') THEN
+        IF OLD.date < v_aujourdhui THEN
+            RAISE EXCEPTION 'Les commandes des jours passés ne se modifient plus.' USING ERRCODE = 'CP412';
+        END IF;
+        IF OLD.plat_id IS NOT NULL THEN
+            v_resto := public.restaurant_du_plat(OLD.plat_id);
+            IF public.cloture_confirmee(OLD.company_id, OLD.date, v_resto) THEN
+                RAISE EXCEPTION 'Ce restaurant a confirmé la commande du jour : elle ne peut plus être modifiée.'
+                    USING ERRCODE = 'CP412';
+            END IF;
+        END IF;
+    END IF;
+
+    IF TG_OP IN ('INSERT', 'UPDATE') THEN
+        IF NEW.date < v_aujourdhui THEN
+            RAISE EXCEPTION 'Les commandes des jours passés ne se modifient plus.' USING ERRCODE = 'CP412';
+        END IF;
+        IF NEW.plat_id IS NOT NULL THEN
+            v_resto := public.restaurant_du_plat(NEW.plat_id);
+            IF public.cloture_confirmee(NEW.company_id, NEW.date, v_resto) THEN
+                RAISE EXCEPTION 'Ce restaurant a confirmé la commande du jour : elle ne peut plus être modifiée.'
+                    USING ERRCODE = 'CP412';
+            END IF;
+        END IF;
+    END IF;
+
+    RETURN CASE WHEN TG_OP = 'DELETE' THEN OLD ELSE NEW END;
+END;
+$$;
+DROP TRIGGER IF EXISTS trg_verrouiller_commande_facturee ON public.commandes;
+CREATE TRIGGER trg_verrouiller_commande_facturee
+    BEFORE INSERT OR UPDATE OR DELETE ON public.commandes
+    FOR EACH ROW EXECUTE FUNCTION public.verrouiller_commande_facturee();
+
+-- 3. Plats : le prix, le titre, le restaurant et la date d'un plat d'une journée confirmée ne bougent
+--    plus, et le plat ne se supprime plus (la disponibilité reste modifiable : elle n'est pas facturée)
+CREATE OR REPLACE FUNCTION public.verrouiller_plat_facture()
+RETURNS TRIGGER LANGUAGE plpgsql SET search_path = public AS $$
+BEGIN
+    IF current_user = 'authenticated'
+       AND (public.cloture_confirmee(OLD.company_id, OLD.date, OLD.restaurant_id)
+            -- La destination compte aussi : un plat déplacé vers un restaurant déjà confirmé
+            -- ferait entrer ses repas dans une facture figée
+            OR (TG_OP = 'UPDATE' AND public.cloture_confirmee(NEW.company_id, NEW.date, NEW.restaurant_id)))
+       AND (TG_OP = 'DELETE'
+            OR NEW.prix_unitaire IS DISTINCT FROM OLD.prix_unitaire
+            OR NEW.titre IS DISTINCT FROM OLD.titre
+            OR NEW.restaurant_id IS DISTINCT FROM OLD.restaurant_id
+            OR NEW.date IS DISTINCT FROM OLD.date
+            OR NEW.company_id IS DISTINCT FROM OLD.company_id) THEN
+        RAISE EXCEPTION 'Ce restaurant a confirmé la commande du jour : ce plat ne peut plus être modifié.'
+            USING ERRCODE = 'CP412';
+    END IF;
+    RETURN CASE WHEN TG_OP = 'DELETE' THEN OLD ELSE NEW END;
+END;
+$$;
+DROP TRIGGER IF EXISTS trg_verrouiller_plat_facture ON public.menus_du_jour;
+CREATE TRIGGER trg_verrouiller_plat_facture
+    BEFORE UPDATE OR DELETE ON public.menus_du_jour
+    FOR EACH ROW EXECUTE FUNCTION public.verrouiller_plat_facture();
+
+-- 4. Salarié : la suppression effacerait ses commandes en cascade (la cascade s'exécute avec le rôle du
+--    propriétaire de la table et échappe au trigger des commandes). Un salarié qui a commandé se désactive.
+CREATE OR REPLACE FUNCTION public.verrouiller_suppression_salarie()
+RETURNS TRIGGER LANGUAGE plpgsql SET search_path = public AS $$
+BEGIN
+    IF current_user = 'authenticated'
+       AND EXISTS (SELECT 1 FROM public.commandes c WHERE c.employe_id = OLD.id) THEN
+        RAISE EXCEPTION 'Ce collaborateur a des commandes : désactivez-le plutôt que de le supprimer.'
+            USING ERRCODE = 'CP412';
+    END IF;
+    RETURN OLD;
+END;
+$$;
+DROP TRIGGER IF EXISTS trg_verrouiller_suppression_salarie ON public.employes;
+CREATE TRIGGER trg_verrouiller_suppression_salarie
+    BEFORE DELETE ON public.employes
+    FOR EACH ROW EXECUTE FUNCTION public.verrouiller_suppression_salarie();
+
+-- ==============================================================================
+-- v1.10 (T13) : le blocage de connexion ne permet plus de verrouiller le compte d'un autre (audit base,
+-- H-5). Avant, 5 échecs sur un identifiant (slug RH, e-mail, téléphone restaurant, console SuperAdmin)
+-- le bloquaient 15 min pour tout le monde : il suffisait de connaître un slug public pour empêcher une
+-- entreprise de se connecter.
+-- Deux compteurs par identifiant :
+--   <type>ip:<ip>|<identifiant> : 5 échecs en 15 min bloquent cette IP sur cet identifiant ;
+--   <identifiant>      : 30 échecs en 15 min, toutes IP confondues, le bloquent (brute force réparti).
+-- Une connexion réussie efface le compteur de son IP seulement. L'IP n'est crue que si l'appel porte le JWT
+-- court « connexion » signé par le serveur Next.js : un appelant direct (clé anon) ne peut pas la falsifier.
+-- Étape B (après le déploiement du code qui signe ce JWT) : remplacer les deux GRANT de ce bloc par
+-- « TO authenticated, service_role » (un REVOKE placé plus haut serait annulé à chaque relance). Ne pas
+-- retirer authenticated : le JWT « connexion » est signé avec role = authenticated.
+-- Les échanges gagnent un paramètre p_ip (DEFAULT NULL : l'ancien code à 2 arguments continue de marcher) ;
+-- l'ancienne signature est supprimée pour éviter toute ambiguïté d'appel.
+-- Bloc final : garder en dernier.
+-- ==============================================================================
+
+-- Comme noter_echec_connexion, avec un plafond choisi (noter_echec_connexion reste à 5 pour ses appelants)
+CREATE OR REPLACE FUNCTION public.noter_echec_plafonne(p_cle TEXT, p_max INT)
+RETURNS VOID
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = public AS $$
+BEGIN
+    DELETE FROM public.tentatives_connexion
+    WHERE cle IN (
+        SELECT cle FROM public.tentatives_connexion
+        WHERE premier_echec_at < now() - interval '1 day'
+          AND (bloque_jusqu_a IS NULL OR bloque_jusqu_a < now())
+        LIMIT 100
+        FOR UPDATE SKIP LOCKED
+    );
+
+    INSERT INTO public.tentatives_connexion AS t (cle, echecs, premier_echec_at)
+    VALUES (p_cle, 1, now())
+    ON CONFLICT (cle) DO UPDATE SET
+        echecs = CASE WHEN t.premier_echec_at < now() - interval '15 minutes' THEN 1 ELSE t.echecs + 1 END,
+        bloque_jusqu_a = CASE WHEN t.premier_echec_at < now() - interval '15 minutes' THEN NULL ELSE t.bloque_jusqu_a END,
+        premier_echec_at = CASE WHEN t.premier_echec_at < now() - interval '15 minutes' THEN now() ELSE t.premier_echec_at END;
+
+    UPDATE public.tentatives_connexion
+    SET bloque_jusqu_a = now() + interval '15 minutes'
+    WHERE cle = p_cle AND echecs >= greatest(coalesce(p_max, 5), 1);
+END;
+$$;
+REVOKE EXECUTE ON FUNCTION public.noter_echec_plafonne(TEXT, INT) FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.noter_echec_plafonne(TEXT, INT) TO service_role;
+
+-- IP lisible pour une clé : chiffres, lettres hexadécimales, points et deux-points ; sinon « inconnue »
+CREATE OR REPLACE FUNCTION public.ip_pour_cle(p_ip TEXT)
+RETURNS TEXT
+LANGUAGE sql IMMUTABLE SET search_path = public AS $$
+    SELECT CASE WHEN p_ip ~ '^[0-9A-Fa-f:.]{2,45}$' THEN lower(p_ip) ELSE 'inconnue' END
+$$;
+REVOKE EXECUTE ON FUNCTION public.ip_pour_cle(TEXT) FROM PUBLIC, anon, authenticated;
+
+-- Connexion RH
+DROP FUNCTION IF EXISTS public.echanger_acces_rh(TEXT, TEXT);
+CREATE OR REPLACE FUNCTION public.echanger_acces_rh(p_identifiant TEXT, p_code_hash TEXT, p_ip TEXT DEFAULT NULL)
+RETURNS UUID
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = public AS $$
+DECLARE
+    v_ident TEXT := lower(trim(coalesce(p_identifiant, '')));
+    v_cle TEXT := 'rh:' || left(v_ident, 100);
+    -- L'IP en tête : elle ne peut pas contenir « | », alors que l'identifiant est saisi librement
+    -- L'IP n'est crue que si l'appel vient du serveur Next.js (JWT « connexion ») ; un appel direct avec
+    -- la clé anon tombe dans le compteur partagé « inconnue », à 5 échecs
+    v_cle_ip TEXT := 'rhip:' || public.ip_pour_cle(CASE WHEN public.jwt_role_app() = 'connexion' THEN p_ip END)
+                     || '|' || left(v_ident, 100);
+    v_id UUID;
+BEGIN
+    PERFORM pg_advisory_xact_lock(hashtextextended(v_cle, 0));
+    PERFORM public.controler_tentatives(v_cle);
+    PERFORM public.controler_tentatives(v_cle_ip);
+
+    SELECT c.id INTO v_id
+    FROM public.companies c
+    JOIN public.acces_rh a ON a.company_id = c.id
+    WHERE CASE WHEN position('@' IN v_ident) > 0
+               THEN lower(c.email_contact) = v_ident
+               ELSE c.slug = v_ident END
+      AND c.is_active
+      AND a.code_hash ~ '^[0-9a-f]{64}$'
+      AND a.code_hash = lower(coalesce(p_code_hash, ''))
+    LIMIT 1;
+
+    IF v_id IS NULL THEN
+        PERFORM public.noter_echec_plafonne(v_cle_ip, 5);
+        PERFORM public.noter_echec_plafonne(v_cle, 30);
+    ELSE
+        PERFORM public.effacer_tentatives(v_cle_ip);
+    END IF;
+    RETURN v_id;
+END;
+$$;
+REVOKE EXECUTE ON FUNCTION public.echanger_acces_rh(TEXT, TEXT, TEXT) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.echanger_acces_rh(TEXT, TEXT, TEXT) TO anon, authenticated, service_role;
+
+-- Connexion d'un compte restaurant
+DROP FUNCTION IF EXISTS public.echanger_acces_compte_restaurant(TEXT, TEXT);
+CREATE OR REPLACE FUNCTION public.echanger_acces_compte_restaurant(p_telephone TEXT, p_code_hash TEXT, p_ip TEXT DEFAULT NULL)
+RETURNS UUID
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = public AS $$
+DECLARE
+    v_cle TEXT := 'resto:' || left(trim(coalesce(p_telephone, '')), 50);
+    v_cle_ip TEXT := 'restoip:' || public.ip_pour_cle(CASE WHEN public.jwt_role_app() = 'connexion' THEN p_ip END)
+                     || '|' || left(trim(coalesce(p_telephone, '')), 50);
+    v_id UUID;
+BEGIN
+    PERFORM pg_advisory_xact_lock(hashtextextended(v_cle, 0));
+    PERFORM public.controler_tentatives(v_cle);
+    PERFORM public.controler_tentatives(v_cle_ip);
+
+    SELECT c.id INTO v_id FROM public.comptes_restaurant c
+    WHERE c.telephone_whatsapp = p_telephone
+      AND c.is_active
+      AND lower(c.code_hash) = lower(p_code_hash)
+    LIMIT 1;
+
+    IF v_id IS NULL THEN
+        PERFORM public.noter_echec_plafonne(v_cle_ip, 5);
+        PERFORM public.noter_echec_plafonne(v_cle, 30);
+    ELSE
+        PERFORM public.effacer_tentatives(v_cle_ip);
+    END IF;
+    RETURN v_id;
+END;
+$$;
+REVOKE EXECUTE ON FUNCTION public.echanger_acces_compte_restaurant(TEXT, TEXT, TEXT) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.echanger_acces_compte_restaurant(TEXT, TEXT, TEXT) TO anon, authenticated, service_role;
+
+-- Console SuperAdmin : le code est vérifié par Next.js (SUPERADMIN_CODE), mais le contrôle et le comptage
+-- se font ici en une seule transaction sous verrou : une rafale de requêtes parallèles ne peut plus passer
+-- le contrôle avant qu'aucun échec ne soit compté. Réservée au service_role (l'IP vient du serveur).
+CREATE OR REPLACE FUNCTION public.tentative_connexion_admin(p_code_correct BOOLEAN, p_ip TEXT)
+RETURNS BOOLEAN
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = public AS $$
+DECLARE
+    v_cle TEXT := 'admin';
+    v_cle_ip TEXT := 'adminip:' || public.ip_pour_cle(p_ip);
+BEGIN
+    PERFORM pg_advisory_xact_lock(hashtextextended(v_cle, 0));
+    PERFORM public.controler_tentatives(v_cle);
+    PERFORM public.controler_tentatives(v_cle_ip);
+    IF p_code_correct IS NOT TRUE THEN
+        PERFORM public.noter_echec_plafonne(v_cle_ip, 5);
+        PERFORM public.noter_echec_plafonne(v_cle, 30);
+        RETURN false;
+    END IF;
+    PERFORM public.effacer_tentatives(v_cle_ip);
+    RETURN true;
+END;
+$$;
+REVOKE EXECUTE ON FUNCTION public.tentative_connexion_admin(BOOLEAN, TEXT) FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.tentative_connexion_admin(BOOLEAN, TEXT) TO service_role;
+
+-- ==============================================================================
+-- v1.10 (T14, étape A) : le salarié et le restaurant ne lisent plus toute la fiche entreprise (audit
+-- base, H-3). La politique rh_lit_son_entreprise leur donnait toutes les colonnes de companies (e-mail et
+-- téléphone du responsable, offre, abonnement, colonnes mortes traiteur_*) alors que leurs pages
+-- n'utilisent que le nom, les heures de commande et les jours de travail.
+-- Fonction à colonnes fixes, limitée à l'entreprise du JWT ; pour un autre rôle elle ne renvoie rien.
+-- Étape B (après le déploiement du code qui l'appelle, et vérification en production des pages salarié et
+-- restaurant) : redéfinir rh_lit_son_entreprise avec jwt_role_app() = 'rh', en fin de fichier (elle est
+-- redéfinie plusieurs fois plus haut). Ensuite, ne plus revenir à un ancien build sans revenir sur la politique.
+-- Bloc final : garder en dernier.
+-- ==============================================================================
+CREATE OR REPLACE FUNCTION public.entreprise_visible()
+RETURNS TABLE (nom TEXT, heure_ouverture_vote TIME, heure_limite_vote TIME, jours_travail SMALLINT[])
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public AS $$
+    SELECT c.nom, c.heure_ouverture_vote, c.heure_limite_vote, c.jours_travail
+    FROM public.companies c
+    WHERE c.id = public.jwt_company_id()
+      AND public.jwt_role_app() IN ('salarie', 'restaurant')
+$$;
+REVOKE EXECUTE ON FUNCTION public.entreprise_visible() FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.entreprise_visible() TO authenticated;
+
+-- ==============================================================================
+-- v1.10 (T15) : suppression des colonnes mortes companies.traiteur_nom, traiteur_telephone et
+-- heure_livraison_souhaitee (ancien traiteur unique, repris par la table restaurants en v1.2). Plus aucun
+-- code ne les lit ni ne les écrit, et aucune fonction, politique, vue ou trigger ne les cite ; le CREATE
+-- TABLE et la migration v1.2 plus haut ne les utilisent plus. Irréversible. Bloc final : garder en dernier.
+-- ==============================================================================
+ALTER TABLE public.companies
+    DROP COLUMN IF EXISTS traiteur_nom,
+    DROP COLUMN IF EXISTS traiteur_telephone,
+    DROP COLUMN IF EXISTS heure_livraison_souhaitee;
+
+-- ==============================================================================
+-- v1.10 (T16) : limite de débit sur les inscriptions en libre-service (audit base, moyenne). /inscription
+-- (entreprise) et /resto/inscription (restaurant) créaient des comptes sans limite, protégées seulement par
+-- un champ piège : multiplicateur pour les attaques par code (une entreprise ou un compte de plus par essai)
+-- et énumération des e-mails et numéros déjà inscrits.
+-- Chaque tentative arrivée au serveur compte, réussie ou non : 5 en 15 min depuis une même IP bloquent
+-- les inscriptions de ce type pour cette IP 15 min (erreur CP429). Appelée par les Server Actions
+-- d'inscription en service_role ; l'IP vient des en-têtes posés par Vercel. Bloc final : garder en dernier.
+-- ==============================================================================
+CREATE OR REPLACE FUNCTION public.limiter_inscription(p_type TEXT, p_ip TEXT)
+RETURNS VOID
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = public AS $$
+DECLARE
+    v_cle TEXT;
+BEGIN
+    IF p_type IS NULL OR p_type NOT IN ('entreprise', 'restaurant') THEN
+        RAISE EXCEPTION 'Type d''inscription invalide';
+    END IF;
+    v_cle := 'inscription-' || p_type || ':' || public.ip_pour_cle(p_ip);
+    PERFORM pg_advisory_xact_lock(hashtextextended(v_cle, 0));
+    PERFORM public.controler_tentatives(v_cle);
+    PERFORM public.noter_echec_plafonne(v_cle, 5);
+END;
+$$;
+REVOKE EXECUTE ON FUNCTION public.limiter_inscription(TEXT, TEXT) FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.limiter_inscription(TEXT, TEXT) TO service_role;
+
+-- ==============================================================================
+-- v1.10 (T18) : authenticated (tous les JWT signés par le serveur) ne garde que SELECT, INSERT, UPDATE et
+-- DELETE sur les tables, filtrés par la RLS. Supabase lui accorde par défaut aussi TRUNCATE, REFERENCES et
+-- TRIGGER : TRUNCATE vide une table sans passer par la RLS, REFERENCES et TRIGGER ne servent qu'à créer
+-- des contraintes ou des triggers. Aucun code ne s'en sert (PostgREST n'expose pas TRUNCATE ; les clés
+-- étrangères se vérifient sans REFERENCES). anon n'a déjà plus aucun droit sur les tables (section 9).
+-- Depuis PostgreSQL 17, MAINTAIN (VACUUM, REINDEX, LOCK TABLE dans tous les modes) est retiré aussi.
+-- Les droits par défaut couvrent les tables créées plus tard par le rôle qui lance ce script (postgres dans
+-- l'éditeur SQL) ; une table créée par supabase_admin ne l'est pas, mais la première ligne la rattrape à chaque relance.
+-- Bloc final : garder en dernier.
+-- ==============================================================================
+REVOKE TRUNCATE, REFERENCES, TRIGGER ON ALL TABLES IN SCHEMA public FROM authenticated;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE TRUNCATE, REFERENCES, TRIGGER ON TABLES FROM authenticated;
+DO $$
+BEGIN
+    -- Le mot-clé MAINTAIN n'existe qu'à partir de PostgreSQL 17
+    IF current_setting('server_version_num')::int >= 170000 THEN
+        EXECUTE 'REVOKE MAINTAIN ON ALL TABLES IN SCHEMA public FROM authenticated';
+        EXECUTE 'ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE MAINTAIN ON TABLES FROM authenticated';
+    END IF;
+END $$;
+
+-- ==============================================================================
+-- v1.10 (T19) : les codes d'accès RH et restaurant sont stockés en bcrypt salé (audit base, moyenne).
+-- Avant, acces_rh.code_hash et comptes_restaurant.code_hash gardaient le sha256 non salé du code, envoyé
+-- tel quel par le serveur à la connexion : quiconque lisait ces colonnes (sauvegarde, tableau de bord
+-- Supabase) se connectait sans casser le hash, et un code court se retrouvait hors ligne en quelques secondes.
+-- Le serveur Next.js ne change pas : il envoie toujours le sha256 du code ; la base le stocke en bcrypt.
+-- 1) code_correspond compare une empreinte reçue à une valeur stockée en bcrypt. Sans valeur stockée
+--    (identifiant inconnu), elle calcule un bcrypt leurre : même temps de réponse, pas d'oracle d'existence.
+-- 2) Un trigger convertit en bcrypt tout sha256 écrit dans ces colonnes (inscriptions, changements de code,
+--    saisie manuelle) : aucun appelant n'a à connaître bcrypt.
+-- 3) Migration unique des codes existants, triggers d'horodatage (T8) coupés : personne n'est déconnecté.
+-- 4) Contraintes : bcrypt seulement.
+-- 5) Les quatre fonctions de connexion et de changement de code comparent avec code_correspond.
+-- pgcrypto est dans le schéma extensions sur Supabase (public ailleurs) : d'où search_path = extensions, public.
+-- 6) Les connexions lisent la ligne par l'identifiant puis comparent une seule fois (un seul bcrypt par
+--    tentative), et un compteur par IP tous identifiants confondus (50 / 15 min) borne le balayage d'identifiants.
+-- Bloc final : garder en dernier.
+-- ==============================================================================
+
+CREATE OR REPLACE FUNCTION public.code_correspond(p_stocke TEXT, p_fourni TEXT)
+RETURNS BOOLEAN
+LANGUAGE sql VOLATILE COST 10000 SET search_path = extensions, public AS $$
+    SELECT CASE
+        -- L'empreinte reçue est toujours un sha256 hexadécimal (hashRhCode côté serveur)
+        WHEN p_fourni IS NULL OR p_fourni !~ '^[0-9a-fA-F]{64}$' THEN false
+        -- Identifiant inconnu : bcrypt leurre, même coût qu'un vrai contrôle, résultat toujours faux
+        WHEN p_stocke IS NULL THEN crypt(lower(p_fourni), gen_salt('bf', 10)) IS NULL
+        WHEN p_stocke ~ '^\$2[aby]\$[0-9]{2}\$.{53}$' THEN crypt(lower(p_fourni), p_stocke) = p_stocke
+        -- Plus de branche sha256 : une valeur stockée non bcrypt ne vaut jamais un code
+        ELSE false
+    END
+$$;
+REVOKE EXECUTE ON FUNCTION public.code_correspond(TEXT, TEXT) FROM PUBLIC, anon, authenticated;
+
+-- Tout sha256 écrit dans code_hash devient un bcrypt (coût 10)
+CREATE OR REPLACE FUNCTION public.hacher_code_bcrypt()
+RETURNS TRIGGER LANGUAGE plpgsql SET search_path = extensions, public AS $$
+BEGIN
+    IF NEW.code_hash ~ '^[0-9a-fA-F]{64}$' THEN
+        NEW.code_hash := crypt(lower(NEW.code_hash), gen_salt('bf', 10));
+    END IF;
+    RETURN NEW;
+END;
+$$;
+DROP TRIGGER IF EXISTS trg_hacher_code_bcrypt ON public.acces_rh;
+CREATE TRIGGER trg_hacher_code_bcrypt
+    BEFORE INSERT OR UPDATE OF code_hash ON public.acces_rh
+    FOR EACH ROW EXECUTE FUNCTION public.hacher_code_bcrypt();
+DROP TRIGGER IF EXISTS trg_hacher_code_bcrypt ON public.comptes_restaurant;
+CREATE TRIGGER trg_hacher_code_bcrypt
+    BEFORE INSERT OR UPDATE OF code_hash ON public.comptes_restaurant
+    FOR EACH ROW EXECUTE FUNCTION public.hacher_code_bcrypt();
+
+-- Migration unique des codes existants. Les triggers d'horodatage sont coupés le temps de la conversion :
+-- le code ne change pas, les sessions ouvertes (T8) restent valides.
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM public.schema_migrations WHERE nom = 'v1.10-codes-bcrypt') THEN
+        -- is_local : vaut jusqu'à la fin de la transaction (tout le script) ; la suite qualifie tout en public.
+        PERFORM set_config('search_path', 'extensions, public', true);
+        ALTER TABLE public.acces_rh DISABLE TRIGGER trg_horodater_changement_code_rh;
+        UPDATE public.acces_rh SET code_hash = crypt(lower(code_hash), gen_salt('bf', 10))
+        WHERE code_hash ~ '^[0-9a-fA-F]{64}$';
+        ALTER TABLE public.acces_rh ENABLE TRIGGER trg_horodater_changement_code_rh;
+
+        ALTER TABLE public.comptes_restaurant DISABLE TRIGGER trg_horodater_changement_code_compte;
+        UPDATE public.comptes_restaurant SET code_hash = crypt(lower(code_hash), gen_salt('bf', 10))
+        WHERE code_hash ~ '^[0-9a-fA-F]{64}$';
+        ALTER TABLE public.comptes_restaurant ENABLE TRIGGER trg_horodater_changement_code_compte;
+
+        INSERT INTO public.schema_migrations (nom) VALUES ('v1.10-codes-bcrypt');
+    END IF;
+END $$;
+
+-- Format stocké : bcrypt seulement (le trigger convertit tout sha256 avant ce contrôle)
+ALTER TABLE public.acces_rh DROP CONSTRAINT IF EXISTS acces_rh_code_hash_sha256;
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'acces_rh_code_hash_bcrypt') THEN
+        ALTER TABLE public.acces_rh
+            ADD CONSTRAINT acces_rh_code_hash_bcrypt CHECK (code_hash ~ '^\$2[aby]\$[0-9]{2}\$.{53}$');
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'comptes_restaurant_code_hash_bcrypt') THEN
+        ALTER TABLE public.comptes_restaurant
+            ADD CONSTRAINT comptes_restaurant_code_hash_bcrypt CHECK (code_hash ~ '^\$2[aby]\$[0-9]{2}\$.{53}$');
+    END IF;
+END $$;
+
+-- Connexion RH (version T13, comparaison par code_correspond)
+CREATE OR REPLACE FUNCTION public.echanger_acces_rh(p_identifiant TEXT, p_code_hash TEXT, p_ip TEXT DEFAULT NULL)
+RETURNS UUID
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = public AS $$
+DECLARE
+    v_ident TEXT := lower(trim(coalesce(p_identifiant, '')));
+    v_cle TEXT := 'rh:' || left(v_ident, 100);
+    -- L'IP en tête : elle ne peut pas contenir « | », alors que l'identifiant est saisi librement
+    -- L'IP n'est crue que si l'appel vient du serveur Next.js (JWT « connexion ») ; un appel direct avec
+    -- la clé anon tombe dans le compteur partagé « inconnue », à 5 échecs
+    v_ip TEXT := public.ip_pour_cle(CASE WHEN public.jwt_role_app() = 'connexion' THEN p_ip END);
+    v_cle_ip TEXT := 'rhip:' || v_ip || '|' || left(v_ident, 100);
+    -- T19 : compteur par IP tous identifiants confondus (50 échecs / 15 min : NAT partagé des opérateurs
+    -- mobiles), il borne le balayage d'e-mails ; seulement pour une IP
+    -- crue : la clé partagée « inconnue » bloquerait tous les appels anon d'un coup
+    v_cle_glob TEXT := CASE WHEN v_ip <> 'inconnue' THEN 'rhipglob:' || v_ip END;
+    v_id UUID;
+    v_stocke TEXT;
+BEGIN
+    PERFORM pg_advisory_xact_lock(hashtextextended(v_cle, 0));
+    PERFORM public.controler_tentatives(v_cle);
+    PERFORM public.controler_tentatives(v_cle_ip);
+    IF v_cle_glob IS NOT NULL THEN
+        PERFORM public.controler_tentatives(v_cle_glob);
+    END IF;
+
+    -- T19 : la ligne d'abord, la comparaison ensuite : un seul bcrypt par tentative
+    SELECT c.id, a.code_hash INTO v_id, v_stocke
+    FROM public.companies c
+    JOIN public.acces_rh a ON a.company_id = c.id
+    WHERE CASE WHEN position('@' IN v_ident) > 0
+               THEN lower(c.email_contact) = v_ident
+               ELSE c.slug = v_ident END
+      AND c.is_active
+    LIMIT 1;
+    -- Identifiant inconnu (v_stocke NULL) : bcrypt leurre, même temps de réponse
+    IF NOT public.code_correspond(v_stocke, p_code_hash) THEN
+        v_id := NULL;
+    END IF;
+
+    IF v_id IS NULL THEN
+        IF v_cle_glob IS NOT NULL THEN
+            PERFORM public.noter_echec_plafonne(v_cle_glob, 50);
+        END IF;
+        PERFORM public.noter_echec_plafonne(v_cle_ip, 5);
+        PERFORM public.noter_echec_plafonne(v_cle, 30);
+    ELSE
+        PERFORM public.effacer_tentatives(v_cle_ip);
+    END IF;
+    RETURN v_id;
+END;
+$$;
+REVOKE EXECUTE ON FUNCTION public.echanger_acces_rh(TEXT, TEXT, TEXT) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.echanger_acces_rh(TEXT, TEXT, TEXT) TO anon, authenticated, service_role;
+
+-- Connexion d'un compte restaurant (version T13, comparaison par code_correspond)
+CREATE OR REPLACE FUNCTION public.echanger_acces_compte_restaurant(p_telephone TEXT, p_code_hash TEXT, p_ip TEXT DEFAULT NULL)
+RETURNS UUID
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = public AS $$
+DECLARE
+    v_cle TEXT := 'resto:' || left(trim(coalesce(p_telephone, '')), 50);
+    v_ip TEXT := public.ip_pour_cle(CASE WHEN public.jwt_role_app() = 'connexion' THEN p_ip END);
+    v_cle_ip TEXT := 'restoip:' || v_ip || '|' || left(trim(coalesce(p_telephone, '')), 50);
+    -- T19 : compteur par IP tous téléphones confondus, seulement pour une IP crue (voir echanger_acces_rh)
+    v_cle_glob TEXT := CASE WHEN v_ip <> 'inconnue' THEN 'restoipglob:' || v_ip END;
+    v_id UUID;
+    v_stocke TEXT;
+BEGIN
+    PERFORM pg_advisory_xact_lock(hashtextextended(v_cle, 0));
+    PERFORM public.controler_tentatives(v_cle);
+    PERFORM public.controler_tentatives(v_cle_ip);
+    IF v_cle_glob IS NOT NULL THEN
+        PERFORM public.controler_tentatives(v_cle_glob);
+    END IF;
+
+    SELECT c.id, c.code_hash INTO v_id, v_stocke FROM public.comptes_restaurant c
+    WHERE c.telephone_whatsapp = p_telephone
+      AND c.is_active
+    LIMIT 1;
+    IF NOT public.code_correspond(v_stocke, p_code_hash) THEN
+        v_id := NULL;
+    END IF;
+
+    IF v_id IS NULL THEN
+        IF v_cle_glob IS NOT NULL THEN
+            PERFORM public.noter_echec_plafonne(v_cle_glob, 50);
+        END IF;
+        PERFORM public.noter_echec_plafonne(v_cle_ip, 5);
+        PERFORM public.noter_echec_plafonne(v_cle, 30);
+    ELSE
+        PERFORM public.effacer_tentatives(v_cle_ip);
+    END IF;
+    RETURN v_id;
+END;
+$$;
+REVOKE EXECUTE ON FUNCTION public.echanger_acces_compte_restaurant(TEXT, TEXT, TEXT) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.echanger_acces_compte_restaurant(TEXT, TEXT, TEXT) TO anon, authenticated, service_role;
+
+-- Changement du code RH (version T1, comparaison par code_correspond ; le trigger stocke le nouveau en bcrypt)
+CREATE OR REPLACE FUNCTION public.changer_code_rh(p_ancien_hash TEXT, p_nouveau_hash TEXT)
+RETURNS BOOLEAN
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = public AS $$
+DECLARE
+    v_company UUID := public.jwt_company_id();
+    v_cle TEXT;
+BEGIN
+    IF public.jwt_role_app() IS DISTINCT FROM 'rh' OR v_company IS NULL THEN
+        RAISE EXCEPTION 'Accès refusé';
+    END IF;
+    IF p_nouveau_hash IS NULL OR p_nouveau_hash !~ '^[0-9a-f]{64}$' THEN
+        RAISE EXCEPTION 'Nouveau code invalide';
+    END IF;
+
+    v_cle := 'changecode:' || v_company::text;
+    PERFORM pg_advisory_xact_lock(hashtextextended(v_cle, 0));
+    PERFORM public.controler_tentatives(v_cle);
+
+    IF NOT EXISTS (SELECT 1 FROM public.acces_rh
+                   WHERE company_id = v_company AND public.code_correspond(code_hash, p_ancien_hash)) THEN
+        PERFORM public.noter_echec_connexion(v_cle);
+        RETURN false;
+    END IF;
+    PERFORM public.effacer_tentatives(v_cle);
+
+    UPDATE public.acces_rh SET code_hash = p_nouveau_hash, updated_at = now() WHERE company_id = v_company;
+    RETURN true;
+END;
+$$;
+REVOKE EXECUTE ON FUNCTION public.changer_code_rh(TEXT, TEXT) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.changer_code_rh(TEXT, TEXT) TO authenticated;
+
+-- Changement du code d'un compte restaurant (version T7, idem)
+CREATE OR REPLACE FUNCTION public.changer_code_compte_restaurant(p_ancien_hash TEXT, p_nouveau_hash TEXT)
+RETURNS BOOLEAN
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = public AS $$
+DECLARE
+    v_compte UUID := public.jwt_compte_id();
+    v_cle TEXT;
+BEGIN
+    IF public.jwt_role_app() IS DISTINCT FROM 'compte_restaurant' OR v_compte IS NULL THEN
+        RAISE EXCEPTION 'Accès refusé';
+    END IF;
+    IF p_nouveau_hash IS NULL OR p_nouveau_hash !~ '^[0-9a-f]{64}$' THEN
+        RAISE EXCEPTION 'Nouveau code invalide';
+    END IF;
+
+    v_cle := 'changecode-resto:' || v_compte::text;
+    PERFORM pg_advisory_xact_lock(hashtextextended(v_cle, 0));
+    PERFORM public.controler_tentatives(v_cle);
+
+    IF NOT EXISTS (SELECT 1 FROM public.comptes_restaurant
+                   WHERE id = v_compte AND is_active
+                     AND public.code_correspond(code_hash, p_ancien_hash)) THEN
+        PERFORM public.noter_echec_connexion(v_cle);
+        RETURN false;
+    END IF;
+    PERFORM public.effacer_tentatives(v_cle);
+
+    UPDATE public.comptes_restaurant
+    SET code_hash = p_nouveau_hash, code_change_at = now()
+    WHERE id = v_compte;
+    RETURN true;
+END;
+$$;
+REVOKE EXECUTE ON FUNCTION public.changer_code_compte_restaurant(TEXT, TEXT) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.changer_code_compte_restaurant(TEXT, TEXT) TO authenticated;
+
+
+-- ==============================================================================
+-- v1.10 (T20) : les nouveaux tokens salarié font 128 bits (16 octets) au lieu de 64.
+-- Seul le défaut change : les tokens existants ne sont pas régénérés, sinon tous les liens /p/[token]
+-- déjà envoyés par WhatsApp cesseraient de marcher. Le serveur génère aussi 16 octets (generateToken).
+-- Bloc final : garder en dernier.
+-- ==============================================================================
+ALTER TABLE public.employes ALTER COLUMN token SET DEFAULT encode(gen_random_bytes(16), 'hex');

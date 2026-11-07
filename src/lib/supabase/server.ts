@@ -3,6 +3,7 @@ import { serverClient, type SupabaseServeur } from "./client-serveur";
 import { getRhCompanyId, hashRhCode } from "@/lib/rh-session";
 import { getRestoCompteId } from "@/lib/resto-session";
 import { signerJetonSupabase, type ClaimsCantine } from "./jeton";
+import { ipVisiteur } from "@/lib/ip";
 
 export type { SupabaseServeur };
 
@@ -32,23 +33,40 @@ export async function createClientRhSession(): Promise<{ companyId: string; supa
   return { companyId, supabase: createClientRh(companyId) };
 }
 
-/** Code SQLSTATE levé par controler_tentatives : identifiant bloqué après 5 échecs en 15 minutes */
+/** Code SQLSTATE levé par controler_tentatives : 5 échecs par IP et identifiant, 30 par identifiant, 50 par IP tous identifiants confondus (15 minutes) */
 const CODE_TROP_DE_TENTATIVES = "CP429";
 
 /** Connexion refusée parce que l'identifiant est temporairement bloqué ; le message est lisible par l'utilisateur */
 export class TropDeTentativesError extends Error {}
 
-/** Appelle une fonction d'échange SECURITY DEFINER avec la clé anon (le type Database ne décrit pas les fonctions) */
-async function appelerEchange<T>(fonction: string, args: Record<string, string>): Promise<T | null> {
-  const { data, error } = await (serverClient() as any).rpc(fonction, args);
+/**
+ * Appelle une fonction d'échange SECURITY DEFINER (le type Database ne décrit pas les fonctions).
+ * Clé anon seule par défaut ; avec `parServeur`, un JWT court « connexion » signé par le serveur
+ * (v1.10 T13 : seule façon pour la fonction de croire l'IP transmise).
+ */
+async function appelerEchange<T>(
+  fonction: string,
+  args: Record<string, string>,
+  parServeur = false
+): Promise<T | null> {
+  const client = parServeur ? createClientAvecClaims({ role_app: "connexion" }) : serverClient();
+  const { data, error } = await (client as any).rpc(fonction, args);
   if (error?.code === CODE_TROP_DE_TENTATIVES) throw new TropDeTentativesError(error.message);
   if (error) throw new Error(error.message);
   return (data ?? null) as T | null;
 }
 
-/** Échange identifiant + code RH contre l'id de l'entreprise, ou null si incorrect */
+/**
+ * Échange identifiant + code RH contre l'id de l'entreprise, ou null si incorrect.
+ * v1.10 (T13) : l'IP sépare les compteurs d'échecs (5 par IP, 30 toutes IP confondues).
+ */
 export async function echangerAccesRh(identifiant: string, code: string): Promise<string | null> {
-  return appelerEchange<string>("echanger_acces_rh", { p_identifiant: identifiant, p_code_hash: hashRhCode(code) });
+  const ip = await ipVisiteur();
+  return appelerEchange<string>("echanger_acces_rh", {
+    p_identifiant: identifiant,
+    p_code_hash: hashRhCode(code),
+    ...(ip ? { p_ip: ip } : {}),
+  }, true);
 }
 
 /** Échange le token du lien magique salarié contre un client limité à ce salarié */
@@ -90,10 +108,12 @@ export async function echangerJetonRestaurant(
 
 /** Échange téléphone + code d'un compte restaurant contre l'id du compte, ou null si incorrect */
 export async function echangerAccesCompteRestaurant(telephone: string, code: string): Promise<string | null> {
+  const ip = await ipVisiteur();
   return appelerEchange<string>("echanger_acces_compte_restaurant", {
     p_telephone: telephone,
     p_code_hash: hashRhCode(code),
-  });
+    ...(ip ? { p_ip: ip } : {}),
+  }, true);
 }
 
 /** Client du compte restaurant connecté (cookie déjà vérifié par getRestoCompteId) : fiche et partenariats */

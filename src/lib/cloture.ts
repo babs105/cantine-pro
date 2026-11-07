@@ -1,4 +1,5 @@
 import "server-only";
+import { erreurAvecCode, messageErreur } from "@/lib/erreurs";
 import type { SupabaseServeur } from "@/lib/supabase/server";
 import { getAppBaseUrl } from "@/lib/config";
 import { buildMessageTraiteur, buildRecap, recapUneLigne, totalRepas } from "@/lib/recap";
@@ -76,7 +77,7 @@ async function getRestaurantsDuJour(supabase: Supabase, companyId: string, date:
   const ids = Array.from(new Set((plats || []).map((p: any) => p.restaurant_id as string)));
   if (ids.length === 0) return [];
 
-  const { data } = await supabase.from("restaurants").select("*").in("id", ids).order("nom");
+  const { data } = await supabase.from("restaurants").select("*").in("id", ids).eq("company_id", companyId).order("nom");
   return (data || []) as Restaurant[];
 }
 
@@ -157,7 +158,7 @@ export async function cloturerEntreprise(
       .select()
       .single();
 
-    if (error) throw new Error(`${restaurant.nom} : ${error.message}`);
+    if (error) throw erreurAvecCode(restaurant.nom, error);
     resultats.push({ ...(data as Cloture), restaurant_nom: restaurant.nom });
   }
 
@@ -195,7 +196,7 @@ export async function rafraichirRecapCloture(
     const dejaEnvoye = cloture.envoi_statut === "envoye";
     if (dejaEnvoye) aRenvoyer.push(restaurant?.nom || "Restaurant");
 
-    await (supabase.from("clotures") as any)
+    const { error } = await (supabase.from("clotures") as any)
       .update({
         recap,
         total_repas: totalRepas(recap),
@@ -214,7 +215,10 @@ export async function rafraichirRecapCloture(
             }
           : {}),
       })
-      .eq("id", cloture.id);
+      .eq("id", cloture.id)
+      .eq("company_id", companyId);
+    // Échec (ex. le restaurant vient de confirmer : CP412) : récap non mis à jour, à voir dans les journaux
+    if (error) messageErreur("rh/recap", error);
   }
   return aRenvoyer;
 }

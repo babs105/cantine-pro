@@ -1,6 +1,7 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import { messageErreur } from "@/lib/erreurs";
 import { createClientRh } from "@/lib/supabase/server";
 import { isDateValide, normaliserJoursTravail } from "@/lib/dates";
 import { createRhSession, getRhCompanyId, hashRhCode } from "@/lib/rh-session";
@@ -56,7 +57,7 @@ export async function historiqueMoisAction(mois: string): Promise<Resultat<JourH
     }
     return { success: true, data: Array.from(parJour.values()).sort((a, b) => b.date.localeCompare(a.date)) };
   } catch (err: any) {
-    return { success: false, message: err.message };
+    return { success: false, message: messageErreur("rh/rapports", err) };
   }
 }
 
@@ -122,7 +123,7 @@ export async function historiqueJourAction(date: string): Promise<Resultat<Detai
       },
     };
   } catch (err: any) {
-    return { success: false, message: err.message };
+    return { success: false, message: messageErreur("rh/rapports", err) };
   }
 }
 
@@ -214,7 +215,7 @@ export async function statistiquesAction(mois: string): Promise<Resultat<Statist
       },
     };
   } catch (err: any) {
-    return { success: false, message: err.message };
+    return { success: false, message: messageErreur("rh/rapports", err) };
   }
 }
 
@@ -274,7 +275,12 @@ export async function modifierParametresAction(p: ParametresEntreprise): Promise
       jours_travail: normaliserJoursTravail(p.joursTravail),
     })
     .eq("id", ctx.companyId);
-  if (error) return { success: false, message: error.message };
+  if (error) {
+    return {
+      success: false,
+      message: messageErreur("rh/parametres", error, undefined, "Cet e-mail est déjà utilisé par une autre entreprise."),
+    };
+  }
 
   revalidatePath("/rh");
   return { success: true };
@@ -289,6 +295,7 @@ export async function changerCodeRhAction(
   // Une Server Action peut être appelée avec n'importe quoi : types et longueurs vérifiés ici
   if (typeof ancien !== "string" || typeof nouveau !== "string") return { success: false, message: "Requête invalide." };
   if (!ancien.trim()) return { success: false, message: "Saisissez votre code actuel." };
+  if (ancien.length > 200) return { success: false, message: "Code actuel incorrect." };
   if (nouveau.trim().length < 8) return { success: false, message: "Le nouveau code doit contenir au moins 8 caractères." };
   if (nouveau.length > 200) return { success: false, message: "Le nouveau code est trop long (200 caractères maximum)." };
 

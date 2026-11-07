@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { messageErreur } from "@/lib/erreurs";
 import ExcelJS from "exceljs";
 import { createClientRh } from "@/lib/supabase/server";
 import { todayDakar } from "@/lib/config";
@@ -13,7 +14,10 @@ const ORANGE = "FFF97316";
 type Ligne = LigneFacturation;
 
 function cellule(valeur: string | number | null | undefined): string {
-  const s = String(valeur ?? "");
+  // Une valeur saisie (titre de plat écrit par un restaurant, nom) qui commence par = + - @ serait
+  // exécutée comme une formule à l'ouverture du CSV dans Excel : on la préfixe d'une apostrophe
+  const brute = String(valeur ?? "");
+  const s = typeof valeur === "string" && /^[=+\-@\t\r]/.test(brute) ? `'${brute}` : brute;
   return /[";\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 
@@ -210,7 +214,7 @@ export async function GET(request: Request) {
   try {
     lignes = await getLignesFacturation(supabase, companyId, debut, fin);
   } catch (err: any) {
-    return NextResponse.json({ error: err.message }, { status: 500 });
+    return NextResponse.json({ error: messageErreur("rh/export", err, "Téléchargement impossible pour le moment, réessayez.") }, { status: 500 });
   }
 
   const company: any = comp;

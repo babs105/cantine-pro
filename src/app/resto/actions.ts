@@ -1,7 +1,9 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import { messageErreur } from "@/lib/erreurs";
 import { accesPartenariatCompte, createClientCompteSession, echangerJetonRestaurant } from "@/lib/supabase/server";
+import { lireEntrepriseVisible } from "@/lib/entreprise-visible";
 import { hashRhCode } from "@/lib/rh-session";
 import { createRestoSession } from "@/lib/resto-session";
 import { normaliserTelephone } from "@/lib/telephone";
@@ -50,7 +52,7 @@ export async function confirmerPreparationAction(
     .select("id, confirme_at");
 
   if (error) {
-    return { success: false, message: error.message };
+    return { success: false, message: messageErreur("resto/confirmation", error, "Confirmation impossible pour le moment, réessayez.") };
   }
   if (!data || data.length === 0) {
     return { success: false, message: "La commande du jour n'est pas encore clôturée par l'entreprise." };
@@ -172,7 +174,7 @@ export async function modifierProfilRestoAction(champs: {
   if (error) {
     return {
       success: false,
-      message: /duplicate|unique/i.test(error.message) ? "Ce numéro est déjà utilisé par un autre restaurant." : "Enregistrement impossible.",
+      message: messageErreur("resto/profil", error, "Enregistrement impossible.", "Ce numéro est déjà utilisé par un autre restaurant."),
     };
   }
 
@@ -195,7 +197,7 @@ export async function changerCodeRestoAction(
   if (typeof ancienCode !== "string" || typeof nouveauCode !== "string") return { success: false, message: "Requête invalide." };
   if (!ancienCode.trim()) return { success: false, message: "Saisissez votre code actuel." };
   if (ancienCode.length > 200) return { success: false, message: "Code actuel incorrect." };
-  if (nouveauCode.trim().length < 6) return { success: false, message: "Le nouveau code doit contenir au moins 6 caractères." };
+  if (nouveauCode.trim().length < 8) return { success: false, message: "Le nouveau code doit contenir au moins 8 caractères." };
   if (nouveauCode.length > 200) return { success: false, message: "Le nouveau code est trop long (200 caractères maximum)." };
 
   const { data: change, error } = await (session.supabase as any).rpc("changer_code_compte_restaurant", {
@@ -292,12 +294,15 @@ async function verifierJourModifiable(acces: AccesPartenariat, date: string): Pr
   if (!isDateValide(date) || date < today) return "Ce jour est passé : son menu n'est plus modifiable.";
   if (date > today) return null;
 
-  const [{ data: comp }, { data: cloture }] = await Promise.all([
-    acces.supabase.from("companies").select("heure_limite_vote").eq("id", acces.companyId).maybeSingle(),
+  const [comp, { data: cloture }] = await Promise.all([
+    // v1.10 (T14) : entreprise_visible, plus la table companies
+    lireEntrepriseVisible(acces.supabase),
     acces.supabase.from("clotures").select("id").eq("restaurant_id", acces.restaurantId).eq("date", today).maybeSingle(),
   ]);
+  // Heure limite inconnue : on refuse plutôt que de supposer 11h10 (l'entreprise peut fermer plus tôt)
+  if (!comp) return "Impossible de vérifier l'heure limite des commandes. Réessayez dans un instant.";
   if (cloture) return "La journée est clôturée : le menu d'aujourd'hui n'est plus modifiable.";
-  if (isApresHeureLimite((comp as any)?.heure_limite_vote || "11:10:00")) {
+  if (isApresHeureLimite(comp.heure_limite_vote)) {
     return "L'heure limite des commandes est passée : le menu d'aujourd'hui n'est plus modifiable.";
   }
   return null;
@@ -434,12 +439,10 @@ export async function copierSemainePrecedenteRestoAction(
 
   const lundi = lundiDeLaSemaine(lundiCible);
   const today = todayDakar();
-  const { data: comp } = await acces.supabase
-    .from("companies")
-    .select("jours_travail")
-    .eq("id", acces.companyId)
-    .maybeSingle();
-  const joursCibles = new Set(joursOuvres(lundi, normaliserJoursTravail((comp as any)?.jours_travail)));
+  const comp = await lireEntrepriseVisible(acces.supabase);
+  // Jours de travail inconnus : on ne copie pas sur des jours supposés
+  if (!comp) return { success: false, message: "Entreprise momentanément indisponible, réessayez." };
+  const joursCibles = new Set(joursOuvres(lundi, normaliserJoursTravail(comp.jours_travail)));
 
   const { data: existants } = await acces.supabase
     .from("menus_du_jour")

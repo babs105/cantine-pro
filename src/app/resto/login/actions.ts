@@ -16,7 +16,8 @@ export async function loginRestoAction(
     return { error: "Renseignez votre numéro WhatsApp et votre code d'accès." };
   }
 
-  // 5 échecs en 15 minutes bloquent le numéro 15 minutes (echanger_acces_compte_restaurant)
+  // 5 échecs en 15 minutes depuis une même IP bloquent cette IP ; 30 toutes IP confondues, le numéro
+  // (echanger_acces_compte_restaurant, v1.10 T13)
   let compteId: string | null;
   try {
     compteId = await echangerAccesCompteRestaurant(telephone, code);
