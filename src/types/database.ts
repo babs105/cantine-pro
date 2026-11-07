@@ -25,7 +25,6 @@ export interface Database {
           id: string;
           nom: string;
           slug: string;
-          code_acces: string;
           heure_limite_vote: string; // e.g. "11:10:00"
           heure_ouverture_vote: string; // e.g. "08:00:00"
           heure_livraison_souhaitee: string | null;
@@ -33,7 +32,6 @@ export interface Database {
           traiteur_telephone: string | null;
           trial_ends_at: string;
           is_active: boolean;
-          traiteur_token: string;
           responsable_nom: string | null;
           email_contact: string | null;
           telephone_contact: string | null;
@@ -47,7 +45,6 @@ export interface Database {
           id?: string;
           nom: string;
           slug: string;
-          code_acces?: string;
           heure_limite_vote?: string;
           heure_ouverture_vote?: string;
           heure_livraison_souhaitee?: string | null;
@@ -55,7 +52,6 @@ export interface Database {
           traiteur_telephone?: string | null;
           trial_ends_at?: string;
           is_active?: boolean;
-          traiteur_token?: string;
           responsable_nom?: string | null;
           email_contact?: string | null;
           telephone_contact?: string | null;
@@ -69,7 +65,6 @@ export interface Database {
           id?: string;
           nom?: string;
           slug?: string;
-          code_acces?: string;
           heure_limite_vote?: string;
           heure_ouverture_vote?: string;
           heure_livraison_souhaitee?: string | null;
@@ -77,7 +72,6 @@ export interface Database {
           traiteur_telephone?: string | null;
           trial_ends_at?: string;
           is_active?: boolean;
-          traiteur_token?: string;
           responsable_nom?: string | null;
           email_contact?: string | null;
           telephone_contact?: string | null;

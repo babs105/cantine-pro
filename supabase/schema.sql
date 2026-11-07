@@ -1,7 +1,8 @@
 -- ==============================================================================
 -- CANTINE PRO — SCHÉMA SUPABASE (Sprint Fast-Track 10 Jours)
--- Version: 1.9 — auth RH, restaurants partenaires, clôtures, inscription & abonnements,
---                comptes restaurant, limite des tentatives, durcissement RLS (audit v1.9)
+-- Version: 1.10 — auth RH, restaurants partenaires, clôtures, inscription & abonnements,
+--                 comptes restaurant, limite des tentatives, durcissement RLS (audit v1.9),
+--                 secrets hors de portée des rôles non RH (v1.10)
 -- ==============================================================================
 
 -- Extension pour la génération automatique de tokens aléatoires sécurisés si besoin
@@ -38,7 +39,6 @@ CREATE TABLE IF NOT EXISTS public.companies (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     nom TEXT NOT NULL,
     slug TEXT UNIQUE NOT NULL,
-    code_acces TEXT UNIQUE DEFAULT encode(gen_random_bytes(4), 'hex'), -- Lien global optionnel
     heure_limite_vote TIME NOT NULL DEFAULT '11:10:00', -- Fin des votes = envoi aux restaurants
     heure_livraison_souhaitee TIME DEFAULT '12:30:00',
     traiteur_nom TEXT,
@@ -111,14 +111,10 @@ GROUP BY c.id, c.nom, cmd.date, m.id, m.titre;
 
 -- 6. ACCÈS RH, PASSERELLE TRAITEUR & CLÔTURES 11H05 (v1.1)
 -- Ré-exécutable sur une base existante : les colonnes sont ajoutées si absentes.
--- v1.10 : la colonne rh_code_hash n'est plus créée ici (le hash du code RH est dans acces_rh) ;
--- sinon chaque relance la recréerait, lisible par les rôles salarié, restaurant et portail.
-ALTER TABLE public.companies
-    ADD COLUMN IF NOT EXISTS traiteur_token TEXT UNIQUE DEFAULT encode(gen_random_bytes(12), 'hex'); -- Lien: /resto/[token]
-
-UPDATE public.companies
-SET traiteur_token = encode(gen_random_bytes(12), 'hex')
-WHERE traiteur_token IS NULL;
+-- v1.10 : les colonnes rh_code_hash (hash du code RH, désormais dans acces_rh) et traiteur_token (ancien
+-- lien traiteur, remplacé par restaurants.token depuis la v1.2) ne sont plus créées ici ; code_acces non
+-- plus (CREATE TABLE ci-dessus). Sinon chaque relance les recréerait, lisibles par les rôles salarié,
+-- restaurant et portail. Elles sont supprimées dans le bloc final (v1.10 T4).
 
 ALTER TABLE public.employes
     ADD COLUMN IF NOT EXISTS service TEXT NOT NULL DEFAULT 'Général'; -- Ventilation paie par service
@@ -191,7 +187,9 @@ BEGIN
                COALESCE(c.traiteur_nom, 'Restaurant partenaire'),
                c.traiteur_telephone,
                COALESCE(c.heure_livraison_souhaitee, '12:30:00'),
-               COALESCE(c.traiteur_token, encode(gen_random_bytes(12), 'hex'))
+               -- v1.10 : plus de reprise de companies.traiteur_token (colonne supprimée). Ce bloc ne
+               -- s'exécute que sur une base neuve, où il n'y a aucune entreprise.
+               encode(gen_random_bytes(12), 'hex')
         FROM public.companies c
         WHERE NOT EXISTS (SELECT 1 FROM public.restaurants r WHERE r.company_id = c.id);
 
@@ -1015,8 +1013,6 @@ BEGIN
             OR NEW.abonnement_fin IS DISTINCT FROM OLD.abonnement_fin
             OR NEW.trial_ends_at IS DISTINCT FROM OLD.trial_ends_at
             OR NEW.is_active IS DISTINCT FROM OLD.is_active
-            OR NEW.traiteur_token IS DISTINCT FROM OLD.traiteur_token
-            OR NEW.code_acces IS DISTINCT FROM OLD.code_acces
             OR NEW.created_at IS DISTINCT FROM OLD.created_at) THEN
         RAISE EXCEPTION 'Colonne réservée à la console SuperAdmin.';
     END IF;
@@ -1311,3 +1307,14 @@ END;
 $$;
 REVOKE EXECUTE ON FUNCTION public.restaurants_visibles_salarie() FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION public.restaurants_visibles_salarie() TO authenticated;
+
+-- ==============================================================================
+-- v1.10 (T4) : suppression des colonnes mortes companies.traiteur_token et companies.code_acces.
+-- Plus aucun code ne les lit ni ne les écrit, mais elles restaient lisibles par les rôles salarié,
+-- restaurant et portail ; traiteur_token est en plus la copie du lien /resto/... du premier restaurant
+-- migré en v1.2. proteger_colonnes_companies ne les cite plus (bloc v1.9 plus haut) : la suppression
+-- vient après dans le fichier. Irréversible. Bloc final : garder en dernier.
+-- ==============================================================================
+ALTER TABLE public.companies
+    DROP COLUMN IF EXISTS traiteur_token,
+    DROP COLUMN IF EXISTS code_acces;
