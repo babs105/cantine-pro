@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { accesPartenariatCompte, createClientCompteSession, echangerJetonRestaurant } from "@/lib/supabase/server";
 import { hashRhCode } from "@/lib/rh-session";
+import { createRestoSession } from "@/lib/resto-session";
 import { normaliserTelephone } from "@/lib/telephone";
 import { todayDakar } from "@/lib/config";
 import {
@@ -206,6 +207,8 @@ export async function changerCodeRestoAction(
   }
   if (error) return { success: false, message: "Changement de code impossible pour le moment." };
   if (!change) return { success: false, message: "Code actuel incorrect." };
+  // v1.10 (T8) : le changement révoque les sessions ouvertes avant ; ce navigateur reçoit un cookie neuf
+  await createRestoSession(session.compteId);
   return { success: true };
 }
 

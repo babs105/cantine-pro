@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { createClientRh } from "@/lib/supabase/server";
 import { isDateValide, normaliserJoursTravail } from "@/lib/dates";
-import { getRhCompanyId, hashRhCode } from "@/lib/rh-session";
+import { createRhSession, getRhCompanyId, hashRhCode } from "@/lib/rh-session";
 import { getLignesFacturation, periodeMois, regrouperParPlat, type LigneFacturation } from "@/lib/facturation";
 
 const SESSION_EXPIREE = "Session RH expirée, reconnectez-vous.";
@@ -302,5 +302,7 @@ export async function changerCodeRhAction(
   }
   if (error) return { success: false, message: "Impossible de changer le code d'accès pour le moment." };
   if (!change) return { success: false, message: "Code actuel incorrect." };
+  // v1.10 (T8) : le changement révoque les sessions ouvertes avant ; ce navigateur reçoit un cookie neuf
+  await createRhSession(ctx.companyId);
   return { success: true };
 }

@@ -1,9 +1,10 @@
 import "server-only";
-import { createServerClient } from "@supabase/ssr";
-import { Database } from "@/types/database";
+import { serverClient, type SupabaseServeur } from "./client-serveur";
 import { getRhCompanyId, hashRhCode } from "@/lib/rh-session";
 import { getRestoCompteId } from "@/lib/resto-session";
 import { signerJetonSupabase, type ClaimsCantine } from "./jeton";
+
+export type { SupabaseServeur };
 
 /**
  * Clients Supabase côté serveur avec la clé anon : la RLS s'applique à chaque requête.
@@ -13,30 +14,6 @@ import { signerJetonSupabase, type ClaimsCantine } from "./jeton";
  * signe un JWT court dont les claims (role_app, company_id, employe_id, restaurant_id) filtrent les tables.
  * Le JWT ne quitte jamais le serveur. La clé service_role est réservée à ./admin.ts.
  */
-
-function configSupabase(): { url: string; cleAnon: string } {
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const cleAnon = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-  if (!url || url === "https://votre-projet.supabase.co") {
-    throw new Error("NEXT_PUBLIC_SUPABASE_URL manquante ou non remplacée dans l'environnement.");
-  }
-  if (!cleAnon || cleAnon === "votre-cle-anon-publique") {
-    throw new Error("NEXT_PUBLIC_SUPABASE_ANON_KEY manquante ou non remplacée dans l'environnement.");
-  }
-  return { url, cleAnon };
-}
-
-function serverClient(jeton?: string) {
-  const { url, cleAnon } = configSupabase();
-  return createServerClient<Database>(url, cleAnon, {
-    // Pas de session Supabase Auth : l'identité vient du JWT signé par le serveur
-    cookies: { getAll: () => [], setAll: () => {} },
-    auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
-    global: jeton ? { headers: { Authorization: `Bearer ${jeton}` } } : undefined,
-  });
-}
-
-export type SupabaseServeur = ReturnType<typeof serverClient>;
 
 /** Client portant les claims donnés (sans vérification : réservé aux identifiants déjà échangés) */
 export function createClientAvecClaims(claims: ClaimsCantine): SupabaseServeur {
@@ -140,14 +117,13 @@ export async function accesPartenariatCompte(
 ): Promise<{ compteId: string; restaurantId: string; companyId: string; supabase: SupabaseServeur } | null> {
   const session = await createClientCompteSession();
   if (!session) return null;
-  const { data } = await session.supabase
-    .from("restaurants")
-    .select("id, company_id")
-    .eq("id", restaurantId)
-    .eq("compte_id", session.compteId)
-    .eq("is_active", true)
-    .maybeSingle();
-  const ligne = data as { id: string; company_id: string } | null;
+  // v1.10 (T8) : partenariat, entreprise et compte actifs, comme echanger_jeton_restaurant
+  const { data, error } = await (session.supabase as any).rpc("acces_partenariat_compte", {
+    p_restaurant_id: restaurantId,
+  });
+  if (error) console.error("[resto] acces_partenariat_compte :", error.code);
+  const brut = Array.isArray(data) ? data[0] : null;
+  const ligne = brut ? { id: brut.restaurant_id as string, company_id: brut.company_id as string } : null;
   if (!ligne) return null;
   return {
     compteId: session.compteId,
