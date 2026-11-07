@@ -17,7 +17,7 @@ async function submitVoteAction(
   token: string,
   statut: "choisi" | "absent" | "ne_mange_pas",
   platId: string | null
-): Promise<{ success: boolean; message?: string; enregistreAt?: string }> {
+): Promise<{ success: boolean; message?: string; enregistreAt?: string; aReessayer?: boolean }> {
   "use server";
 
 
@@ -57,7 +57,8 @@ async function submitVoteAction(
         return { success: false, message: error.message };
       }
       console.error("[salarié] passer_commande :", error.code);
-      return { success: false, message: "Erreur lors de l'enregistrement de la commande." };
+      // Erreur passagère (réseau, base) : le téléphone garde le choix et le renvoie plus tard
+      return { success: false, message: "Erreur lors de l'enregistrement de la commande.", aReessayer: true };
     }
 
     const enregistreAt = typeof data === "string" ? new Date(data).toISOString() : new Date().toISOString();
@@ -65,7 +66,7 @@ async function submitVoteAction(
     revalidatePath(`/p/${token}`);
     return { success: true, enregistreAt };
   } catch {
-    return { success: false, message: "Erreur serveur." };
+    return { success: false, message: "Erreur serveur.", aReessayer: true };
   }
 }
 
