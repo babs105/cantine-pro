@@ -2476,7 +2476,7 @@ GRANT EXECUTE ON FUNCTION public.noter_echec_plafonne(TEXT, INT) TO service_role
 --    haut, décrit l'ancien format). Pseudonymisation seulement : un md5 de téléphone se retrouve par force
 --    brute, d'où la purge à un jour. Le limiteur est inchangé ; les compteurs en cours repartent de zéro
 --    une fois, à cette relance.
--- 3. purger_traces_connexion : purge indépendante du trafic, appelée par le cron (service_role).
+-- 3. purger_traces_connexion : purge à chaque connexion réussie (pas de cron planifié : le RH clôture).
 -- 4. authenticated perd les droits d'écriture qu'aucune politique n'utilise (défense en profondeur).
 -- Bloc final : garder en dernier.
 -- ==============================================================================
@@ -2533,6 +2533,28 @@ END;
 $$;
 -- Le trigger trg_verrouiller_plat_facture (BEFORE UPDATE OR DELETE) appelle déjà cette fonction
 
+-- 3. Purge des traces de connexion, sans attendre un nouvel échec : compteurs de plus d'un jour non
+--    bloqués, blocages par IP de plus de 30 jours. Appelée à chaque connexion réussie (RH ou restaurant)
+--    et par /api/cron/cloture s'il est un jour planifié. Par lots de 500, en sautant les lignes verrouillées
+--    par une tentative en cours : une connexion n'attend jamais la purge.
+CREATE OR REPLACE FUNCTION public.purger_traces_connexion()
+RETURNS VOID
+LANGUAGE sql VOLATILE SECURITY DEFINER SET search_path = public AS $$
+    DELETE FROM public.tentatives_connexion
+    WHERE cle IN (SELECT cle FROM public.tentatives_connexion
+                  WHERE premier_echec_at < now() - interval '1 day'
+                    AND (bloque_jusqu_a IS NULL OR bloque_jusqu_a < now())
+                  LIMIT 500
+                  FOR UPDATE SKIP LOCKED);
+    DELETE FROM public.blocages_connexion
+    WHERE id IN (SELECT id FROM public.blocages_connexion
+                 WHERE bloque_at < now() - interval '30 days'
+                 LIMIT 500
+                 FOR UPDATE SKIP LOCKED);
+$$;
+REVOKE EXECUTE ON FUNCTION public.purger_traces_connexion() FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.purger_traces_connexion() TO service_role;
+
 -- 2. Connexion RH : identifiant haché dans les clés (version T19 sinon identique)
 CREATE OR REPLACE FUNCTION public.echanger_acces_rh(p_identifiant TEXT, p_code_hash TEXT, p_ip TEXT DEFAULT NULL)
 RETURNS UUID
@@ -2579,6 +2601,8 @@ BEGIN
         PERFORM public.noter_echec_plafonne(v_cle, 30);
     ELSE
         PERFORM public.effacer_tentatives(v_cle_ip);
+        -- v1.12 : pas de cron planifié (le RH clôture lui-même) ; la purge tourne à chaque connexion réussie
+        PERFORM public.purger_traces_connexion();
     END IF;
     RETURN v_id;
 END;
@@ -2623,6 +2647,7 @@ BEGIN
         PERFORM public.noter_echec_plafonne(v_cle, 30);
     ELSE
         PERFORM public.effacer_tentatives(v_cle_ip);
+        PERFORM public.purger_traces_connexion();
     END IF;
     RETURN v_id;
 END;
@@ -2640,19 +2665,6 @@ BEGIN
         INSERT INTO public.schema_migrations (nom) VALUES ('v1.12-cles-connexion-hachees');
     END IF;
 END $$;
-
--- 3. Purge des traces de connexion, sans attendre un nouvel échec : compteurs de plus d'un jour non
---    bloqués, blocages par IP de plus de 30 jours
-CREATE OR REPLACE FUNCTION public.purger_traces_connexion()
-RETURNS VOID
-LANGUAGE sql VOLATILE SECURITY DEFINER SET search_path = public AS $$
-    DELETE FROM public.tentatives_connexion
-    WHERE premier_echec_at < now() - interval '1 day'
-      AND (bloque_jusqu_a IS NULL OR bloque_jusqu_a < now());
-    DELETE FROM public.blocages_connexion WHERE bloque_at < now() - interval '30 days';
-$$;
-REVOKE EXECUTE ON FUNCTION public.purger_traces_connexion() FROM PUBLIC, anon, authenticated;
-GRANT EXECUTE ON FUNCTION public.purger_traces_connexion() TO service_role;
 
 -- 4. Écritures qu'aucune politique n'ouvre à authenticated : la RLS les bloque déjà, le retrait des droits
 --    protège contre une politique trop large ajoutée plus tard. Les inscriptions et le SuperAdmin passent
