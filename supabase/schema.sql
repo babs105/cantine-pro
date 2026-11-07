@@ -1224,3 +1224,68 @@ END;
 $$;
 REVOKE EXECUTE ON FUNCTION public.changer_code_rh(TEXT, TEXT) FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION public.changer_code_rh(TEXT, TEXT) TO authenticated;
+
+-- ==============================================================================
+-- v1.10 (T2, étape A) : le portail /c/[slug] ne lit plus et n'écrit plus la table employes en direct.
+-- Deux fonctions à colonnes fixes : la liste (sans token) et l'auto-inscription (qui ne renvoie que la
+-- fiche créée). Étape B (commit séparé) : suppression des politiques portail_lit_les_salaries et
+-- portail_inscrit_un_salarie, une fois ce code déployé. Bloc final : garder en dernier.
+-- ==============================================================================
+
+-- Liste du portail : nom et service des salariés actifs, jamais le token
+CREATE OR REPLACE FUNCTION public.portail_lister_salaries()
+RETURNS TABLE (id UUID, nom TEXT, service TEXT)
+LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = public AS $$
+BEGIN
+    IF public.jwt_role_app() IS DISTINCT FROM 'portail' OR public.jwt_company_id() IS NULL THEN
+        RAISE EXCEPTION 'Accès refusé';
+    END IF;
+    RETURN QUERY
+        SELECT e.id, e.nom, e.service
+        FROM public.employes e
+        WHERE e.company_id = public.jwt_company_id() AND e.is_active
+        ORDER BY e.nom;
+END;
+$$;
+REVOKE EXECUTE ON FUNCTION public.portail_lister_salaries() FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.portail_lister_salaries() TO authenticated;
+
+-- Auto-inscription : le portail ne choisit ni le token, ni is_active, ni le service. Le plafond de l'offre
+-- (p_max, calculé par le serveur depuis PLANS) est contrôlé ici sous verrou : deux inscriptions
+-- simultanées ne peuvent pas le dépasser. Plafond atteint : erreur CP409.
+CREATE OR REPLACE FUNCTION public.portail_inscrire_salarie(p_nom TEXT, p_telephone TEXT, p_max INT)
+RETURNS TABLE (id UUID, nom TEXT, token TEXT)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = public AS $$
+DECLARE
+    v_company UUID := public.jwt_company_id();
+    -- Blancs (espaces, tabulations, retours) réduits à un espace, puis rognés aux deux bouts après la coupe à 80
+    v_nom TEXT := trim(left(trim(regexp_replace(coalesce(p_nom, ''), '\s+', ' ', 'g')), 80));
+    v_tel TEXT := nullif(left(trim(coalesce(p_telephone, '')), 20), '');
+    v_id UUID;
+    v_token TEXT;
+BEGIN
+    IF public.jwt_role_app() IS DISTINCT FROM 'portail' OR v_company IS NULL THEN
+        RAISE EXCEPTION 'Accès refusé';
+    END IF;
+    IF length(v_nom) < 2 THEN
+        RAISE EXCEPTION 'Nom invalide';
+    END IF;
+    IF p_max IS NULL OR p_max < 1 OR p_max > 10000 THEN
+        RAISE EXCEPTION 'Plafond invalide';
+    END IF;
+
+    -- Une inscription à la fois par entreprise : le comptage et l'insertion ne peuvent pas se croiser
+    PERFORM pg_advisory_xact_lock(hashtextextended('portail-inscription:' || v_company::text, 0));
+    IF (SELECT count(*) FROM public.employes e WHERE e.company_id = v_company AND e.is_active) >= p_max THEN
+        RAISE EXCEPTION 'Nombre maximum de salariés atteint' USING ERRCODE = 'CP409';
+    END IF;
+
+    INSERT INTO public.employes (company_id, nom, telephone, is_active)
+    VALUES (v_company, v_nom, v_tel, true)
+    RETURNING employes.id, employes.token INTO v_id, v_token;
+
+    RETURN QUERY SELECT v_id, v_nom, v_token;
+END;
+$$;
+REVOKE EXECUTE ON FUNCTION public.portail_inscrire_salarie(TEXT, TEXT, INT) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.portail_inscrire_salarie(TEXT, TEXT, INT) TO authenticated;
