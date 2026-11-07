@@ -634,12 +634,12 @@ CREATE POLICY rh_gere_ses_salaries ON public.employes FOR ALL TO authenticated
 DROP POLICY IF EXISTS salarie_lit_sa_fiche ON public.employes;
 CREATE POLICY salarie_lit_sa_fiche ON public.employes FOR SELECT TO authenticated
     USING (public.jwt_role_app() = 'salarie' AND id = public.jwt_employe_id());
+-- v1.10 (T2, étape B) : le portail n'a plus aucun accès direct à employes (il lisait toutes les colonnes,
+-- dont le token de chaque salarié, et pouvait choisir token / is_active / service à l'insertion).
+-- Il passe par portail_lister_salaries et portail_inscrire_salarie (bloc final). Exception validée à la
+-- règle « ne pas modifier les blocs existants » : sinon chaque relance recréerait ces politiques.
 DROP POLICY IF EXISTS portail_lit_les_salaries ON public.employes;
-CREATE POLICY portail_lit_les_salaries ON public.employes FOR SELECT TO authenticated
-    USING (public.jwt_role_app() = 'portail' AND company_id = public.jwt_company_id());
 DROP POLICY IF EXISTS portail_inscrit_un_salarie ON public.employes;
-CREATE POLICY portail_inscrit_un_salarie ON public.employes FOR INSERT TO authenticated
-    WITH CHECK (public.jwt_role_app() = 'portail' AND company_id = public.jwt_company_id());
 
 -- restaurants
 DROP POLICY IF EXISTS rh_gere_ses_restaurants ON public.restaurants;
@@ -1226,10 +1226,10 @@ REVOKE EXECUTE ON FUNCTION public.changer_code_rh(TEXT, TEXT) FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION public.changer_code_rh(TEXT, TEXT) TO authenticated;
 
 -- ==============================================================================
--- v1.10 (T2, étape A) : le portail /c/[slug] ne lit plus et n'écrit plus la table employes en direct.
+-- v1.10 (T2) : le portail /c/[slug] ne lit plus et n'écrit plus la table employes en direct.
 -- Deux fonctions à colonnes fixes : la liste (sans token) et l'auto-inscription (qui ne renvoie que la
--- fiche créée). Étape B (commit séparé) : suppression des politiques portail_lit_les_salaries et
--- portail_inscrit_un_salarie, une fois ce code déployé. Bloc final : garder en dernier.
+-- fiche créée). Étape B : les politiques portail_lit_les_salaries et portail_inscrit_un_salarie sont
+-- supprimées (section 9). Bloc final : garder en dernier.
 -- ==============================================================================
 
 -- Liste du portail : nom et service des salariés actifs, jamais le token
