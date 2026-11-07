@@ -1689,3 +1689,153 @@ END;
 $$;
 REVOKE EXECUTE ON FUNCTION public.passer_commande(TEXT, UUID) FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION public.passer_commande(TEXT, UUID) TO authenticated;
+
+-- ==============================================================================
+-- v1.10 (T11) : une clôture confirmée fige ce qui sera facturé (audit base, H-1). La facture se calcule
+-- depuis commandes et menus_du_jour.prix_unitaire : avant, le RH (politiques FOR ALL) ou le restaurant
+-- pouvaient modifier après coup une clôture confirmée, ses commandes ou le prix des plats, et changer
+-- ainsi une facture passée. Seul le code de l'Espace RH l'empêchait, et seulement pour le jour même.
+-- Quatre triggers, limités aux clients JWT (current_user = 'authenticated') : le cron et la console
+-- SuperAdmin (service_role) gardent la main pour corriger, et passer_commande (SECURITY DEFINER) refuse
+-- déjà toute commande dès qu'une clôture existe. Erreur CP412, au message lisible par le RH.
+-- Bloc final : garder en dernier.
+-- ==============================================================================
+
+-- Vrai si le restaurant a confirmé sa clôture pour cette entreprise et ce jour
+CREATE OR REPLACE FUNCTION public.cloture_confirmee(p_company_id UUID, p_date DATE, p_restaurant_id UUID)
+RETURNS BOOLEAN
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public AS $$
+    -- Seulement pour l'entreprise de l'appelant : la fonction ne sert pas d'oracle sur les autres
+    SELECT p_restaurant_id IS NOT NULL AND p_company_id = public.jwt_company_id() AND EXISTS (
+        SELECT 1 FROM public.clotures cl
+        WHERE cl.company_id = p_company_id AND cl.date = p_date
+          AND cl.restaurant_id = p_restaurant_id AND cl.confirme_at IS NOT NULL
+    )
+$$;
+-- Appelée par les triggers ci-dessous avec le rôle du client JWT : authenticated doit pouvoir l'exécuter
+REVOKE EXECUTE ON FUNCTION public.cloture_confirmee(UUID, DATE, UUID) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.cloture_confirmee(UUID, DATE, UUID) TO authenticated;
+
+-- Restaurant d'un plat, lu sans la RLS : un plat invisible pour l'appelant ne doit pas faire sauter le contrôle
+CREATE OR REPLACE FUNCTION public.restaurant_du_plat(p_plat_id UUID)
+RETURNS UUID
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public AS $$
+    SELECT m.restaurant_id FROM public.menus_du_jour m
+    WHERE m.id = p_plat_id AND m.company_id = public.jwt_company_id()
+$$;
+REVOKE EXECUTE ON FUNCTION public.restaurant_du_plat(UUID) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.restaurant_du_plat(UUID) TO authenticated;
+
+-- 1. Clôture confirmée : ni suppression, ni modification, sauf le suivi d'envoi WhatsApp.
+--    Liste blanche : toute colonne ajoutée plus tard à clotures est figée après confirmation par défaut.
+CREATE OR REPLACE FUNCTION public.verrouiller_cloture_confirmee()
+RETURNS TRIGGER LANGUAGE plpgsql SET search_path = public AS $$
+BEGIN
+    IF current_user = 'authenticated' AND OLD.confirme_at IS NOT NULL THEN
+        IF TG_OP = 'DELETE' THEN
+            RAISE EXCEPTION 'Cette journée est confirmée par le restaurant : elle ne peut plus être supprimée.'
+                USING ERRCODE = 'CP412';
+        END IF;
+        IF (to_jsonb(NEW) - 'envoi_statut' - 'envoi_erreur' - 'envoye_at')
+           IS DISTINCT FROM (to_jsonb(OLD) - 'envoi_statut' - 'envoi_erreur' - 'envoye_at') THEN
+            RAISE EXCEPTION 'Cette journée est confirmée par le restaurant : elle ne peut plus être modifiée.'
+                USING ERRCODE = 'CP412';
+        END IF;
+    END IF;
+    RETURN CASE WHEN TG_OP = 'DELETE' THEN OLD ELSE NEW END;
+END;
+$$;
+DROP TRIGGER IF EXISTS trg_verrouiller_cloture_confirmee ON public.clotures;
+CREATE TRIGGER trg_verrouiller_cloture_confirmee
+    BEFORE UPDATE OR DELETE ON public.clotures
+    FOR EACH ROW EXECUTE FUNCTION public.verrouiller_cloture_confirmee();
+
+-- 2. Commandes : un jour passé ne se modifie plus, ni une commande d'un restaurant confirmé
+CREATE OR REPLACE FUNCTION public.verrouiller_commande_facturee()
+RETURNS TRIGGER LANGUAGE plpgsql SET search_path = public AS $$
+DECLARE
+    v_aujourdhui DATE := (now() AT TIME ZONE 'Africa/Dakar')::date;
+    v_resto UUID;
+BEGIN
+    IF current_user <> 'authenticated' THEN
+        RETURN CASE WHEN TG_OP = 'DELETE' THEN OLD ELSE NEW END;
+    END IF;
+
+    IF TG_OP IN ('UPDATE', 'DELETE') THEN
+        IF OLD.date < v_aujourdhui THEN
+            RAISE EXCEPTION 'Les commandes des jours passés ne se modifient plus.' USING ERRCODE = 'CP412';
+        END IF;
+        IF OLD.plat_id IS NOT NULL THEN
+            v_resto := public.restaurant_du_plat(OLD.plat_id);
+            IF public.cloture_confirmee(OLD.company_id, OLD.date, v_resto) THEN
+                RAISE EXCEPTION 'Ce restaurant a confirmé la commande du jour : elle ne peut plus être modifiée.'
+                    USING ERRCODE = 'CP412';
+            END IF;
+        END IF;
+    END IF;
+
+    IF TG_OP IN ('INSERT', 'UPDATE') THEN
+        IF NEW.date < v_aujourdhui THEN
+            RAISE EXCEPTION 'Les commandes des jours passés ne se modifient plus.' USING ERRCODE = 'CP412';
+        END IF;
+        IF NEW.plat_id IS NOT NULL THEN
+            v_resto := public.restaurant_du_plat(NEW.plat_id);
+            IF public.cloture_confirmee(NEW.company_id, NEW.date, v_resto) THEN
+                RAISE EXCEPTION 'Ce restaurant a confirmé la commande du jour : elle ne peut plus être modifiée.'
+                    USING ERRCODE = 'CP412';
+            END IF;
+        END IF;
+    END IF;
+
+    RETURN CASE WHEN TG_OP = 'DELETE' THEN OLD ELSE NEW END;
+END;
+$$;
+DROP TRIGGER IF EXISTS trg_verrouiller_commande_facturee ON public.commandes;
+CREATE TRIGGER trg_verrouiller_commande_facturee
+    BEFORE INSERT OR UPDATE OR DELETE ON public.commandes
+    FOR EACH ROW EXECUTE FUNCTION public.verrouiller_commande_facturee();
+
+-- 3. Plats : le prix, le titre, le restaurant et la date d'un plat d'une journée confirmée ne bougent
+--    plus, et le plat ne se supprime plus (la disponibilité reste modifiable : elle n'est pas facturée)
+CREATE OR REPLACE FUNCTION public.verrouiller_plat_facture()
+RETURNS TRIGGER LANGUAGE plpgsql SET search_path = public AS $$
+BEGIN
+    IF current_user = 'authenticated'
+       AND (public.cloture_confirmee(OLD.company_id, OLD.date, OLD.restaurant_id)
+            -- La destination compte aussi : un plat déplacé vers un restaurant déjà confirmé
+            -- ferait entrer ses repas dans une facture figée
+            OR (TG_OP = 'UPDATE' AND public.cloture_confirmee(NEW.company_id, NEW.date, NEW.restaurant_id)))
+       AND (TG_OP = 'DELETE'
+            OR NEW.prix_unitaire IS DISTINCT FROM OLD.prix_unitaire
+            OR NEW.titre IS DISTINCT FROM OLD.titre
+            OR NEW.restaurant_id IS DISTINCT FROM OLD.restaurant_id
+            OR NEW.date IS DISTINCT FROM OLD.date
+            OR NEW.company_id IS DISTINCT FROM OLD.company_id) THEN
+        RAISE EXCEPTION 'Ce restaurant a confirmé la commande du jour : ce plat ne peut plus être modifié.'
+            USING ERRCODE = 'CP412';
+    END IF;
+    RETURN CASE WHEN TG_OP = 'DELETE' THEN OLD ELSE NEW END;
+END;
+$$;
+DROP TRIGGER IF EXISTS trg_verrouiller_plat_facture ON public.menus_du_jour;
+CREATE TRIGGER trg_verrouiller_plat_facture
+    BEFORE UPDATE OR DELETE ON public.menus_du_jour
+    FOR EACH ROW EXECUTE FUNCTION public.verrouiller_plat_facture();
+
+-- 4. Salarié : la suppression effacerait ses commandes en cascade (la cascade s'exécute avec le rôle du
+--    propriétaire de la table et échappe au trigger des commandes). Un salarié qui a commandé se désactive.
+CREATE OR REPLACE FUNCTION public.verrouiller_suppression_salarie()
+RETURNS TRIGGER LANGUAGE plpgsql SET search_path = public AS $$
+BEGIN
+    IF current_user = 'authenticated'
+       AND EXISTS (SELECT 1 FROM public.commandes c WHERE c.employe_id = OLD.id) THEN
+        RAISE EXCEPTION 'Ce collaborateur a des commandes : désactivez-le plutôt que de le supprimer.'
+            USING ERRCODE = 'CP412';
+    END IF;
+    RETURN OLD;
+END;
+$$;
+DROP TRIGGER IF EXISTS trg_verrouiller_suppression_salarie ON public.employes;
+CREATE TRIGGER trg_verrouiller_suppression_salarie
+    BEFORE DELETE ON public.employes
+    FOR EACH ROW EXECUTE FUNCTION public.verrouiller_suppression_salarie();
