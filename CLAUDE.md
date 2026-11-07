@@ -95,7 +95,7 @@ Les actions de `src/app/resto/actions.ts` prennent une `CibleRestaurant` : `{ to
 - Messages au format `type: description en français` (`feat:`, `fix:`, `refactor:`, `style:`, `docs:`).
 - Ne jamais committer `.env.local`, ni `tsconfig.tsbuildinfo`.
 - Ne pas pousser sur `main` sans accord explicite : c'est un déploiement en production.
-- Ne jamais lire ni afficher le contenu de `.env.local`. Pour vérifier la config en production : `/api/diagnostic`.
+- Ne jamais lire ni afficher le contenu de `.env.local`. Pour vérifier la config en production : `/api/diagnostic` avec l'en-tête `x-diagnostic-secret` (valeur de `DIAGNOSTIC_SECRET`, que l'utilisateur fournit) ; sans lui la route répond 404. En local sans `DIAGNOSTIC_SECRET`, elle reste ouverte.
 
 ## Vérifier un changement
 
