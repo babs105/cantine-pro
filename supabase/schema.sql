@@ -293,7 +293,7 @@ CREATE TABLE IF NOT EXISTS public.comptes_restaurant (
     nom TEXT NOT NULL,
     telephone_whatsapp TEXT UNIQUE NOT NULL, -- Format E.164, sert aussi d'identifiant de connexion
     ville TEXT,
-    code_hash TEXT NOT NULL, -- sha256 hex du code d'accès
+    code_hash TEXT NOT NULL, -- bcrypt du sha256 du code d'accès (v1.10 T19)
     code_partenaire TEXT UNIQUE NOT NULL DEFAULT upper(encode(gen_random_bytes(4), 'hex')),
     is_active BOOLEAN NOT NULL DEFAULT true,
     created_at TIMESTAMPTZ DEFAULT timezone('utc'::text, now()) NOT NULL
@@ -501,7 +501,7 @@ CREATE INDEX IF NOT EXISTS idx_menus_restaurant ON public.menus_du_jour(restaura
 -- Étape B : companies.rh_code_hash est supprimée en fin de fichier, après recopie (bloc final v1.10).
 CREATE TABLE IF NOT EXISTS public.acces_rh (
     company_id UUID PRIMARY KEY REFERENCES public.companies(id) ON DELETE CASCADE,
-    code_hash TEXT NOT NULL, -- sha256 hex du code d'accès RH
+    code_hash TEXT NOT NULL, -- bcrypt du sha256 du code d'accès RH (v1.10 T19)
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 REVOKE ALL ON public.acces_rh FROM PUBLIC, anon, authenticated;
@@ -1148,14 +1148,8 @@ END $$;
 -- Le hash quitte définitivement companies (irréversible : la copie ci-dessus a lieu avant)
 ALTER TABLE public.companies DROP COLUMN IF EXISTS rh_code_hash;
 
--- Format du hash : sha256 hexadécimal en minuscules (un hash vide ouvrirait l'accès)
-DO $$
-BEGIN
-    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'acces_rh_code_hash_sha256') THEN
-        ALTER TABLE public.acces_rh
-            ADD CONSTRAINT acces_rh_code_hash_sha256 CHECK (code_hash ~ '^[0-9a-f]{64}$') NOT VALID;
-    END IF;
-END $$;
+-- Format du hash : la contrainte sha256 d'origine est remplacée par acces_rh_code_hash_bcrypt (v1.10 T19,
+-- bloc final). Elle n'est plus recréée ici : sa recréation à chaque relance verrouillait acces_rh.
 
 -- Connexion RH : même contrôle qu'en v1.9 (limite de tentatives, e-mail sans casse), hash lu dans acces_rh
 CREATE OR REPLACE FUNCTION public.echanger_acces_rh(p_identifiant TEXT, p_code_hash TEXT)
@@ -2075,3 +2069,257 @@ BEGIN
         EXECUTE 'ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE MAINTAIN ON TABLES FROM authenticated';
     END IF;
 END $$;
+
+-- ==============================================================================
+-- v1.10 (T19) : les codes d'accès RH et restaurant sont stockés en bcrypt salé (audit base, moyenne).
+-- Avant, acces_rh.code_hash et comptes_restaurant.code_hash gardaient le sha256 non salé du code, envoyé
+-- tel quel par le serveur à la connexion : quiconque lisait ces colonnes (sauvegarde, tableau de bord
+-- Supabase) se connectait sans casser le hash, et un code court se retrouvait hors ligne en quelques secondes.
+-- Le serveur Next.js ne change pas : il envoie toujours le sha256 du code ; la base le stocke en bcrypt.
+-- 1) code_correspond compare une empreinte reçue à une valeur stockée en bcrypt. Sans valeur stockée
+--    (identifiant inconnu), elle calcule un bcrypt leurre : même temps de réponse, pas d'oracle d'existence.
+-- 2) Un trigger convertit en bcrypt tout sha256 écrit dans ces colonnes (inscriptions, changements de code,
+--    saisie manuelle) : aucun appelant n'a à connaître bcrypt.
+-- 3) Migration unique des codes existants, triggers d'horodatage (T8) coupés : personne n'est déconnecté.
+-- 4) Contraintes : bcrypt seulement.
+-- 5) Les quatre fonctions de connexion et de changement de code comparent avec code_correspond.
+-- pgcrypto est dans le schéma extensions sur Supabase (public ailleurs) : d'où search_path = extensions, public.
+-- 6) Les connexions lisent la ligne par l'identifiant puis comparent une seule fois (un seul bcrypt par
+--    tentative), et un compteur par IP tous identifiants confondus borne le balayage d'identifiants.
+-- Bloc final : garder en dernier.
+-- ==============================================================================
+
+CREATE OR REPLACE FUNCTION public.code_correspond(p_stocke TEXT, p_fourni TEXT)
+RETURNS BOOLEAN
+LANGUAGE sql VOLATILE COST 10000 SET search_path = extensions, public AS $$
+    SELECT CASE
+        -- L'empreinte reçue est toujours un sha256 hexadécimal (hashRhCode côté serveur)
+        WHEN p_fourni IS NULL OR p_fourni !~ '^[0-9a-fA-F]{64}$' THEN false
+        -- Identifiant inconnu : bcrypt leurre, même coût qu'un vrai contrôle, résultat toujours faux
+        WHEN p_stocke IS NULL THEN crypt(lower(p_fourni), gen_salt('bf', 10)) IS NULL
+        WHEN p_stocke ~ '^\$2[aby]\$[0-9]{2}\$' THEN crypt(lower(p_fourni), p_stocke) = p_stocke
+        -- Plus de branche sha256 : une valeur stockée non bcrypt ne vaut jamais un code
+        ELSE false
+    END
+$$;
+REVOKE EXECUTE ON FUNCTION public.code_correspond(TEXT, TEXT) FROM PUBLIC, anon, authenticated;
+
+-- Tout sha256 écrit dans code_hash devient un bcrypt (coût 10)
+CREATE OR REPLACE FUNCTION public.hacher_code_bcrypt()
+RETURNS TRIGGER LANGUAGE plpgsql SET search_path = extensions, public AS $$
+BEGIN
+    IF NEW.code_hash ~ '^[0-9a-fA-F]{64}$' THEN
+        NEW.code_hash := crypt(lower(NEW.code_hash), gen_salt('bf', 10));
+    END IF;
+    RETURN NEW;
+END;
+$$;
+DROP TRIGGER IF EXISTS trg_hacher_code_bcrypt ON public.acces_rh;
+CREATE TRIGGER trg_hacher_code_bcrypt
+    BEFORE INSERT OR UPDATE OF code_hash ON public.acces_rh
+    FOR EACH ROW EXECUTE FUNCTION public.hacher_code_bcrypt();
+DROP TRIGGER IF EXISTS trg_hacher_code_bcrypt ON public.comptes_restaurant;
+CREATE TRIGGER trg_hacher_code_bcrypt
+    BEFORE INSERT OR UPDATE OF code_hash ON public.comptes_restaurant
+    FOR EACH ROW EXECUTE FUNCTION public.hacher_code_bcrypt();
+
+-- Migration unique des codes existants. Les triggers d'horodatage sont coupés le temps de la conversion :
+-- le code ne change pas, les sessions ouvertes (T8) restent valides.
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM public.schema_migrations WHERE nom = 'v1.10-codes-bcrypt') THEN
+        -- is_local : vaut jusqu'à la fin de la transaction (tout le script) ; la suite qualifie tout en public.
+        PERFORM set_config('search_path', 'extensions, public', true);
+        ALTER TABLE public.acces_rh DISABLE TRIGGER trg_horodater_changement_code_rh;
+        UPDATE public.acces_rh SET code_hash = crypt(lower(code_hash), gen_salt('bf', 10))
+        WHERE code_hash ~ '^[0-9a-fA-F]{64}$';
+        ALTER TABLE public.acces_rh ENABLE TRIGGER trg_horodater_changement_code_rh;
+
+        ALTER TABLE public.comptes_restaurant DISABLE TRIGGER trg_horodater_changement_code_compte;
+        UPDATE public.comptes_restaurant SET code_hash = crypt(lower(code_hash), gen_salt('bf', 10))
+        WHERE code_hash ~ '^[0-9a-fA-F]{64}$';
+        ALTER TABLE public.comptes_restaurant ENABLE TRIGGER trg_horodater_changement_code_compte;
+
+        INSERT INTO public.schema_migrations (nom) VALUES ('v1.10-codes-bcrypt');
+    END IF;
+END $$;
+
+-- Format stocké : bcrypt seulement (le trigger convertit tout sha256 avant ce contrôle)
+ALTER TABLE public.acces_rh DROP CONSTRAINT IF EXISTS acces_rh_code_hash_sha256;
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'acces_rh_code_hash_bcrypt') THEN
+        ALTER TABLE public.acces_rh
+            ADD CONSTRAINT acces_rh_code_hash_bcrypt CHECK (code_hash ~ '^\$2[aby]\$[0-9]{2}\$.{53}$');
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'comptes_restaurant_code_hash_bcrypt') THEN
+        ALTER TABLE public.comptes_restaurant
+            ADD CONSTRAINT comptes_restaurant_code_hash_bcrypt CHECK (code_hash ~ '^\$2[aby]\$[0-9]{2}\$.{53}$');
+    END IF;
+END $$;
+
+-- Connexion RH (version T13, comparaison par code_correspond)
+CREATE OR REPLACE FUNCTION public.echanger_acces_rh(p_identifiant TEXT, p_code_hash TEXT, p_ip TEXT DEFAULT NULL)
+RETURNS UUID
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = public AS $$
+DECLARE
+    v_ident TEXT := lower(trim(coalesce(p_identifiant, '')));
+    v_cle TEXT := 'rh:' || left(v_ident, 100);
+    -- L'IP en tête : elle ne peut pas contenir « | », alors que l'identifiant est saisi librement
+    -- L'IP n'est crue que si l'appel vient du serveur Next.js (JWT « connexion ») ; un appel direct avec
+    -- la clé anon tombe dans le compteur partagé « inconnue », à 5 échecs
+    v_ip TEXT := public.ip_pour_cle(CASE WHEN public.jwt_role_app() = 'connexion' THEN p_ip END);
+    v_cle_ip TEXT := 'rhip:' || v_ip || '|' || left(v_ident, 100);
+    -- T19 : compteur par IP tous identifiants confondus (borne le balayage d'e-mails), seulement pour une IP
+    -- crue : la clé partagée « inconnue » bloquerait tous les appels anon d'un coup
+    v_cle_glob TEXT := CASE WHEN v_ip <> 'inconnue' THEN 'rhipglob:' || v_ip END;
+    v_id UUID;
+    v_stocke TEXT;
+BEGIN
+    PERFORM pg_advisory_xact_lock(hashtextextended(v_cle, 0));
+    PERFORM public.controler_tentatives(v_cle);
+    PERFORM public.controler_tentatives(v_cle_ip);
+    IF v_cle_glob IS NOT NULL THEN
+        PERFORM public.controler_tentatives(v_cle_glob);
+    END IF;
+
+    -- T19 : la ligne d'abord, la comparaison ensuite : un seul bcrypt par tentative
+    SELECT c.id, a.code_hash INTO v_id, v_stocke
+    FROM public.companies c
+    JOIN public.acces_rh a ON a.company_id = c.id
+    WHERE CASE WHEN position('@' IN v_ident) > 0
+               THEN lower(c.email_contact) = v_ident
+               ELSE c.slug = v_ident END
+      AND c.is_active
+    LIMIT 1;
+    -- Identifiant inconnu (v_stocke NULL) : bcrypt leurre, même temps de réponse
+    IF NOT public.code_correspond(v_stocke, p_code_hash) THEN
+        v_id := NULL;
+    END IF;
+
+    IF v_id IS NULL THEN
+        IF v_cle_glob IS NOT NULL THEN
+            PERFORM public.noter_echec_plafonne(v_cle_glob, 30);
+        END IF;
+        PERFORM public.noter_echec_plafonne(v_cle_ip, 5);
+        PERFORM public.noter_echec_plafonne(v_cle, 30);
+    ELSE
+        PERFORM public.effacer_tentatives(v_cle_ip);
+    END IF;
+    RETURN v_id;
+END;
+$$;
+REVOKE EXECUTE ON FUNCTION public.echanger_acces_rh(TEXT, TEXT, TEXT) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.echanger_acces_rh(TEXT, TEXT, TEXT) TO anon, authenticated, service_role;
+
+-- Connexion d'un compte restaurant (version T13, comparaison par code_correspond)
+CREATE OR REPLACE FUNCTION public.echanger_acces_compte_restaurant(p_telephone TEXT, p_code_hash TEXT, p_ip TEXT DEFAULT NULL)
+RETURNS UUID
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = public AS $$
+DECLARE
+    v_cle TEXT := 'resto:' || left(trim(coalesce(p_telephone, '')), 50);
+    v_ip TEXT := public.ip_pour_cle(CASE WHEN public.jwt_role_app() = 'connexion' THEN p_ip END);
+    v_cle_ip TEXT := 'restoip:' || v_ip || '|' || left(trim(coalesce(p_telephone, '')), 50);
+    -- T19 : compteur par IP tous téléphones confondus, seulement pour une IP crue (voir echanger_acces_rh)
+    v_cle_glob TEXT := CASE WHEN v_ip <> 'inconnue' THEN 'restoipglob:' || v_ip END;
+    v_id UUID;
+    v_stocke TEXT;
+BEGIN
+    PERFORM pg_advisory_xact_lock(hashtextextended(v_cle, 0));
+    PERFORM public.controler_tentatives(v_cle);
+    PERFORM public.controler_tentatives(v_cle_ip);
+    IF v_cle_glob IS NOT NULL THEN
+        PERFORM public.controler_tentatives(v_cle_glob);
+    END IF;
+
+    SELECT c.id, c.code_hash INTO v_id, v_stocke FROM public.comptes_restaurant c
+    WHERE c.telephone_whatsapp = p_telephone
+      AND c.is_active
+    LIMIT 1;
+    IF NOT public.code_correspond(v_stocke, p_code_hash) THEN
+        v_id := NULL;
+    END IF;
+
+    IF v_id IS NULL THEN
+        IF v_cle_glob IS NOT NULL THEN
+            PERFORM public.noter_echec_plafonne(v_cle_glob, 30);
+        END IF;
+        PERFORM public.noter_echec_plafonne(v_cle_ip, 5);
+        PERFORM public.noter_echec_plafonne(v_cle, 30);
+    ELSE
+        PERFORM public.effacer_tentatives(v_cle_ip);
+    END IF;
+    RETURN v_id;
+END;
+$$;
+REVOKE EXECUTE ON FUNCTION public.echanger_acces_compte_restaurant(TEXT, TEXT, TEXT) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.echanger_acces_compte_restaurant(TEXT, TEXT, TEXT) TO anon, authenticated, service_role;
+
+-- Changement du code RH (version T1, comparaison par code_correspond ; le trigger stocke le nouveau en bcrypt)
+CREATE OR REPLACE FUNCTION public.changer_code_rh(p_ancien_hash TEXT, p_nouveau_hash TEXT)
+RETURNS BOOLEAN
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = public AS $$
+DECLARE
+    v_company UUID := public.jwt_company_id();
+    v_cle TEXT;
+BEGIN
+    IF public.jwt_role_app() IS DISTINCT FROM 'rh' OR v_company IS NULL THEN
+        RAISE EXCEPTION 'Accès refusé';
+    END IF;
+    IF p_nouveau_hash IS NULL OR p_nouveau_hash !~ '^[0-9a-f]{64}$' THEN
+        RAISE EXCEPTION 'Nouveau code invalide';
+    END IF;
+
+    v_cle := 'changecode:' || v_company::text;
+    PERFORM pg_advisory_xact_lock(hashtextextended(v_cle, 0));
+    PERFORM public.controler_tentatives(v_cle);
+
+    IF NOT EXISTS (SELECT 1 FROM public.acces_rh
+                   WHERE company_id = v_company AND public.code_correspond(code_hash, p_ancien_hash)) THEN
+        PERFORM public.noter_echec_connexion(v_cle);
+        RETURN false;
+    END IF;
+    PERFORM public.effacer_tentatives(v_cle);
+
+    UPDATE public.acces_rh SET code_hash = p_nouveau_hash, updated_at = now() WHERE company_id = v_company;
+    RETURN true;
+END;
+$$;
+REVOKE EXECUTE ON FUNCTION public.changer_code_rh(TEXT, TEXT) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.changer_code_rh(TEXT, TEXT) TO authenticated;
+
+-- Changement du code d'un compte restaurant (version T7, idem)
+CREATE OR REPLACE FUNCTION public.changer_code_compte_restaurant(p_ancien_hash TEXT, p_nouveau_hash TEXT)
+RETURNS BOOLEAN
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = public AS $$
+DECLARE
+    v_compte UUID := public.jwt_compte_id();
+    v_cle TEXT;
+BEGIN
+    IF public.jwt_role_app() IS DISTINCT FROM 'compte_restaurant' OR v_compte IS NULL THEN
+        RAISE EXCEPTION 'Accès refusé';
+    END IF;
+    IF p_nouveau_hash IS NULL OR p_nouveau_hash !~ '^[0-9a-f]{64}$' THEN
+        RAISE EXCEPTION 'Nouveau code invalide';
+    END IF;
+
+    v_cle := 'changecode-resto:' || v_compte::text;
+    PERFORM pg_advisory_xact_lock(hashtextextended(v_cle, 0));
+    PERFORM public.controler_tentatives(v_cle);
+
+    IF NOT EXISTS (SELECT 1 FROM public.comptes_restaurant
+                   WHERE id = v_compte AND is_active
+                     AND public.code_correspond(code_hash, p_ancien_hash)) THEN
+        PERFORM public.noter_echec_connexion(v_cle);
+        RETURN false;
+    END IF;
+    PERFORM public.effacer_tentatives(v_cle);
+
+    UPDATE public.comptes_restaurant
+    SET code_hash = p_nouveau_hash, code_change_at = now()
+    WHERE id = v_compte;
+    RETURN true;
+END;
+$$;
+REVOKE EXECUTE ON FUNCTION public.changer_code_compte_restaurant(TEXT, TEXT) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.changer_code_compte_restaurant(TEXT, TEXT) TO authenticated;

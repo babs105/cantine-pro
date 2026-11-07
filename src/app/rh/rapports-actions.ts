@@ -295,6 +295,7 @@ export async function changerCodeRhAction(
   // Une Server Action peut être appelée avec n'importe quoi : types et longueurs vérifiés ici
   if (typeof ancien !== "string" || typeof nouveau !== "string") return { success: false, message: "Requête invalide." };
   if (!ancien.trim()) return { success: false, message: "Saisissez votre code actuel." };
+  if (ancien.length > 200) return { success: false, message: "Code actuel incorrect." };
   if (nouveau.trim().length < 8) return { success: false, message: "Le nouveau code doit contenir au moins 8 caractères." };
   if (nouveau.length > 200) return { success: false, message: "Le nouveau code est trop long (200 caractères maximum)." };
 
