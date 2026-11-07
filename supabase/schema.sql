@@ -2053,3 +2053,25 @@ END;
 $$;
 REVOKE EXECUTE ON FUNCTION public.limiter_inscription(TEXT, TEXT) FROM PUBLIC, anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.limiter_inscription(TEXT, TEXT) TO service_role;
+
+-- ==============================================================================
+-- v1.10 (T18) : authenticated (tous les JWT signés par le serveur) ne garde que SELECT, INSERT, UPDATE et
+-- DELETE sur les tables, filtrés par la RLS. Supabase lui accorde par défaut aussi TRUNCATE, REFERENCES et
+-- TRIGGER : TRUNCATE vide une table sans passer par la RLS, REFERENCES et TRIGGER ne servent qu'à créer
+-- des contraintes ou des triggers. Aucun code ne s'en sert (PostgREST n'expose pas TRUNCATE ; les clés
+-- étrangères se vérifient sans REFERENCES). anon n'a déjà plus aucun droit sur les tables (section 9).
+-- Depuis PostgreSQL 17, MAINTAIN (VACUUM, REINDEX, LOCK TABLE dans tous les modes) est retiré aussi.
+-- Les droits par défaut couvrent les tables créées plus tard par le rôle qui lance ce script (postgres dans
+-- l'éditeur SQL) ; une table créée par supabase_admin ne l'est pas, mais la première ligne la rattrape à chaque relance.
+-- Bloc final : garder en dernier.
+-- ==============================================================================
+REVOKE TRUNCATE, REFERENCES, TRIGGER ON ALL TABLES IN SCHEMA public FROM authenticated;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE TRUNCATE, REFERENCES, TRIGGER ON TABLES FROM authenticated;
+DO $$
+BEGIN
+    -- Le mot-clé MAINTAIN n'existe qu'à partir de PostgreSQL 17
+    IF current_setting('server_version_num')::int >= 170000 THEN
+        EXECUTE 'REVOKE MAINTAIN ON ALL TABLES IN SCHEMA public FROM authenticated';
+        EXECUTE 'ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE MAINTAIN ON TABLES FROM authenticated';
+    END IF;
+END $$;
