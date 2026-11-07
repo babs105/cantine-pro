@@ -56,7 +56,8 @@ par un rôle qui n'en a pas besoin. Deux moyens, selon le secret :
 - **Token que le RH doit lire** (`employes.token`, `restaurants.token`, envoyés
   par WhatsApp) : il reste dans sa table ; on retire aux autres rôles leur
   policy SELECT trop large et on la remplace par une fonction `SECURITY DEFINER`
-  à colonnes fixes (v1.10 T2 portail, T3 salarié, à faire). Pas de tables
+  à colonnes fixes (v1.10 T2 portail : fait, `portail_lister_salaries` et
+  `portail_inscrire_salarie` ; T3 salarié : à faire). Pas de tables
   `*_secrets` pour ces tokens : décision du plan v1.10.
 
 ---
@@ -90,8 +91,8 @@ toutes les colonnes de la ligne. Tout champ dont le nom matche `token`,
 `hash`, `secret`, `code_`, `key` ou `password` doit être dans une table
 à part **sans policy SELECT**, ou n'être lisible que par les rôles qui en ont
 besoin (voir « Cible » plus haut : `companies.rh_code_hash` est supprimée depuis
-la v1.10 T1 ; `employes.token` et `restaurants.token` restent exposés au portail
-et au salarié jusqu'à T2 et T3). Toute **nouvelle** colonne secrète ajoutée à une
+la v1.10 T1 ; `employes.token` n'est plus lisible par le portail depuis la v1.10
+T2 ; `restaurants.token` reste exposé au salarié jusqu'à T3). Toute **nouvelle** colonne secrète ajoutée à une
 table qui a une policy SELECT ouverte à un autre rôle est bloquante.
 
 ```bash
@@ -532,15 +533,15 @@ Le skill est correctement calibré si, en le chargeant sur le `schema.sql` v1.10
 actuel, l'agent trouve **au minimum** :
 
 1. ✅ `salarie_lit_les_restaurants` → token exposé (C3) — **toujours présent**
-2. ✅ `portail_lit_les_salaries` → token exposé (C3) — **toujours présent**
+2. ✅ `portail_lit_les_salaries` / `portail_inscrit_un_salarie` → **supprimées en v1.10 T2** (DROP en section 9, portail via `portail_lister_salaries` sans token) : vérifier l'absence de `CREATE POLICY portail_` sur `employes`
 3. ✅ `rh_lit_son_entreprise` → `rh_code_hash` → **corrigé en v1.10 T1** (colonne supprimée, `acces_rh` sans policy) : ne plus le signaler
 4. ✅ `noter_echec_connexion` → `FOR UPDATE` dans sous-requête `IN` → **pas un bug** (voir C13) : ne pas le signaler
 5. ✅ `acces_rh` présente sans policy, `REVOKE ALL` pour anon et authenticated (C3, v1.10 T1) — **à valider**
 6. ✅ Rate limiting `rattacher_compte_restaurant` → bien implémenté (C11) — **à valider, pas à corriger**
 7. ✅ `tentatives_connexion` sans policy → `REVOKE ALL` présent (C12) — **à valider**
 
-Points 1, 2 → findings à corriger (v1.10 T2 et T3).
-Points 3, 4, 5, 6, 7 → corrects, à mentionner dans « ✅ Ce qui est bon ».
+Point 1 → finding à corriger (v1.10 T3).
+Points 2, 3, 4, 5, 6, 7 → corrects, à mentionner dans « ✅ Ce qui est bon ».
 
 S'il rate l'un de ces 7, renforcer la section correspondante.
 
