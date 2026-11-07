@@ -1,5 +1,6 @@
 import { redirect } from "next/navigation";
 import { createClientAvecClaims, createClientCompteSession } from "@/lib/supabase/server";
+import { lireEntrepriseVisible } from "@/lib/entreprise-visible";
 import { todayDakar } from "@/lib/config";
 import { getCommandesDuJour } from "@/lib/cloture";
 import { periodeMois } from "@/lib/facturation";
@@ -49,7 +50,8 @@ export default async function EspaceRestaurantPage({ searchParams }: PageProps) 
     ((rawPartenariats as any[]) || []).map(async (p): Promise<EntrepriseResto> => {
       const client = createClientAvecClaims({ role_app: "restaurant", company_id: p.company_id, restaurant_id: p.id });
       const [{ data: comp }, { data: cloture }, { data: carte }, { data: historique }, { data: menus }] = await Promise.all([
-        client.from("companies").select("nom, heure_ouverture_vote, heure_limite_vote, jours_travail").eq("id", p.company_id).maybeSingle(),
+        // v1.10 (T14) : entreprise_visible, plus la table companies
+        lireEntrepriseVisible(client).then((data) => ({ data })),
         client
           .from("clotures")
           .select("recap, confirme_at, confirme_par")
@@ -103,7 +105,8 @@ export default async function EspaceRestaurantPage({ searchParams }: PageProps) 
         carte: ((carte as PlatCarte[] | null) || []),
         joursTravail: normaliserJoursTravail((comp as any)?.jours_travail),
         // Le menu du jour reste modifiable avant l'heure limite et tant que la journée n'est pas clôturée
-        aujourdhuiModifiable: !cl && !isApresHeureLimite((comp as any)?.heure_limite_vote || "11:10:00"),
+        // Heure limite inconnue (fiche entreprise indisponible) : non modifiable plutôt que supposer 11h10
+        aujourdhuiModifiable: !!comp && !cl && !isApresHeureLimite(comp.heure_limite_vote),
         menusSemaine: ((menus as PlatMenuResto[] | null) || []),
         historique: ((historique as any[]) || []).map((h) => ({
           date: h.date,

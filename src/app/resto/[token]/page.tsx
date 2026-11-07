@@ -3,6 +3,7 @@ import Link from "next/link";
 import { Utensils, MapPin, ShieldCheck, Store } from "lucide-react";
 import { getRestoCompteId } from "@/lib/resto-session";
 import { echangerJetonRestaurant } from "@/lib/supabase/server";
+import { lireEntrepriseVisible } from "@/lib/entreprise-visible";
 import { todayDakar } from "@/lib/config";
 import { formatDateLongue, getCommandesDuJour } from "@/lib/cloture";
 import { buildRecap, formatHeure } from "@/lib/recap";
@@ -31,7 +32,7 @@ export default async function TraiteurValidationPage({ params }: RestoPageProps)
 
   const { data: rawResto } = await supabase
     .from("restaurants")
-    .select("id, nom, heure_livraison, company_id, compte_id, companies(nom, heure_limite_vote)")
+    .select("id, nom, heure_livraison, company_id, compte_id")
     .eq("id", acces.restaurantId)
     .maybeSingle();
 
@@ -41,7 +42,9 @@ export default async function TraiteurValidationPage({ params }: RestoPageProps)
   }
 
   const traiteurNom: string = resto.nom;
-  const companyNom: string = resto.companies?.nom || "Entreprise";
+  // v1.10 (T14) : nom et heure limite de l'entreprise par entreprise_visible, plus par la table companies
+  const entreprise = await lireEntrepriseVisible(supabase);
+  const companyNom: string = entreprise?.nom || "Entreprise";
   const heureLivraison: string | null = resto.heure_livraison;
   let recap: Array<{ plat_titre: string; quantite: number; prix_unitaire: number }>;
   let isCloture: boolean;
@@ -150,7 +153,7 @@ export default async function TraiteurValidationPage({ params }: RestoPageProps)
           </div>
           <ConfirmButton
             cible={{ token }}
-            heureLimite={resto.companies?.heure_limite_vote}
+            heureLimite={entreprise?.heure_limite_vote}
             totalRepas={totalPlats}
             confirmeAt={confirmeAt}
             confirmeParRh={confirmeParRh}

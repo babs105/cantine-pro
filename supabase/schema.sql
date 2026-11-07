@@ -1994,3 +1994,25 @@ END;
 $$;
 REVOKE EXECUTE ON FUNCTION public.tentative_connexion_admin(BOOLEAN, TEXT) FROM PUBLIC, anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.tentative_connexion_admin(BOOLEAN, TEXT) TO service_role;
+
+-- ==============================================================================
+-- v1.10 (T14, étape A) : le salarié et le restaurant ne lisent plus toute la fiche entreprise (audit
+-- base, H-3). La politique rh_lit_son_entreprise leur donnait toutes les colonnes de companies (e-mail et
+-- téléphone du responsable, offre, abonnement, colonnes mortes traiteur_*) alors que leurs pages
+-- n'utilisent que le nom, les heures de commande et les jours de travail.
+-- Fonction à colonnes fixes, limitée à l'entreprise du JWT ; pour un autre rôle elle ne renvoie rien.
+-- Étape B (après le déploiement du code qui l'appelle, et vérification en production des pages salarié et
+-- restaurant) : redéfinir rh_lit_son_entreprise avec jwt_role_app() = 'rh', en fin de fichier (elle est
+-- redéfinie plusieurs fois plus haut). Ensuite, ne plus revenir à un ancien build sans revenir sur la politique.
+-- Bloc final : garder en dernier.
+-- ==============================================================================
+CREATE OR REPLACE FUNCTION public.entreprise_visible()
+RETURNS TABLE (nom TEXT, heure_ouverture_vote TIME, heure_limite_vote TIME, jours_travail SMALLINT[])
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public AS $$
+    SELECT c.nom, c.heure_ouverture_vote, c.heure_limite_vote, c.jours_travail
+    FROM public.companies c
+    WHERE c.id = public.jwt_company_id()
+      AND public.jwt_role_app() IN ('salarie', 'restaurant')
+$$;
+REVOKE EXECUTE ON FUNCTION public.entreprise_visible() FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.entreprise_visible() TO authenticated;

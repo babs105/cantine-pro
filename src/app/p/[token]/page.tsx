@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { echangerJetonSalarie } from "@/lib/supabase/server";
+import { lireEntrepriseVisible } from "@/lib/entreprise-visible";
 import { VoteClient } from "./vote-client";
 import { notFound } from "next/navigation";
 import { NOMS_JOURS, jourIso, normaliserJoursTravail } from "@/lib/dates";
@@ -99,7 +100,7 @@ export default async function EmployeVotePage({ params }: PageProps) {
 
   const { data: rawEmp, error: empError } = await supabase
     .from("employes")
-    .select("id, nom, company_id, companies(nom, heure_ouverture_vote, heure_limite_vote, jours_travail)")
+    .select("id, nom, company_id")
     .eq("id", acces.employeId)
     .single();
 
@@ -110,11 +111,20 @@ export default async function EmployeVotePage({ params }: PageProps) {
   }
 
   const employeNom = employe.nom;
-  const comp: any = employe.companies;
-  const companyNom = comp?.nom || "Entreprise Pilote";
-  const heureLimite = comp?.heure_limite_vote || "11:10:00";
-  const heureOuverture = comp?.heure_ouverture_vote || "08:00:00";
-  const joursTravail = normaliserJoursTravail(comp?.jours_travail);
+  // v1.10 (T14) : nom et heures de l'entreprise par entreprise_visible, plus par la table companies
+  const comp = await lireEntrepriseVisible(supabase);
+  // Fiche entreprise indisponible : pas d'heures inventées (le salarié croirait pouvoir commander)
+  if (!comp) {
+    return (
+      <div className="min-h-screen flex items-center justify-center p-6 text-center text-sm text-neutral-600">
+        Service momentanément indisponible. Réessayez dans un instant.
+      </div>
+    );
+  }
+  const companyNom = comp.nom;
+  const heureLimite = comp.heure_limite_vote;
+  const heureOuverture = comp.heure_ouverture_vote;
+  const joursTravail = normaliserJoursTravail(comp.jours_travail);
 
   const todayDate = todayDakar();
 
