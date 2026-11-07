@@ -9,7 +9,7 @@ description: >
   .rpc() / .from() sur companies, employes, restaurants, comptes_restaurant,
   clotures ou paiements.
 tools: Read, Grep, Glob
-model: sonnet
+model: opus
 ---
 
 # database-reviewer — Gardien Postgres de Cantine Pro

@@ -108,9 +108,11 @@ Un bloc final à ajouter à `supabase/schema.sql`, puis une relance :
 
 ## Décisions prises (2026-11-07)
 
-- **Rotation des codes après T19 : non forcée.** Les sauvegardes antérieures à T19 contiennent les sha256 non salés.
-  Noter ici la date d'expiration de la dernière d'entre elles : ______. En cas d'accès suspect connu, forcer le
-  changement des codes RH et restaurant (SuperAdmin).
+- **Rotation des codes après T19 : non forcée.** Offre Supabase Free : aucune sauvegarde automatique conservée,
+  donc aucune copie Supabase des sha256 non salés ne subsiste après la relance T19 du 2026-11-07. Restent à
+  considérer : les exports ou dumps faits à la main avant cette date (à supprimer) et les accès passés au tableau
+  de bord. En cas d'accès suspect connu, forcer le changement des codes RH et restaurant (SuperAdmin).
+  À revoir si le projet passe sur une offre payante avec sauvegardes : elles ne contiendront que du bcrypt.
 - **Codes restaurant : 8 caractères minimum** (T21), comme le RH. Concerne les nouvelles inscriptions et les
   changements de code ; les codes existants restent valides.
 - **Plafond global par IP de T19 : 50 échecs / 15 min** pendant le pilote, à réévaluer d'après

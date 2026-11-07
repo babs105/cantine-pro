@@ -2,58 +2,12 @@
 
 ## Le cycle de livraison (non négociable)
 
-**1 tranche = 1 agent dev = 1 rapport = N reviews = 1 merge. Puis on recommence.**
+**1 tranche = 1 branche de slice = 1 agent dev = 1 rapport = N reviews
+= 1 merge vers la branche de feature.**
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│  HUMAIN                                                     │
-│  @agent-architect planifie <feature>                        │
-└────────────────────────┬────────────────────────────────────┘
-                         ↓
-              Plan avec tranches T1, T2, T3…
-              (verticales, chacune livrable end-to-end)
-                         ↓
-┌─────────────────────────────────────────────────────────────┐
-│  HUMAIN                                                     │
-│  Valide le plan : scope strict, tranches verticales,        │
-│  reviews nommées ("sur la table commandes", pas "sur le     │
-│  schéma"). Si mauvais → relance architect.                  │
-└────────────────────────┬────────────────────────────────────┘
-                         ↓
-┌─────────────────────────────────────────────────────────────┐
-│  HUMAIN                                                     │
-│  Copie UNIQUEMENT le texte de T1 depuis le plan.            │
-│  @agent-dev-<feature> implémente T1                         │
-│  (ne pas donner T2, T3… au dev)                             │
-└────────────────────────┬────────────────────────────────────┘
-                         ↓
-              Rapport dev :
-              - fichiers modifiés
-              - code produit
-              - reviews à déclencher (avec scope nommé)
-              - tests manuels
-              - hors scope identifié
-                         ↓
-┌─────────────────────────────────────────────────────────────┐
-│  HUMAIN                                                     │
-│  @agent-database-reviewer sur <scope nommé de T1>           │
-│  @agent-security-reviewer sur <scope nommé de T1>           │
-└────────────────────────┬────────────────────────────────────┘
-                         ↓
-              Verdicts : BLOQUANT | À CORRIGER | APPROUVÉ
-                         ↓
-              Si BLOQUANT → retour dev (même tranche, pas T2)
-              Si APPROUVÉ → ↓
-┌─────────────────────────────────────────────────────────────┐
-│  HUMAIN                                                     │
-│  npx tsc --noEmit (le hook le fait déjà)                    │
-│  Tests manuels de la tranche                                │
-│  Preview cantine-pro (port 3124)                            │
-│  Merge                                                      │
-└────────────────────────┬────────────────────────────────────┘
-                         ↓
-                   Recommence à T2
-```
+**1 feature = N tranches = 1 merge vers `main` (donc 1 déploiement prod).**
+
+
 
 ## Règles
 
@@ -65,6 +19,16 @@
   "T2 serveur", "T3 UI".
 - Chaque review a un **scope nommé** : "sur la table `commandes`", "sur
   l'action `submitVoteAction`". Jamais "sur le schéma" ou "sur le front".
+
+### Sur les branches
+- **Branche de feature** : `feat/<nom>` (ex: `feat/changer-avis`), créée
+  depuis `main` à jour au démarrage de la feature. Vit jusqu'à la fin de
+  la feature.
+- **Branche de slice** : `feat/<feature>-tN` (ex: `feat/changer-avis-t1`),
+  créée depuis la branche de feature pour chaque tranche.
+- **Jamais** de commit direct sur `main` pour une feature multi-tranches.
+- **Jamais** de merge vers `main` par tranche. Le merge vers `main` se fait
+  **une seule fois**, à la fin de la feature.
 
 ### Sur le dev
 - Le dev reçoit **une seule tranche** à la fois. Le texte exact copié depuis
@@ -87,12 +51,19 @@
   une page de login ou d'inscription, ou un nouveau flow d'auth. Il n'y a
   pas de `middleware.ts` : chaque fichier vérifie sa propre session.
 - Un verdict `BLOQUANT` renvoie au dev sur la même tranche. On ne passe
-  pas à T2.
+  pas à T(n+1).
 
 ### Sur le merge
+- **Merge tranche → branche de feature** : dès que la tranche est
+  approuvée (reviews + tests sur la preview de la branche de slice).
+  Automatique, sans cérémonie.
+- **Merge branche de feature → `main`** : **manuel**, une seule fois,
+  après validation humaine de l'ensemble de la feature sur la preview
+  Vercel de `feat/<feature>`. C'est ce merge qui déclenche le déploiement
+  en production.
 - Jamais de merge sans les reviews du scope nommé.
 - Jamais de merge sans `npx tsc --noEmit` (le hook le fait, mais vérifier).
-- Jamais de push sur `main` sans accord explicite (règle du `CLAUDE.md`).
+- Jamais de `git push` sur `main` par un agent.
 - Pas de tests automatisés dans le projet (règle du `CLAUDE.md`) : les
   tests sont manuels, listés dans le rapport du dev.
 
@@ -134,12 +105,13 @@ Le `WORKFLOW.md` ne remplace pas `CLAUDE.md`. Il le complète :
 En cas de conflit, `CLAUDE.md` gagne. Si le `WORKFLOW.md` contredit
 `CLAUDE.md`, corriger le `WORKFLOW.md`.
 
-## Les 5 pièges à éviter
+## Les 6 pièges à éviter
 
 1. **Donner le plan entier au dev.** Il code tout d'un coup, tu perds le
    contrôle, tu ne sais plus quelle tranche a cassé quoi.
-2. **Passer à T2 sans avoir mergé T1.** Les dépendances entre tranches
-   (T2 lit souvent ce que T1 a écrit) deviennent floues.
+2. **Passer à T(n+1) sans avoir mergé Tn dans la branche de feature.**
+   Les dépendances entre tranches (T(n+1) lit souvent ce que Tn a écrit)
+   deviennent floues.
 3. **Merger sans les reviews.** Surtout sur `commandes`, `clotures`,
    `comptes_restaurant`. Une policy `USING(true)` non vue = fuite en prod.
 4. **Review générique.** "database-reviewer, regarde le schéma" → il va
@@ -148,22 +120,88 @@ En cas de conflit, `CLAUDE.md` gagne. Si le `WORKFLOW.md` contredit
 5. **Laisser le dev déclencher les reviews.** Si le dev appelle
    `database-reviewer` lui-même, tu ne vois pas le rapport intermédiaire,
    tu ne peux pas arbitrer, et tu perds la main.
+6. **Merger chaque tranche vers `main`.** Si une feature a 3 tranches et
+   que chacune va en prod, la prod change 3 fois pour 1 feature. Pire : si
+   T1 est un bouton et T2 l'action derrière, T1 en prod = bouton qui ne
+   fait rien. **Une feature = un seul merge vers `main`.**
 
 ## Checklist avant de lancer un dev
 
 - [ ] Le plan de l'architect est validé (scope strict, tranches verticales,
       scopes de review nommés)
-- [ ] Je copie **une seule tranche** (T1) dans le prompt du dev
-- [ ] Je précise : "Ne touche à rien d'autre. Ne traite pas T2 ni T3."
+- [ ] La branche de feature `feat/<feature>` existe (créée depuis `main` à jour)
+- [ ] La branche de slice `feat/<feature>-tN` existe (créée depuis la feature)
+- [ ] Je copie **une seule tranche** (Tn) dans le prompt du dev
+- [ ] Je précise : "Ne touche à rien d'autre. Ne traite pas les autres tranches."
 - [ ] Le dev a bien chargé son skill (`regles-dev-<feature>`)
 - [ ] Le dev a lu `CLAUDE.md` et `WORKFLOW.md`
 
-## Checklist avant de merger
+## Checklist avant de merger une tranche (vers la branche de feature)
 
 - [ ] `npx tsc --noEmit` passe (le hook le fait en fin de tour)
-- [ ] `database-reviewer` a rendu APPROUVÉ sur son scope nommé
-- [ ] `security-reviewer` a rendu APPROUVÉ sur son scope nommé
+- [ ] `database-reviewer` a rendu APPROUVÉ sur son scope nommé (si applicable)
+- [ ] `security-reviewer` a rendu APPROUVÉ sur son scope nommé (si applicable)
 - [ ] Tests manuels listés dans le rapport du dev : tous passent
-- [ ] Preview `cantine-pro` (port 3124) vérifiée si l'UI change
+- [ ] Preview Vercel de `feat/<feature>-tN` vérifiée si l'UI change
 - [ ] Aucune donnée réelle modifiée sans accord de l'utilisateur
 - [ ] Commit au format `type: description en français`
+- [ ] Merge `feat/<feature>-tN` → `feat/<feature>`
+- [ ] Branche de slice supprimée (`git branch -d feat/<feature>-tN`)
+
+## Checklist avant de merger une feature (vers `main`)
+
+- [ ] Toutes les tranches de la feature sont mergées dans `feat/<feature>`
+- [ ] Tests de bout en bout de la feature sur la preview de `feat/<feature>`
+- [ ] 4 flows critiques vérifiés : login RH, vote salarié, login resto, clôture
+- [ ] `npx tsc --noEmit` passe sur la branche de feature
+- [ ] Aucune donnée réelle modifiée sans accord de l'utilisateur
+- [ ] Accord explicite pour le merge vers `main` (c'est un déploiement prod)
+- [ ] Merge `feat/<feature>` → `main`
+- [ ] `git push` sur `main`
+- [ ] Branche de feature supprimée
+
+## Exemple complet — feature « changer d'avis » (3 tranches)
+
+```bash
+# Démarrage de la feature
+git checkout main && git pull
+git checkout -b feat/changer-avis
+
+# --- Tranche 1 ---
+git checkout -b feat/changer-avis-t1
+@agent-dev-commande-salarie implémente T1
+# ... code, rapport, reviews, tests sur preview feat/changer-avis-t1 ...
+git add <fichiers-du-scope>
+git commit -m "feat: permettre au salarié de re-voter"
+git push -u origin feat/changer-avis-t1
+# reviews APPROUVÉ + tests OK
+git checkout feat/changer-avis
+git merge feat/changer-avis-t1
+git push
+git branch -d feat/changer-avis-t1
+
+# --- Tranche 2 ---
+git checkout -b feat/changer-avis-t2
+@agent-dev-commande-salarie implémente T2
+# ... idem ...
+git checkout feat/changer-avis
+git merge feat/changer-avis-t2
+git branch -d feat/changer-avis-t2
+
+# --- Tranche 3 ---
+git checkout -b feat/changer-avis-t3
+@agent-dev-commande-salarie implémente T3
+# ... idem ...
+git checkout feat/changer-avis
+git merge feat/changer-avis-t3
+git branch -d feat/changer-avis-t3
+
+# --- Fin de feature : UN SEUL merge vers main ---
+# Tests de bout en bout sur la preview de feat/changer-avis
+# 4 flows critiques vérifiés
+# Accord explicite pour le merge prod
+git checkout main && git pull
+git merge feat/changer-avis
+git push
+git branch -d feat/changer-avis
+# → 1 déploiement Vercel en prod, pour 3 tranches
