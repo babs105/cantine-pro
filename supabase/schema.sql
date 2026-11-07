@@ -2324,3 +2324,12 @@ END;
 $$;
 REVOKE EXECUTE ON FUNCTION public.changer_code_compte_restaurant(TEXT, TEXT) FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION public.changer_code_compte_restaurant(TEXT, TEXT) TO authenticated;
+
+
+-- ==============================================================================
+-- v1.10 (T20) : les nouveaux tokens salarié font 128 bits (16 octets) au lieu de 64.
+-- Seul le défaut change : les tokens existants ne sont pas régénérés, sinon tous les liens /p/[token]
+-- déjà envoyés par WhatsApp cesseraient de marcher. Le serveur génère aussi 16 octets (generateToken).
+-- Bloc final : garder en dernier.
+-- ==============================================================================
+ALTER TABLE public.employes ALTER COLUMN token SET DEFAULT encode(gen_random_bytes(16), 'hex');
