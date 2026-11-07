@@ -40,9 +40,8 @@ CREATE TABLE IF NOT EXISTS public.companies (
     nom TEXT NOT NULL,
     slug TEXT UNIQUE NOT NULL,
     heure_limite_vote TIME NOT NULL DEFAULT '11:10:00', -- Fin des votes = envoi aux restaurants
-    heure_livraison_souhaitee TIME DEFAULT '12:30:00',
-    traiteur_nom TEXT,
-    traiteur_telephone TEXT, -- Format E.164 ex: +221770000000
+    -- v1.10 (T15) : heure_livraison_souhaitee, traiteur_nom et traiteur_telephone (ancien traiteur unique,
+    -- repris par la table restaurants en v1.2) ne sont plus créées ; supprimées dans le bloc final.
     trial_ends_at TIMESTAMPTZ DEFAULT (NOW() + INTERVAL '14 days'),
     is_active BOOLEAN DEFAULT true,
     created_at TIMESTAMPTZ DEFAULT timezone('utc'::text, now()) NOT NULL
@@ -182,13 +181,13 @@ ALTER TABLE public.clotures
 DO $$
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM public.schema_migrations WHERE nom = 'v1.2-traiteur-vers-restaurant') THEN
-        INSERT INTO public.restaurants (company_id, nom, telephone_whatsapp, heure_livraison, token)
+        -- v1.10 : plus aucune reprise des anciennes colonnes traiteur_* et heure_livraison_souhaitee de
+        -- companies (supprimées en T4 et T15) ; heure_livraison prend la valeur par défaut de restaurants.
+        -- Ce bloc ne s'exécute que sur une base neuve, où il n'y a aucune entreprise.
+        INSERT INTO public.restaurants (company_id, nom, telephone_whatsapp, token)
         SELECT c.id,
-               COALESCE(c.traiteur_nom, 'Restaurant partenaire'),
-               c.traiteur_telephone,
-               COALESCE(c.heure_livraison_souhaitee, '12:30:00'),
-               -- v1.10 : plus de reprise de companies.traiteur_token (colonne supprimée). Ce bloc ne
-               -- s'exécute que sur une base neuve, où il n'y a aucune entreprise.
+               'Restaurant partenaire',
+               NULL,
                encode(gen_random_bytes(12), 'hex')
         FROM public.companies c
         WHERE NOT EXISTS (SELECT 1 FROM public.restaurants r WHERE r.company_id = c.id);
@@ -2016,3 +2015,14 @@ LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public AS $$
 $$;
 REVOKE EXECUTE ON FUNCTION public.entreprise_visible() FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION public.entreprise_visible() TO authenticated;
+
+-- ==============================================================================
+-- v1.10 (T15) : suppression des colonnes mortes companies.traiteur_nom, traiteur_telephone et
+-- heure_livraison_souhaitee (ancien traiteur unique, repris par la table restaurants en v1.2). Plus aucun
+-- code ne les lit ni ne les écrit, et aucune fonction, politique, vue ou trigger ne les cite ; le CREATE
+-- TABLE et la migration v1.2 plus haut ne les utilisent plus. Irréversible. Bloc final : garder en dernier.
+-- ==============================================================================
+ALTER TABLE public.companies
+    DROP COLUMN IF EXISTS traiteur_nom,
+    DROP COLUMN IF EXISTS traiteur_telephone,
+    DROP COLUMN IF EXISTS heure_livraison_souhaitee;

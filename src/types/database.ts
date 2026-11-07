@@ -27,9 +27,6 @@ export interface Database {
           slug: string;
           heure_limite_vote: string; // e.g. "11:10:00"
           heure_ouverture_vote: string; // e.g. "08:00:00"
-          heure_livraison_souhaitee: string | null;
-          traiteur_nom: string | null;
-          traiteur_telephone: string | null;
           trial_ends_at: string;
           is_active: boolean;
           responsable_nom: string | null;
@@ -47,9 +44,6 @@ export interface Database {
           slug: string;
           heure_limite_vote?: string;
           heure_ouverture_vote?: string;
-          heure_livraison_souhaitee?: string | null;
-          traiteur_nom?: string | null;
-          traiteur_telephone?: string | null;
           trial_ends_at?: string;
           is_active?: boolean;
           responsable_nom?: string | null;
@@ -67,9 +61,6 @@ export interface Database {
           slug?: string;
           heure_limite_vote?: string;
           heure_ouverture_vote?: string;
-          heure_livraison_souhaitee?: string | null;
-          traiteur_nom?: string | null;
-          traiteur_telephone?: string | null;
           trial_ends_at?: string;
           is_active?: boolean;
           responsable_nom?: string | null;
