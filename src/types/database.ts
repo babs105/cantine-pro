@@ -318,6 +318,12 @@ export interface Database {
           applique_at?: string;
         };
       };
+      // v1.11 : trace des blocages par IP (30 jours), écrite par noter_echec_plafonne, lue depuis l'éditeur SQL
+      blocages_connexion: {
+        Row: { id: number; cle: string; echecs: number; bloque_at: string };
+        Insert: { cle: string; echecs: number; bloque_at?: string };
+        Update: { cle?: string; echecs?: number; bloque_at?: string };
+      };
       // v1.8 : compteur d'échecs de connexion, lu et écrit uniquement par les fonctions SQL
       // (controler_tentatives, noter_echec_connexion, effacer_tentatives) : aucune politique RLS
       tentatives_connexion: {
