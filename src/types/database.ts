@@ -300,6 +300,24 @@ export interface Database {
           is_active?: boolean;
         };
       };
+      // v1.10 : hash du code d'accès RH, hors de companies. Aucune politique RLS : écrit par l'inscription
+      // (client admin), lu et modifié uniquement par echanger_acces_rh et changer_code_rh
+      acces_rh: {
+        Row: {
+          company_id: string;
+          code_hash: string;
+          updated_at: string;
+        };
+        Insert: {
+          company_id: string;
+          code_hash: string;
+          updated_at?: string;
+        };
+        Update: {
+          code_hash?: string;
+          updated_at?: string;
+        };
+      };
       // v1.9 : migrations de données déjà exécutées, lue et écrite uniquement par schema.sql
       // (aucun rôle applicatif n'y a accès)
       schema_migrations: {

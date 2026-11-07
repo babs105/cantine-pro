@@ -491,6 +491,20 @@ END $$;
 CREATE INDEX IF NOT EXISTS idx_commandes_plat ON public.commandes(plat_id);
 CREATE INDEX IF NOT EXISTS idx_menus_restaurant ON public.menus_du_jour(restaurant_id, date);
 
+-- v1.10 (T1, étape A) : le hash du code RH quitte companies, lisible par les rôles salarié, restaurant
+-- et portail (et qui vaut le code : echanger_acces_rh accepte le hash). Table sans aucune politique :
+-- seules les fonctions SECURITY DEFINER (echanger_acces_rh, changer_code_rh) et le service_role la lisent.
+-- Étape A transitoire : companies.rh_code_hash est conservée et recopiée ici par un trigger (bloc final),
+-- pour que le code déjà déployé continue de fonctionner. Sa suppression est l'étape B (commit séparé).
+CREATE TABLE IF NOT EXISTS public.acces_rh (
+    company_id UUID PRIMARY KEY REFERENCES public.companies(id) ON DELETE CASCADE,
+    code_hash TEXT NOT NULL, -- sha256 hex du code d'accès RH
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+REVOKE ALL ON public.acces_rh FROM PUBLIC, anon, authenticated;
+-- La copie des hash existants est faite dans le bloc final, juste après la création du trigger de
+-- synchronisation : aucune écriture de l'ancien code ne peut ainsi passer entre la copie et le trigger.
+
 -- 8. SÉCURITÉ : RLS ACTIVÉE SUR TOUTES LES TABLES
 -- Les politiques (section 9) n'ouvrent l'accès qu'aux requêtes portant un JWT signé par le serveur
 -- Next.js. La clé anon seule ne lit aucune table (tokens employés inclus).
@@ -505,6 +519,7 @@ ALTER TABLE public.plats_restaurant ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.comptes_restaurant ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.tentatives_connexion ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.schema_migrations ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.acces_rh ENABLE ROW LEVEL SECURITY;
 ALTER VIEW public.vue_recapitulatif_traiteur SET (security_invoker = true);
 
 -- 9. POLITIQUES RLS : PATTERN HYBRIDE « TOKEN URL -> JWT COURT »
@@ -1076,3 +1091,111 @@ GRANT EXECUTE ON FUNCTION public.rattacher_compte_restaurant(TEXT, TIME) TO auth
 -- anon ne lit aucune table (seules les fonctions echanger_* lui sont ouvertes) ; la RLS reste le filet
 REVOKE ALL ON ALL TABLES IN SCHEMA public FROM anon;
 ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE ALL ON TABLES FROM anon;
+
+-- ==============================================================================
+-- v1.10 (T1, étape A) : code d'accès RH lu dans acces_rh, plus jamais dans companies.
+-- Bloc final : remplace echanger_acces_rh (définie plus haut). Garder en dernier.
+-- ==============================================================================
+
+-- Synchronisation transitoire companies.rh_code_hash -> acces_rh : le code déjà déployé (inscription,
+-- changement de code) écrit encore la colonne. À supprimer à l'étape B, avec la colonne.
+CREATE OR REPLACE FUNCTION public.synchroniser_acces_rh()
+RETURNS TRIGGER LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
+BEGIN
+    IF NEW.rh_code_hash IS NULL THEN
+        IF TG_OP = 'UPDATE' THEN
+            DELETE FROM public.acces_rh WHERE company_id = NEW.id;
+        END IF;
+    ELSE
+        INSERT INTO public.acces_rh (company_id, code_hash)
+        VALUES (NEW.id, lower(NEW.rh_code_hash))
+        ON CONFLICT (company_id) DO UPDATE SET code_hash = EXCLUDED.code_hash, updated_at = now();
+    END IF;
+    RETURN NULL;
+END;
+$$;
+DROP TRIGGER IF EXISTS trg_synchroniser_acces_rh ON public.companies;
+CREATE TRIGGER trg_synchroniser_acces_rh
+    AFTER INSERT OR UPDATE OF rh_code_hash ON public.companies
+    FOR EACH ROW EXECUTE FUNCTION public.synchroniser_acces_rh();
+REVOKE EXECUTE ON FUNCTION public.synchroniser_acces_rh() FROM PUBLIC, anon, authenticated;
+
+-- Copie unique des hash existants (après le trigger : rien ne peut passer entre les deux)
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM public.schema_migrations WHERE nom = 'v1.10-acces-rh-copie') THEN
+        INSERT INTO public.acces_rh (company_id, code_hash)
+        SELECT id, lower(rh_code_hash) FROM public.companies WHERE rh_code_hash IS NOT NULL
+        ON CONFLICT (company_id) DO UPDATE SET code_hash = EXCLUDED.code_hash, updated_at = now();
+        INSERT INTO public.schema_migrations (nom) VALUES ('v1.10-acces-rh-copie');
+    END IF;
+END $$;
+
+-- Connexion RH : même contrôle qu'en v1.9 (limite de tentatives, e-mail sans casse), hash lu dans acces_rh
+CREATE OR REPLACE FUNCTION public.echanger_acces_rh(p_identifiant TEXT, p_code_hash TEXT)
+RETURNS UUID
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = public AS $$
+DECLARE
+    v_ident TEXT := lower(trim(coalesce(p_identifiant, '')));
+    v_cle TEXT := 'rh:' || left(v_ident, 100);
+    v_id UUID;
+BEGIN
+    PERFORM pg_advisory_xact_lock(hashtextextended(v_cle, 0));
+    PERFORM public.controler_tentatives(v_cle);
+
+    SELECT c.id INTO v_id
+    FROM public.companies c
+    JOIN public.acces_rh a ON a.company_id = c.id
+    WHERE CASE WHEN position('@' IN v_ident) > 0
+               THEN lower(c.email_contact) = v_ident
+               ELSE c.slug = v_ident END
+      AND c.is_active
+      AND a.code_hash = lower(coalesce(p_code_hash, ''))
+    LIMIT 1;
+
+    IF v_id IS NULL THEN
+        PERFORM public.noter_echec_connexion(v_cle);
+    ELSE
+        PERFORM public.effacer_tentatives(v_cle);
+    END IF;
+    RETURN v_id;
+END;
+$$;
+REVOKE EXECUTE ON FUNCTION public.echanger_acces_rh(TEXT, TEXT) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.echanger_acces_rh(TEXT, TEXT) TO anon, authenticated, service_role;
+
+-- Changement du code RH : vérifie l'ancien code sans que le RH lise jamais le hash.
+-- Limite : 5 mauvais anciens codes en 15 min bloquent le changement 15 min (erreur CP429).
+CREATE OR REPLACE FUNCTION public.changer_code_rh(p_ancien_hash TEXT, p_nouveau_hash TEXT)
+RETURNS BOOLEAN
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = public AS $$
+DECLARE
+    v_company UUID := public.jwt_company_id();
+    v_cle TEXT;
+BEGIN
+    IF public.jwt_role_app() IS DISTINCT FROM 'rh' OR v_company IS NULL THEN
+        RAISE EXCEPTION 'Accès refusé';
+    END IF;
+    IF p_nouveau_hash IS NULL OR p_nouveau_hash !~ '^[0-9a-f]{64}$' THEN
+        RAISE EXCEPTION 'Nouveau code invalide';
+    END IF;
+
+    v_cle := 'changecode:' || v_company::text;
+    PERFORM pg_advisory_xact_lock(hashtextextended(v_cle, 0));
+    PERFORM public.controler_tentatives(v_cle);
+
+    IF NOT EXISTS (SELECT 1 FROM public.acces_rh
+                   WHERE company_id = v_company AND code_hash = lower(coalesce(p_ancien_hash, ''))) THEN
+        PERFORM public.noter_echec_connexion(v_cle);
+        RETURN false;
+    END IF;
+    PERFORM public.effacer_tentatives(v_cle);
+
+    UPDATE public.acces_rh SET code_hash = p_nouveau_hash, updated_at = now() WHERE company_id = v_company;
+    -- Étape A : double écriture tant que companies.rh_code_hash existe (retirée à l'étape B)
+    UPDATE public.companies SET rh_code_hash = p_nouveau_hash WHERE id = v_company;
+    RETURN true;
+END;
+$$;
+REVOKE EXECUTE ON FUNCTION public.changer_code_rh(TEXT, TEXT) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.changer_code_rh(TEXT, TEXT) TO authenticated;
