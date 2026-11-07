@@ -1477,3 +1477,94 @@ BEGIN
     RETURN NEW;
 END;
 $$;
+
+-- ==============================================================================
+-- v1.10 (T8) : une session RH ou compte restaurant est révoquée dès que l'accès l'est (audit base, C-3).
+-- Le cookie (30 jours) porte son heure d'émission ; le serveur Next.js vérifie à chaque requête que
+-- l'entreprise ou le compte est toujours actif et que le code n'a pas changé depuis. Les deux premières
+-- fonctions sont appelées sans JWT (clé anon, comme les echanger_*) : elles ne renvoient qu'un booléen
+-- pour un identifiant UUID déjà signé par le serveur. Tolérance de 30 s sur l'heure d'émission : les
+-- horloges de Vercel et de Postgres peuvent différer, et le cookie réémis juste après un changement de
+-- code ne doit pas être refusé. Ajout pur (fonctions et triggers d'horodatage) : à appliquer AVANT de
+-- déployer le code qui les appelle.
+-- Bloc final : garder en dernier.
+-- ==============================================================================
+
+-- Session RH : entreprise active, code RH inchangé depuis l'émission (acces_rh.updated_at, mis à jour
+-- par changer_code_rh)
+CREATE OR REPLACE FUNCTION public.session_rh_valide(p_company_id UUID, p_emis_at TIMESTAMPTZ)
+RETURNS BOOLEAN
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public AS $$
+    SELECT EXISTS (
+        SELECT 1 FROM public.companies c
+        JOIN public.acces_rh a ON a.company_id = c.id
+        WHERE c.id = p_company_id AND c.is_active
+          AND a.updated_at <= p_emis_at + interval '30 seconds'
+    )
+$$;
+REVOKE EXECUTE ON FUNCTION public.session_rh_valide(UUID, TIMESTAMPTZ) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.session_rh_valide(UUID, TIMESTAMPTZ) TO anon, authenticated, service_role;
+
+-- Session compte restaurant : compte actif, code inchangé depuis l'émission (code_change_at, T7)
+CREATE OR REPLACE FUNCTION public.session_compte_valide(p_compte_id UUID, p_emis_at TIMESTAMPTZ)
+RETURNS BOOLEAN
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public AS $$
+    SELECT EXISTS (
+        SELECT 1 FROM public.comptes_restaurant cr
+        WHERE cr.id = p_compte_id AND cr.is_active
+          AND cr.code_change_at <= p_emis_at + interval '30 seconds'
+    )
+$$;
+REVOKE EXECUTE ON FUNCTION public.session_compte_valide(UUID, TIMESTAMPTZ) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.session_compte_valide(UUID, TIMESTAMPTZ) TO anon, authenticated, service_role;
+
+-- Accès d'un compte à un partenariat : mêmes contrôles que echanger_jeton_restaurant (partenariat,
+-- entreprise et compte actifs). Appelée avec le JWT compte_restaurant.
+CREATE OR REPLACE FUNCTION public.acces_partenariat_compte(p_restaurant_id UUID)
+RETURNS TABLE (restaurant_id UUID, company_id UUID)
+LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = public AS $$
+BEGIN
+    IF public.jwt_role_app() IS DISTINCT FROM 'compte_restaurant' OR public.jwt_compte_id() IS NULL THEN
+        RAISE EXCEPTION 'Accès refusé';
+    END IF;
+    RETURN QUERY
+        SELECT r.id, r.company_id
+        FROM public.restaurants r
+        JOIN public.companies c ON c.id = r.company_id
+        JOIN public.comptes_restaurant cr ON cr.id = r.compte_id
+        WHERE r.id = p_restaurant_id AND r.compte_id = public.jwt_compte_id()
+          AND r.is_active AND c.is_active AND cr.is_active;
+END;
+$$;
+REVOKE EXECUTE ON FUNCTION public.acces_partenariat_compte(UUID) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.acces_partenariat_compte(UUID) TO authenticated;
+
+-- Un code changé hors des fonctions prévues (par exemple à la main dans l'éditeur SQL) met aussi à jour
+-- la date de changement : les sessions ouvertes avant sont révoquées dans tous les cas.
+CREATE OR REPLACE FUNCTION public.horodater_changement_code_rh()
+RETURNS TRIGGER LANGUAGE plpgsql SET search_path = public AS $$
+BEGIN
+    IF NEW.code_hash IS DISTINCT FROM OLD.code_hash THEN
+        NEW.updated_at := now();
+    END IF;
+    RETURN NEW;
+END;
+$$;
+DROP TRIGGER IF EXISTS trg_horodater_changement_code_rh ON public.acces_rh;
+CREATE TRIGGER trg_horodater_changement_code_rh
+    BEFORE UPDATE ON public.acces_rh
+    FOR EACH ROW EXECUTE FUNCTION public.horodater_changement_code_rh();
+
+CREATE OR REPLACE FUNCTION public.horodater_changement_code_compte()
+RETURNS TRIGGER LANGUAGE plpgsql SET search_path = public AS $$
+BEGIN
+    IF NEW.code_hash IS DISTINCT FROM OLD.code_hash THEN
+        NEW.code_change_at := now();
+    END IF;
+    RETURN NEW;
+END;
+$$;
+DROP TRIGGER IF EXISTS trg_horodater_changement_code_compte ON public.comptes_restaurant;
+CREATE TRIGGER trg_horodater_changement_code_compte
+    BEFORE UPDATE ON public.comptes_restaurant
+    FOR EACH ROW EXECUTE FUNCTION public.horodater_changement_code_compte();
