@@ -1,4 +1,5 @@
 import "server-only";
+import { ErreurAffichable } from "@/lib/erreurs";
 import ExcelJS from "exceljs";
 
 export interface LigneEmploye {
@@ -100,7 +101,7 @@ export async function parseFichierEmployes(fichier: File): Promise<LigneEmploye[
   }
 
   if (!nomFichier.endsWith(".xlsx")) {
-    throw new Error("Format non supporté : enregistrez le fichier en .xlsx ou .csv.");
+    throw new ErreurAffichable("Format non supporté : enregistrez le fichier en .xlsx ou .csv.");
   }
 
   const workbook = new ExcelJS.Workbook();
