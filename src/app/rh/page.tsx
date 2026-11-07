@@ -3,7 +3,7 @@ import { createClientRh } from "@/lib/supabase/server";
 import { getAppBaseUrl, isApresHeureLimite, todayDakar } from "@/lib/config";
 import { ajouterJours, isDateValide, lundiDeLaSemaine } from "@/lib/dates";
 import { getRhCompanyId } from "@/lib/rh-session";
-import { getCommandesDuJour, lienRestaurant } from "@/lib/cloture";
+import { getCommandesDuJour } from "@/lib/cloture";
 import { etatAbonnement } from "@/lib/abonnement";
 import { RhDashboardClient } from "./rh-dashboard-client";
 
@@ -89,10 +89,10 @@ export default async function RhDashboardPage({ searchParams }: PageProps) {
       .eq("date", todayDate),
     supabase
       .from("restaurants")
-      .select("id, nom, telephone_whatsapp, heure_livraison, token, is_active, compte_id")
+      .select("id, nom, telephone_whatsapp, heure_livraison, is_active, compte_id")
       .eq("company_id", comp.id)
       .order("created_at"),
-    // Cartes saisies par les restaurants depuis leur lien : le RH y pioche ses menus du jour
+    // Cartes saisies par les restaurants depuis leur espace : le RH y pioche les menus des restaurants sans compte
     supabase
       .from("plats_restaurant")
       .select("id, restaurant_id, titre, description, prix_unitaire")
@@ -102,7 +102,7 @@ export default async function RhDashboardPage({ searchParams }: PageProps) {
   ]);
 
   const clotures = ((rawClotures as any[]) || []);
-  const restaurants = ((restos as any[]) || []).map((r) => ({ ...r, lien: lienRestaurant(r) }));
+  const restaurants = (restos as any[]) || [];
   // Restaurants à qui le récap a été envoyé et qui n'ont toujours pas confirmé après 11h30
   const restaurantsEnRetard = isApresHeureLimite(HEURE_ALERTE_TRAITEUR)
     ? clotures

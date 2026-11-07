@@ -31,7 +31,7 @@ Répondre et écrire en **français** : messages, commentaires de code, libellé
 - `supabase/schema.sql` : schéma complet et **idempotent** (relancé en entier dans l'éditeur SQL Supabase)
 
 Espaces : `/rh` (Espace RH, 7 onglets dans `rh-dashboard-client.tsx`), `/p/[token]` (salarié, PWA),
-`/resto` (espace restaurant multi-entreprises : `/resto/login`, `/resto/inscription`), `/resto/[token]` (lien restaurant d'une entreprise), `/admin` (SuperAdmin), `/inscription`.
+`/resto` (espace restaurant multi-entreprises : `/resto/login`, `/resto/inscription`), `/admin` (SuperAdmin), `/inscription`.
 
 ## Règles du code
 Le processus de livraison (plan → tranche → dev → reviews → merge) est
@@ -48,7 +48,6 @@ filtrent chaque table via les politiques de `supabase/schema.sql` (section 9). L
 | RH (cookie de session) | `createClientRh(companyId)` après `getRhCompanyId()` |
 | Connexion RH | `echangerAccesRh(identifiant, code)` |
 | Salarié `/p/[token]` | `echangerJetonSalarie(token)` → `{ supabase, employeId, companyId }` |
-| Restaurant `/resto/[token]` (une entreprise) | `echangerJetonRestaurant(token)` |
 | Compte restaurant `/resto` (cookie, plusieurs entreprises) | `createClientCompteSession()` pour la fiche et la liste des partenariats, puis `accesPartenariatCompte(restaurantId)` (JWT `restaurant` limité à une entreprise) |
 | SuperAdmin, cron, inscriptions (entreprise et restaurant), diagnostic | `createAdminClient()` (`admin.ts`, service_role, contourne la RLS) |
 
@@ -84,7 +83,8 @@ Fuseau `Africa/Dakar`. Utiliser `todayDakar()`, `nowDakarTime()`, `isApresHeureL
 `comptes_restaurant` = le restaurant (connexion téléphone + code, code partenaire). Chaque ligne de `restaurants`
 = un partenariat avec UNE entreprise (heure de livraison, carte `plats_restaurant`, clôtures), reliée via `compte_id`.
 Le RH relie un compte avec `rattacher_compte_restaurant` (code partenaire) ; il ne peut pas écrire `compte_id` lui-même (trigger).
-Les actions de `src/app/resto/actions.ts` prennent une `CibleRestaurant` : `{ token }` ou `{ restaurantId }`.
+Les actions de `src/app/resto/actions.ts` prennent une `CibleRestaurant` : `{ restaurantId }`.
+Depuis la v1.14, tout restaurant a un compte : plus de lien `/resto/[token]`, le RH ajoute un restaurant uniquement avec son code partenaire et ne compose plus ses menus (le restaurant les publie).
 
 ### Vocabulaire métier
 « commande » (pas « vote », même si des noms de colonnes gardent `vote`), « Espace RH » (pas « cockpit »),

@@ -23,7 +23,8 @@ import { normaliserTelephone } from "@/lib/telephone";
 
 const CHAMPS_EMPLOYE = "id, nom, telephone, service, token, is_active";
 const CHAMPS_PLAT = "id, date, titre, description, prix_unitaire, is_available, restaurant_id, ajoute_par";
-const CHAMPS_RESTAURANT = "id, nom, telephone_whatsapp, heure_livraison, token, is_active, compte_id";
+// v1.14 : plus de token restaurant côté navigateur (le lien /resto/[token] n'existe plus)
+const CHAMPS_RESTAURANT = "id, nom, telephone_whatsapp, heure_livraison, is_active, compte_id";
 const SERVICE_DEFAUT = "Général";
 
 const SESSION_EXPIREE = "Session RH expirée, reconnectez-vous.";
@@ -218,13 +219,17 @@ export async function addMenuPlatAction(
     const supabase = createClientRh(companyId);
     const { data: resto } = await supabase
       .from("restaurants")
-      .select("id")
+      .select("id, compte_id")
       .eq("id", restaurantId ?? "")
       .eq("company_id", companyId)
       .eq("is_active", true)
       .maybeSingle();
     if (!resto) {
       return { success: false, message: "Choisissez le restaurant qui prépare ce plat." };
+    }
+    // v1.14 : un restaurant avec compte publie lui-même ses menus (la base le refuse aussi, code CP403)
+    if ((resto as any).compte_id) {
+      return { success: false, message: "Ce restaurant publie lui-même ses menus depuis son espace restaurant." };
     }
 
     const { data, error } = await (supabase.from("menus_du_jour") as any)
@@ -289,6 +294,14 @@ export async function dupliquerSemaineAction(lundiCible: string): Promise<{
   const joursParResto = new Map<string, number[]>(
     ((joursRestos as any[]) || []).map((r) => [r.restaurant_id, normaliserJoursRestaurant(r.jours_travail)])
   );
+  // v1.14 : les plats des restaurants avec compte ne sont pas recopiés, ils publient eux-mêmes leurs menus
+  const { data: restosAvecCompte, error: erreurRestos } = await supabase
+    .from("restaurants")
+    .select("id")
+    .eq("company_id", companyId)
+    .not("compte_id", "is", null);
+  if (erreurRestos) return { success: false, message: messageErreur("rh", erreurRestos) };
+  const publientEuxMemes = new Set(((restosAvecCompte as Array<{ id: string }> | null) || []).map((r) => r.id));
   const restoTravaille = (restaurantId: string | null, date: string) =>
     !restaurantId || !joursParResto.has(restaurantId) || joursParResto.get(restaurantId)!.includes(jourIso(date));
 
@@ -297,7 +310,11 @@ export async function dupliquerSemaineAction(lundiCible: string): Promise<{
     .map((p) => ({ ...p, date: ajouterJours(p.date, 7) }))
     .filter(
       (p) =>
-        joursCibles.has(p.date) && p.date >= today && !joursDejaRemplis.has(p.date) && restoTravaille(p.restaurant_id, p.date)
+        joursCibles.has(p.date) &&
+        p.date >= today &&
+        !joursDejaRemplis.has(p.date) &&
+        !publientEuxMemes.has(p.restaurant_id) &&
+        restoTravaille(p.restaurant_id, p.date)
     )
     .map((p) => ({
       company_id: companyId,
@@ -471,39 +488,6 @@ export async function togglePlatDisponibiliteAction(
   } catch {
     return { success: false };
   }
-}
-
-/**
- * Ajout d'un restaurant partenaire (il reçoit le récapitulatif de ses plats à la clôture)
- */
-export async function addRestaurantAction(
-  nom: string,
-  telephone?: string,
-  heureLivraison?: string
-): Promise<{ success: boolean; message?: string; restaurant?: any }> {
-  const nomPropre = nom.trim().slice(0, 80);
-  if (nomPropre.length < 2) return { success: false, message: "Renseignez le nom du restaurant." };
-  const heure = /^\d{2}:\d{2}/.test(heureLivraison || "") ? heureLivraison!.slice(0, 5) : "12:30";
-
-  const companyId = await getRhCompanyId();
-  if (!companyId) return { success: false, message: SESSION_EXPIREE };
-
-  const supabase = createClientRh(companyId);
-  const { data, error } = await (supabase.from("restaurants") as any)
-    .insert({
-      company_id: companyId,
-      nom: nomPropre,
-      telephone_whatsapp: normaliserTelephone(telephone),
-      heure_livraison: heure,
-      token: generateToken(12),
-    })
-    .select(CHAMPS_RESTAURANT)
-    .single();
-
-  if (error) return { success: false, message: messageErreur("rh", error) };
-
-  revalidatePath("/rh");
-  return { success: true, restaurant: data };
 }
 
 /**
