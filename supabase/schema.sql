@@ -2123,6 +2123,9 @@ CREATE TRIGGER trg_hacher_code_bcrypt
     BEFORE INSERT OR UPDATE OF code_hash ON public.comptes_restaurant
     FOR EACH ROW EXECUTE FUNCTION public.hacher_code_bcrypt();
 
+-- L'ancienne contrainte sha256 (NOT VALID, mais contrôle toute écriture) doit partir AVANT la conversion
+ALTER TABLE public.acces_rh DROP CONSTRAINT IF EXISTS acces_rh_code_hash_sha256;
+
 -- Migration unique des codes existants. Les triggers d'horodatage sont coupés le temps de la conversion :
 -- le code ne change pas, les sessions ouvertes (T8) restent valides.
 DO $$
