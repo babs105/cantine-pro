@@ -285,7 +285,7 @@ export interface Database {
           is_active?: boolean;
         };
       };
-      // v1.10 : hash du code d'accès RH, hors de companies. Aucune politique RLS : écrit par l'inscription
+      // v1.10 : bcrypt du sha256 du code d'accès RH (T19), hors de companies. Aucune politique RLS : écrit par l'inscription
       // (client admin), lu et modifié uniquement par echanger_acces_rh et changer_code_rh
       acces_rh: {
         Row: {

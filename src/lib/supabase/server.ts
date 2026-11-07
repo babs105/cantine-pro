@@ -33,7 +33,7 @@ export async function createClientRhSession(): Promise<{ companyId: string; supa
   return { companyId, supabase: createClientRh(companyId) };
 }
 
-/** Code SQLSTATE levé par controler_tentatives : IP bloquée après 5 échecs, identifiant après 30 (15 minutes) */
+/** Code SQLSTATE levé par controler_tentatives : 5 échecs par IP et identifiant, 30 par identifiant, 50 par IP tous identifiants confondus (15 minutes) */
 const CODE_TROP_DE_TENTATIVES = "CP429";
 
 /** Connexion refusée parce que l'identifiant est temporairement bloqué ; le message est lisible par l'utilisateur */
