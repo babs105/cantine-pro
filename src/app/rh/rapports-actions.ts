@@ -5,7 +5,13 @@ import { messageErreur } from "@/lib/erreurs";
 import { createClientRh } from "@/lib/supabase/server";
 import { isDateValide, normaliserJoursTravail } from "@/lib/dates";
 import { createRhSession, getRhCompanyId, hashRhCode } from "@/lib/rh-session";
-import { getLignesFacturation, periodeMois, regrouperParPlat, type LigneFacturation } from "@/lib/facturation";
+import {
+  getLignesFacturation,
+  periodeMois,
+  regrouperParPlat,
+  regrouperParRestaurant,
+  type LigneFacturation,
+} from "@/lib/facturation";
 
 const SESSION_EXPIREE = "Session RH expirée, reconnectez-vous.";
 
@@ -145,6 +151,8 @@ export interface Statistiques {
   }>;
   joursAvecMenu: number;
   topPlats: Array<{ plat: string; quantite: number }>;
+  /** Top 5 des restaurants par repas facturés du mois ; part = % des repas facturés */
+  topRestaurants: Array<{ restaurant: string; quantite: number; montant: number; part: number }>;
   totaux: { repas: number; montant: number; nonConfirmes: number; coutMoyen: number };
 }
 
@@ -206,6 +214,14 @@ export async function statistiquesAction(mois: string): Promise<Resultat<Statist
         topPlats: regrouperParPlat(lignesMois)
           .slice(0, 5)
           .map(({ plat, quantite }) => ({ plat, quantite })),
+        topRestaurants: regrouperParRestaurant(lignesMois)
+          .slice(0, 5)
+          .map(({ restaurant, quantite, montant }) => ({
+            restaurant,
+            quantite,
+            montant,
+            part: facturees.length > 0 ? Math.round((quantite / facturees.length) * 100) : 0,
+          })),
         totaux: {
           repas: facturees.length,
           montant,
