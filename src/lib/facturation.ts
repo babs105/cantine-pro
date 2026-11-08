@@ -89,3 +89,31 @@ export function regrouperParPlat(lignes: LigneFacturation[]): Array<{ plat: stri
   }
   return Array.from(parPlat.values()).sort((a, b) => b.quantite - a.quantite || a.plat.localeCompare(b.plat, "fr"));
 }
+
+/**
+ * Repas facturés et montant par restaurant (un partenariat = une ligne de `restaurants`).
+ * Même règle que regrouperParPlat : seuls les repas « choisi » (confirmés) comptent.
+ * Regroupement par restaurantId (deux restaurants peuvent porter le même nom) ;
+ * les anciennes commandes sans restaurant sont exclues.
+ * Tri : repas décroissants, puis montant décroissant, puis nom.
+ */
+export function regrouperParRestaurant(
+  lignes: LigneFacturation[]
+): Array<{ restaurantId: string; restaurant: string; quantite: number; montant: number }> {
+  const parRestaurant = new Map<string, { restaurantId: string; restaurant: string; quantite: number; montant: number }>();
+  for (const l of lignes) {
+    if (l.statut !== "choisi" || !l.restaurantId) continue;
+    const r = parRestaurant.get(l.restaurantId) || {
+      restaurantId: l.restaurantId,
+      restaurant: l.restaurant,
+      quantite: 0,
+      montant: 0,
+    };
+    r.quantite += 1;
+    r.montant += l.montant;
+    parRestaurant.set(l.restaurantId, r);
+  }
+  return Array.from(parRestaurant.values()).sort(
+    (a, b) => b.quantite - a.quantite || b.montant - a.montant || a.restaurant.localeCompare(b.restaurant, "fr")
+  );
+}

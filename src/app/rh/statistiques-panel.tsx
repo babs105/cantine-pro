@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useState, useTransition } from "react";
-import { BarChart3, TrendingUp, Users, Utensils } from "lucide-react";
+import { BarChart3, Store, TrendingUp, Users, Utensils } from "lucide-react";
+import { cn } from "@/lib/utils";
 import { statistiquesAction, type Statistiques } from "./rapports-actions";
 
 interface StatistiquesPanelProps {
@@ -144,6 +145,48 @@ export function StatistiquesPanel({ moisInitial }: StatistiquesPanelProps) {
                 </ol>
               )}
             </div>
+          </div>
+
+          {/* Restaurants les plus commandés : volume = repas facturés du mois */}
+          <div className="bg-white rounded-3xl p-6 border border-neutral-200 shadow-sm space-y-3">
+            <div>
+              <h3 className="text-sm font-bold text-neutral-900 flex items-center gap-2">
+                <Store className="w-4 h-4 text-orange-500" />
+                Restaurants les plus commandés
+              </h3>
+              <p className="text-[11px] text-neutral-500">Classés par repas facturés (confirmés par le restaurant).</p>
+            </div>
+            {stats.topRestaurants.length === 0 ? (
+              <p className="text-xs text-neutral-400">Aucun repas facturé ce mois-ci.</p>
+            ) : (
+              <ol className="space-y-3">
+                {stats.topRestaurants.map((r, i) => (
+                  <li key={i} className="space-y-1">
+                    <div className="flex items-center justify-between gap-3 text-xs">
+                      <span className={cn("truncate", i === 0 ? "font-bold text-neutral-900" : "text-neutral-800")}>
+                        <span className={cn("font-bold mr-1.5", i === 0 ? "text-orange-500" : "text-neutral-400")}>
+                          {i + 1}.
+                        </span>
+                        {r.restaurant || "Restaurant sans nom"}
+                      </span>
+                      <span className="shrink-0 text-right">
+                        <span className="font-bold text-neutral-900">{r.quantite} repas</span>
+                        <span className="text-neutral-500"> • {fcfa(r.montant)}</span>
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <div className="flex-1 h-2 bg-neutral-100 rounded-full overflow-hidden">
+                        <div
+                          className={cn("h-full rounded-full", i === 0 ? "bg-orange-500" : "bg-orange-200")}
+                          style={{ width: `${Math.min(100, r.part)}%` }}
+                        />
+                      </div>
+                      <span className="w-9 text-right text-[11px] font-bold text-neutral-700">{r.part}%</span>
+                    </div>
+                  </li>
+                ))}
+              </ol>
+            )}
           </div>
 
           {/* Participation par service */}
