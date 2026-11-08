@@ -69,6 +69,9 @@ Toute action RH suit ce modèle, dans cet ordre :
 - Nouvelle table : activer la RLS et écrire ses politiques (section 9 de `schema.sql`), sinon les clients JWT n'y verront rien.
 - Nouvel accès d'un rôle (salarié, restaurant) à une table : ajouter la politique correspondante.
 - Le schéma est appliqué à la main par l'utilisateur dans Supabase : lui rappeler de le relancer.
+Après chaque modification de `supabase/schema.sql` :
+- Lancer `bash scripts/schema-index.sh`
+- Vérifier que `.claude/SCHEMA-INDEX.md` est à jour (git diff non-vide)
 
 ### Dates et heures
 Fuseau `Africa/Dakar`. Utiliser `todayDakar()`, `nowDakarTime()`, `isApresHeureLimite()` de `src/lib/dates.ts` / `config.ts`, jamais `new Date()` brut pour une date métier.
