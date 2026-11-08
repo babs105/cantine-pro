@@ -2846,3 +2846,282 @@ CREATE TRIGGER trg_desactiver_restaurant_sans_compte
 --    des blocs historiques l'écrivent.
 DROP FUNCTION IF EXISTS public.echanger_jeton_restaurant(TEXT);
 DROP FUNCTION IF EXISTS public.relier_lien_restaurant(TEXT);
+
+-- ==============================================================================
+-- v1.15 : passer_commande durcie (audit base du 2026-11-08). Remplace la définition plus haut, qui reste
+-- en place (déjà appliquée) mais est écrasée à chaque relance par celle-ci. Garder ce bloc en dernier.
+-- 1. Le plat commandé doit appartenir à un restaurant de la même entreprise : la jointure sur
+--    restaurants est bornée par company_id (un restaurant_id d'une autre entreprise est refusé).
+-- 2. Le restaurant doit travailler aujourd'hui (comptes_restaurant.jours_travail, v1.13) : le trigger
+--    v1.13 ne contrôle que l'ajout d'un plat, pas un jour retiré ensuite par le restaurant.
+-- 3. Les refus d'accès et de statut ont un code métier (CP403 / CP422) : l'application ne les renvoie
+--    plus en boucle comme une erreur passagère.
+-- 4. Un plat sans restaurant (restaurant_id NULL) n'est plus commandable : il ne serait jamais clôturé,
+--    ni récapitulé, ni facturé. La suite du bloc empêche d'en créer et supprime ceux d'aujourd'hui et après.
+-- ==============================================================================
+CREATE OR REPLACE FUNCTION public.passer_commande(p_statut TEXT, p_plat_id UUID)
+RETURNS TIMESTAMPTZ
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = public AS $$
+DECLARE
+    v_employe UUID := public.jwt_employe_id();
+    v_company UUID := public.jwt_company_id();
+    v_jour DATE := (now() AT TIME ZONE 'Africa/Dakar')::date;
+    v_heure TIME := (now() AT TIME ZONE 'Africa/Dakar')::time;
+    v_ouverture TIME;
+    v_limite TIME;
+    v_jours SMALLINT[];
+    v_existante public.commandes%ROWTYPE;
+    v_resto_existant UUID;
+    v_resto_nouveau UUID;
+    v_enregistre TIMESTAMPTZ;
+    v_lignes INTEGER;
+BEGIN
+    IF public.jwt_role_app() IS DISTINCT FROM 'salarie' OR v_employe IS NULL OR v_company IS NULL THEN
+        RAISE EXCEPTION 'Accès refusé.' USING ERRCODE = 'CP403';
+    END IF;
+    IF p_statut IS NULL OR p_statut NOT IN ('choisi', 'absent', 'ne_mange_pas') THEN
+        RAISE EXCEPTION 'Choix invalide.' USING ERRCODE = 'CP422';
+    END IF;
+
+    SELECT c.heure_ouverture_vote, c.heure_limite_vote, c.jours_travail
+      INTO v_ouverture, v_limite, v_jours
+      FROM public.companies c
+      JOIN public.employes e ON e.company_id = c.id
+     WHERE c.id = v_company AND c.is_active AND e.id = v_employe AND e.is_active;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Votre accès n''est plus actif : contactez votre RH.' USING ERRCODE = 'CP403';
+    END IF;
+
+    -- Jours de travail : seulement 1..7, et lundi → vendredi si rien de valide, comme normaliserJoursTravail
+    v_jours := ARRAY(SELECT DISTINCT j FROM unnest(v_jours) AS j WHERE j BETWEEN 1 AND 7);
+    IF coalesce(cardinality(v_jours), 0) = 0 THEN
+        v_jours := '{1,2,3,4,5}';
+    END IF;
+    IF NOT (extract(isodow FROM v_jour)::smallint = ANY (v_jours)) THEN
+        RAISE EXCEPTION 'Pas de service cantine aujourd''hui.' USING ERRCODE = 'CP423';
+    END IF;
+    IF v_heure < v_ouverture THEN
+        RAISE EXCEPTION 'Les commandes ouvrent à %.', replace(to_char(v_ouverture, 'HH24:MI'), ':', 'h')
+            USING ERRCODE = 'CP423';
+    END IF;
+    IF v_heure >= v_limite THEN
+        RAISE EXCEPTION 'Les commandes sont clôturées depuis %.', replace(to_char(v_limite, 'HH24:MI'), ':', 'h')
+            USING ERRCODE = 'CP423';
+    END IF;
+
+    -- Une commande à la fois par salarié et par jour : la vérification et l'écriture ne se croisent pas
+    PERFORM pg_advisory_xact_lock(hashtextextended('commande:' || v_employe::text || ':' || v_jour::text, 0));
+
+    -- Ordre des verrous : le plat d'abord, la commande ensuite. La suppression d'un plat (ligne du plat puis
+    -- commandes, par commandes_plat_supprime) et celle d'un restaurant (plats puis commandes, par
+    -- desactiver_plats_restaurant_supprime) prennent le même ordre : pas d'interblocage.
+    IF p_statut = 'choisi' THEN
+        -- Restaurant obligatoire, de la même entreprise, actif, et qui travaille aujourd'hui
+        -- (restaurant sans compte : pas de restriction de jours)
+        SELECT m.restaurant_id INTO v_resto_nouveau
+          FROM public.menus_du_jour m
+          JOIN public.restaurants r ON r.id = m.restaurant_id AND r.company_id = m.company_id
+          LEFT JOIN public.comptes_restaurant cr ON cr.id = r.compte_id
+         WHERE m.id = p_plat_id AND m.company_id = v_company AND m.date = v_jour AND m.is_available
+           AND r.is_active
+           AND (cr.jours_travail IS NULL
+                OR extract(isodow FROM v_jour)::smallint = ANY (cr.jours_travail))
+        -- FOR SHARE sur le plat : une suppression du plat, ou sa désactivation par la suppression du
+        -- restaurant, passe soit avant (le plat n'est plus là ou plus disponible : commande refusée),
+        -- soit après (la commande repasse en « absent »). Les commandes simultanées du même plat restent
+        -- compatibles entre elles. Jamais d'erreur passagère renvoyée en boucle par le téléphone.
+           FOR SHARE OF m;
+        IF NOT FOUND THEN
+            RAISE EXCEPTION 'Ce plat n''est plus disponible, choisissez-en un autre.' USING ERRCODE = 'CP404';
+        END IF;
+    END IF;
+
+    -- FOR UPDATE : une correction du RH en cours attend la fin de cette transaction, et inversement
+    SELECT * INTO v_existante FROM public.commandes WHERE employe_id = v_employe AND date = v_jour FOR UPDATE;
+    IF FOUND THEN
+        IF v_existante.modifie_par_rh THEN
+            RAISE EXCEPTION 'Votre RH a saisi votre commande du jour : contactez-le pour la changer.'
+                USING ERRCODE = 'CP403';
+        END IF;
+        IF v_existante.plat_id IS NOT NULL THEN
+            SELECT m.restaurant_id INTO v_resto_existant FROM public.menus_du_jour m WHERE m.id = v_existante.plat_id;
+        END IF;
+    END IF;
+
+    -- Le récapitulatif d'un restaurant déjà clôturé ne bouge plus : ni retirer, ni ajouter un repas
+    IF EXISTS (SELECT 1 FROM public.clotures cl
+               WHERE cl.company_id = v_company AND cl.date = v_jour
+                 AND cl.restaurant_id IS NOT NULL
+                 AND cl.restaurant_id IN (v_resto_existant, v_resto_nouveau)) THEN
+        RAISE EXCEPTION 'La commande de ce restaurant est déjà envoyée : contactez votre RH.'
+            USING ERRCODE = 'CP403';
+    END IF;
+
+    -- Heure réelle d'écriture (now() serait l'heure de début de transaction, avant l'attente des verrous)
+    v_enregistre := clock_timestamp();
+    INSERT INTO public.commandes (company_id, employe_id, plat_id, date, statut, modifie_par_rh, updated_at)
+    VALUES (v_company, v_employe, CASE WHEN p_statut = 'choisi' THEN p_plat_id END, v_jour, p_statut, false, v_enregistre)
+    ON CONFLICT (employe_id, date) DO UPDATE
+        SET plat_id = EXCLUDED.plat_id,
+            statut = EXCLUDED.statut,
+            updated_at = EXCLUDED.updated_at
+        WHERE public.commandes.modifie_par_rh = false;
+    -- Aucune ligne écrite : le RH a créé une commande verrouillée entre la lecture et l'insertion
+    GET DIAGNOSTICS v_lignes = ROW_COUNT;
+    IF v_lignes = 0 THEN
+        RAISE EXCEPTION 'Votre RH a saisi votre commande du jour : contactez-le pour la changer.'
+            USING ERRCODE = 'CP403';
+    END IF;
+    RETURN v_enregistre;
+END;
+$$;
+REVOKE EXECUTE ON FUNCTION public.passer_commande(TEXT, UUID) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.passer_commande(TEXT, UUID) TO authenticated;
+
+-- 5. Plat supprimé alors qu'il est commandé : la commande repasse en « absent » au lieu de rester
+--    « choisi » sans plat (la FK commandes.plat_id ON DELETE SET NULL ne touchait pas le statut, et le
+--    salarié croyait avoir commandé). SECURITY DEFINER : un restaurant qui retire son plat n'a pas le droit
+--    d'écrire dans commandes. Les jours passés restent l'historique de la paie : un client JWT (RH,
+--    restaurant) ne peut plus y supprimer un plat commandé. Le cron, la console SuperAdmin et l'éditeur
+--    SQL (sans claim role_app) gardent la main.
+CREATE OR REPLACE FUNCTION public.commandes_plat_supprime()
+RETURNS TRIGGER
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
+BEGIN
+    IF public.jwt_role_app() IS NOT NULL
+       AND OLD.date < (now() AT TIME ZONE 'Africa/Dakar')::date
+       AND EXISTS (SELECT 1 FROM public.commandes c WHERE c.plat_id = OLD.id AND c.statut = 'choisi') THEN
+        RAISE EXCEPTION 'Ce plat a été commandé un jour passé : il ne peut plus être supprimé.'
+            USING ERRCODE = 'CP412';
+    END IF;
+    -- Récapitulatif déjà envoyé au restaurant (clôture confirmée ou non) : ses repas ne bougent plus
+    IF public.jwt_role_app() IS NOT NULL
+       AND EXISTS (SELECT 1 FROM public.clotures cl
+                   WHERE cl.company_id = OLD.company_id AND cl.date = OLD.date
+                     AND cl.restaurant_id = OLD.restaurant_id)
+       AND EXISTS (SELECT 1 FROM public.commandes c WHERE c.plat_id = OLD.id AND c.statut = 'choisi') THEN
+        RAISE EXCEPTION 'La commande de ce restaurant est déjà envoyée : ce plat ne peut plus être supprimé.'
+            USING ERRCODE = 'CP412';
+    END IF;
+    UPDATE public.commandes
+       SET statut = 'absent', plat_id = NULL, updated_at = clock_timestamp()
+     WHERE plat_id = OLD.id AND statut = 'choisi';
+    RETURN OLD;
+END;
+$$;
+REVOKE EXECUTE ON FUNCTION public.commandes_plat_supprime() FROM PUBLIC, anon, authenticated;
+
+DROP TRIGGER IF EXISTS trg_commandes_plat_supprime ON public.menus_du_jour;
+CREATE TRIGGER trg_commandes_plat_supprime
+    BEFORE DELETE ON public.menus_du_jour
+    FOR EACH ROW EXECUTE FUNCTION public.commandes_plat_supprime();
+
+-- 6. Plus de plat sans restaurant créé ou déplacé par un client JWT (RH ou restaurant). Trigger plutôt
+--    que CHECK : la FK restaurant_id ON DELETE SET NULL (suppression d'un restaurant, cascade d'une
+--    entreprise) s'exécute avec le rôle propriétaire et ne doit pas échouer.
+CREATE OR REPLACE FUNCTION public.bloquer_plat_sans_restaurant()
+RETURNS TRIGGER
+LANGUAGE plpgsql SET search_path = public AS $$
+BEGIN
+    IF current_user = 'authenticated' AND NEW.restaurant_id IS NULL THEN
+        RAISE EXCEPTION 'Choisissez le restaurant qui prépare ce plat.' USING ERRCODE = 'CP422';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+REVOKE EXECUTE ON FUNCTION public.bloquer_plat_sans_restaurant() FROM PUBLIC, anon, authenticated;
+
+DROP TRIGGER IF EXISTS trg_bloquer_plat_sans_restaurant ON public.menus_du_jour;
+CREATE TRIGGER trg_bloquer_plat_sans_restaurant
+    BEFORE INSERT OR UPDATE OF restaurant_id ON public.menus_du_jour
+    FOR EACH ROW EXECUTE FUNCTION public.bloquer_plat_sans_restaurant();
+
+-- 7. Une seule fois : les plats sans restaurant d'aujourd'hui et des jours suivants sont supprimés (leurs
+--    commandes repassent en « absent » par le trigger du point 5), ainsi que les commandes « choisi »
+--    restées sans plat à ces dates. Les jours passés ne sont pas touchés : ils ont servi à la paie.
+DO $$
+DECLARE
+    v_aujourdhui DATE := (now() AT TIME ZONE 'Africa/Dakar')::date;
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM public.schema_migrations WHERE nom = 'v1.15-supprimer-plats-sans-restaurant') THEN
+        DELETE FROM public.menus_du_jour WHERE restaurant_id IS NULL AND date >= v_aujourdhui;
+        UPDATE public.commandes
+           SET statut = 'absent', updated_at = clock_timestamp()
+         WHERE statut = 'choisi' AND plat_id IS NULL AND date >= v_aujourdhui;
+        INSERT INTO public.schema_migrations (nom) VALUES ('v1.15-supprimer-plats-sans-restaurant');
+    END IF;
+END $$;
+
+-- 8. Une commande « choisi » a toujours un plat. NOT VALID : l'historique d'avant la v1.15 n'est pas
+--    vérifié, toute nouvelle écriture l'est.
+DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'commandes_choisi_avec_plat'
+                   AND conrelid = 'public.commandes'::regclass) THEN
+        ALTER TABLE public.commandes ADD CONSTRAINT commandes_choisi_avec_plat
+            CHECK (statut <> 'choisi' OR plat_id IS NOT NULL) NOT VALID;
+    END IF;
+END $$;
+
+-- 9. Le salarié ne voit pas les plats d'un restaurant qui ne travaille pas aujourd'hui (jours retirés après
+--    la publication du menu). Nouvelle fonction plutôt qu'une colonne de plus à restaurants_visibles_salarie :
+--    son CREATE OR REPLACE plus haut échouerait à la relance (type de retour changé). Même périmètre :
+--    restaurants de l'entreprise du salarié, sans token ni WhatsApp.
+CREATE OR REPLACE FUNCTION public.restaurants_ouverts_salarie()
+RETURNS TABLE (id UUID, nom TEXT, is_active BOOLEAN, ouvert_aujourdhui BOOLEAN)
+LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = public AS $$
+DECLARE
+    v_jour SMALLINT := extract(isodow FROM (now() AT TIME ZONE 'Africa/Dakar')::date)::smallint;
+BEGIN
+    IF public.jwt_role_app() IS DISTINCT FROM 'salarie' OR public.jwt_company_id() IS NULL THEN
+        RAISE EXCEPTION 'Accès refusé.' USING ERRCODE = 'CP403';
+    END IF;
+    RETURN QUERY
+        SELECT r.id, r.nom, r.is_active,
+               (r.is_active AND (cr.jours_travail IS NULL OR v_jour = ANY (cr.jours_travail)))
+        FROM public.restaurants r
+        LEFT JOIN public.comptes_restaurant cr ON cr.id = r.compte_id
+        WHERE r.company_id = public.jwt_company_id();
+END;
+$$;
+REVOKE EXECUTE ON FUNCTION public.restaurants_ouverts_salarie() FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.restaurants_ouverts_salarie() TO authenticated;
+
+-- 10. Restaurant supprimé : ses plats d'aujourd'hui et des jours suivants sont désactivés, et les commandes
+--     « choisi » de ces plats repassent en « absent » (même règle que pour un plat supprimé). Sans cela, la
+--     FK restaurant_id ON DELETE SET NULL laissait des plats sans restaurant avec des commandes jamais
+--     récapitulées ni facturées. Les jours passés ne sont pas touchés (historique de la paie).
+--     SECURITY DEFINER : le RH qui supprime n'a pas à écrire dans commandes pour ce nettoyage.
+CREATE OR REPLACE FUNCTION public.desactiver_plats_restaurant_supprime()
+RETURNS TRIGGER
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
+DECLARE
+    v_aujourdhui DATE := (now() AT TIME ZONE 'Africa/Dakar')::date;
+BEGIN
+    -- Un restaurant qui a au moins une clôture (envoyée ou confirmée, quelle que soit la date) ne se
+    -- supprime plus depuis l'Espace RH : la cascade clotures.restaurant_id ON DELETE CASCADE effacerait
+    -- l'historique de facturation, hors des verrous de clôture. Le RH le désactive. La console SuperAdmin
+    -- et l'éditeur SQL (sans claim role_app) gardent la main.
+    IF public.jwt_role_app() IS NOT NULL
+       AND EXISTS (SELECT 1 FROM public.clotures cl WHERE cl.restaurant_id = OLD.id) THEN
+        RAISE EXCEPTION 'Ce restaurant a déjà reçu des commandes : désactivez-le plutôt que de le supprimer.'
+            USING ERRCODE = 'CP412';
+    END IF;
+    -- Les plats d'abord : cet UPDATE attend une commande en cours (FOR SHARE dans passer_commande), puis
+    -- celui des commandes la voit, validée, et l'annule. Même ordre de verrous que passer_commande.
+    UPDATE public.menus_du_jour
+       SET is_available = false
+     WHERE restaurant_id = OLD.id AND date >= v_aujourdhui;
+    UPDATE public.commandes c
+       SET statut = 'absent', plat_id = NULL, updated_at = clock_timestamp()
+      FROM public.menus_du_jour m
+     WHERE c.plat_id = m.id AND c.statut = 'choisi'
+       AND m.restaurant_id = OLD.id AND m.date >= v_aujourdhui;
+    RETURN OLD;
+END;
+$$;
+REVOKE EXECUTE ON FUNCTION public.desactiver_plats_restaurant_supprime() FROM PUBLIC, anon, authenticated;
+
+DROP TRIGGER IF EXISTS trg_desactiver_plats_restaurant_supprime ON public.restaurants;
+CREATE TRIGGER trg_desactiver_plats_restaurant_supprime
+    BEFORE DELETE ON public.restaurants
+    FOR EACH ROW EXECUTE FUNCTION public.desactiver_plats_restaurant_supprime();

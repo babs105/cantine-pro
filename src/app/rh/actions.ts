@@ -310,6 +310,8 @@ export async function dupliquerSemaineAction(lundiCible: string): Promise<{
     .map((p) => ({ ...p, date: ajouterJours(p.date, 7) }))
     .filter(
       (p) =>
+        // v1.15 : la base refuse un plat sans restaurant (un ancien plat orphelin ferait échouer tout le lot)
+        !!p.restaurant_id &&
         joursCibles.has(p.date) &&
         p.date >= today &&
         !joursDejaRemplis.has(p.date) &&

@@ -8,7 +8,7 @@ export class ErreurAffichable extends Error {}
 
 /**
  * Codes levés par nos fonctions et triggers SQL, au message écrit en français pour l'utilisateur :
- * CP403 / CP404 / CP423 (commande salarié ; CP403 aussi pour un plat que seul le restaurant peut publier, v1.14), CP409 (plafond), CP412 (journée confirmée), CP422 (restaurant fermé ce jour-là), CP429 (trop d'essais)
+ * CP403 / CP404 / CP423 (commande salarié ; CP403 aussi pour un plat que seul le restaurant peut publier, v1.14), CP409 (plafond), CP412 (journée confirmée), CP422 (restaurant fermé ce jour-là, plat sans restaurant, choix invalide ; v1.15), CP429 (trop d'essais)
  */
 const CODES_METIER = new Set(["CP403", "CP404", "CP409", "CP412", "CP422", "CP423", "CP429"]);
 

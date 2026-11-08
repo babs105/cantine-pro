@@ -54,7 +54,7 @@ async function submitVoteAction(
 
     if (error) {
       // Codes métier : le message est déjà écrit en français pour le salarié
-      if (error.code === "CP423" || error.code === "CP404" || error.code === "CP403") {
+      if (error.code === "CP423" || error.code === "CP404" || error.code === "CP403" || error.code === "CP422") {
         return { success: false, message: error.message };
       }
       console.error("[salarié] passer_commande :", error.code);
@@ -138,18 +138,22 @@ export default async function EmployeVotePage({ params }: PageProps) {
       .eq("company_id", employe.company_id)
       .eq("date", todayDate)
       .eq("is_available", true),
-    (supabase as any).rpc("restaurants_visibles_salarie"),
+    // v1.15 : indique aussi si le restaurant travaille aujourd'hui (jours de son compte)
+    (supabase as any).rpc("restaurants_ouverts_salarie"),
   ]);
   if (erreurRestos) console.error("[salarié] restaurants :", erreurRestos.code);
   const restaurantsParId = new Map<string, { nom: string; is_active: boolean }>(
-    ((restos as any[]) || []).map((r) => [r.id, { nom: r.nom, is_active: r.is_active }])
+    ((restos as any[]) || []).map((r) => [
+      r.id,
+      { nom: r.nom, is_active: r.is_active === true && r.ouvert_aujourdhui === true },
+    ])
   );
 
   // Sans menu publié, l'employé voit "menu pas encore publié". Filtre fermé : un plat rattaché à un restaurant
   // ne s'affiche que si ce restaurant est connu ET actif (si la fonction échoue, on ne montre pas les plats
-  // d'un restaurant peut-être désactivé). Un plat sans restaurant reste visible, comme avant.
+  // d'un restaurant peut-être désactivé). v1.15 : un plat sans restaurant est masqué, la base le refuse.
   const platsDisponibles = ((plats || []) as any[])
-    .filter((p) => !p.restaurant_id || restaurantsParId.get(p.restaurant_id)?.is_active === true)
+    .filter((p) => !!p.restaurant_id && restaurantsParId.get(p.restaurant_id)?.is_active === true)
     .map((p) => ({
       id: p.id,
       titre: p.titre,
